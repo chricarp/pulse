@@ -154,6 +154,27 @@ fn stdin_lines() -> tokio::sync::mpsc::Receiver<std::io::Result<String>> {
     rx
 }
 
+/// One stdin line, parsed exactly as `POST /ingest` parses a line of JSON lines (one
+/// implementation, `pulse_sources::ingest::parse`): the same fields, CloudEvents, limits and
+/// refusals. Returns what is wrong with it, without the line number the parser counts.
+fn parse_line(line: &str) -> Result<Vec<IngestEvent>, String> {
+    use pulse_sources::ingest::{IngestError, IngestLimits, parse};
+    parse(Some("application/x-ndjson"), line.as_bytes(), &IngestLimits::default()).map_err(|e| {
+        match e {
+            IngestError::Parse { message, .. } => message,
+            IngestError::Invalid(items) => items
+                .iter()
+                .map(|i| match &i.field {
+                    Some(field) => format!("{field}: {}", i.message),
+                    None => i.message.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+            other => other.to_string(),
+        }
+    })
+}
+
 pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
     const BATCH: usize = 100;
     let client = ctx.client().await?;
@@ -161,6 +182,7 @@ pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
     let mut lines = stdin_lines();
     let (mut accepted, mut duplicates, mut number) = (0usize, 0u32, 0usize);
     let mut batch = Vec::new();
+    let mut bad_line = None;
     loop {
         // Send what is buffered as soon as stdin has nothing more ready.
         let next = match lines.try_recv() {
@@ -177,12 +199,17 @@ pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
             if line.trim().is_empty() {
                 continue;
             }
-            let mut event: IngestEvent = serde_json::from_str(&line)
-                .map_err(|e| Failure::invalid(format!("stdin line {number}: {e}")))?;
-            if event.causation_run.is_none() {
-                event.causation_run = cause;
+            match parse_line(&line) {
+                Ok(events) => batch.extend(events.into_iter().map(|mut event| {
+                    event.causation_run = event.causation_run.or(cause);
+                    event
+                })),
+                Err(why) => {
+                    // The lines before it are sent; this one and the rest are not.
+                    bad_line = Some(why);
+                    break;
+                }
             }
-            batch.push(event);
             if batch.len() < BATCH {
                 continue;
             }
@@ -205,6 +232,16 @@ pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
         duplicates += res.duplicates;
     }
     let res = serde_json::json!({ "accepted": accepted, "duplicates": duplicates });
+    if let Some(why) = bad_line {
+        let data =
+            serde_json::json!({ "line": number, "accepted": accepted, "duplicates": duplicates });
+        let sent = if accepted == 0 && duplicates == 0 {
+            "nothing was ingested".to_owned()
+        } else {
+            format!("the lines before it were ({accepted} ingested, {duplicates} duplicates)")
+        };
+        return Err(Failure::invalid(format!("stdin line {number}: {why}; {sent}")).with_data(data));
+    }
     if ctx.answer(&res).is_some() {
         note(&format!("Ingested {accepted} events ({duplicates} duplicates dropped)."));
     }

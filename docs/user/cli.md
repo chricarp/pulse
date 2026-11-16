@@ -95,7 +95,7 @@ changes nothing. `pulse mcp` keeps stdout for MCP messages; its failures are tex
 | `pulse events show <ID>` | One event: its data, its cause, every rule it reached and why, the runs it caused. |
 | `pulse replay <EVENT> [--rule <RULE>]…` | Re-emit a past event as a new one (with no cause) and route it, to every rule or only the named ones. |
 | `pulse run [--tail-bytes <N>] -- <COMMAND>…` | Run a command as if directly, then report `process.exited` with the last `N` bytes (default 8192) of its output. Exits with the command's code (128 + signal if it was killed, 127 if it could not be started). Silent if the daemon is not running. |
-| `pulse ingest -s/--source <NAME>` | Send external events, one JSON object per stdin line, typed `ext.<NAME>.<type>`. See [Sources](sources.md#external-events-pulse-ingest-and-post-ingest). |
+| `pulse ingest -s/--source <NAME>` | Send external events, one JSON object (or CloudEvent) per stdin line, typed `ext.<NAME>.<type>`, parsed as `POST /ingest` parses them. A bad line stops it; the lines before it were sent. See [Sources](sources.md#external-events-pulse-ingest-and-post-ingest). |
 
 Filters for `tail` and `events`:
 

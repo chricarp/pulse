@@ -398,6 +398,10 @@ async fn every_command_answers_json_or_a_json_error() {
         (&["events", "show", NO_ID], "", Err("not_running"), Err("not_found")),
         (&["replay", NO_ID], "", Err("not_running"), Err("not_found")),
         (&["ingest", "-s", "ci"], "{\"type\":\"x\"}\n", Err("not_running"), Ok),
+        // Parsed as `POST /ingest` parses a JSON line: an unknown field is a typo, not data to
+        // drop; the lines before a bad one are sent.
+        (&["ingest", "-s", "ci"], "{\"type\":\"a\"}\n{\"type\":\"x\",\"colour\":\"red\"}\n", Err("not_running"), Err("invalid_params")),
+        (&["ingest", "-s", "ci"], "{\"specversion\":\"1.0\",\"id\":\"1\",\"source\":\"ci\",\"type\":\"x\"}\n", Err("not_running"), Ok),
         (&["test-rule", "r", "--event", NO_ID], "", Err("not_running"), Err("not_found")),
         (&["rules", "list"], "", Err("not_running"), Ok),
         (&["rules", "show", "nope"], "", Err("not_running"), Err("not_found")),
@@ -512,6 +516,11 @@ async fn every_command_answers_json_or_a_json_error() {
         }
         if let Err("not_trusted") = with {
             assert!(doc["error"]["data"]["hash"].is_string(), "{doc}");
+        }
+        if args[0] == "ingest" && matches!(with, Err(_)) {
+            let e = &doc["error"];
+            assert_eq!(e["data"], serde_json::json!({ "line": 2, "accepted": 1, "duplicates": 0 }));
+            assert!(e["message"].as_str().unwrap().contains("\"colour\""), "{doc}");
         }
         if let Err("not_found") = with {
             assert_eq!(doc["error"]["code"], -32002, "{doc}");
