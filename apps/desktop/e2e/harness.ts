@@ -144,6 +144,8 @@ function click(label: string): void {
 }
 
 async function screenshot(win: BrowserWindow, name: string): Promise<void> {
+  // Rendered text is not yet painted: let two frames go by, or the capture can be blank.
+  await inPage(win, "new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))");
   const image = await win.webContents.capturePage();
   const file = join(OUT, `${scenario}-${name}.png`);
   writeFileSync(file, image.toPNG());
@@ -235,29 +237,22 @@ async function main(): Promise<void> {
         return { contextIsolation: p.contextIsolation, nodeIntegration: p.nodeIntegration, sandbox: p.sandbox, webSecurity: p.webSecurity, webviewTag: p.webviewTag };
       })());
       await rendered(win());
-      await screenshot(win(), "1-ui-as-shipped");
-
-      // The login code in the fragment, redeemed from the page's own origin as 0004 specifies.
-      const exchange = await inPage<{ status: number; tokenLength: number; again: number }>(
-        win(),
-        `(async () => {
-          const code = new URLSearchParams(location.hash.slice(1)).get("login");
-          const post = () => fetch("/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
-          const r = await post();
-          const body = r.ok ? await r.json() : {};
-          const again = (await post()).status;
-          if (body.token) { sessionStorage.setItem("pulse.token", body.token); history.replaceState(null, "", location.pathname); }
-          return { status: r.status, tokenLength: (body.token || "").length, again };
-        })()`,
+      // The UI signs in by itself: it takes the login code from the fragment, removes it from
+      // the address bar, exchanges it at /auth/login and keeps the token for this window.
+      record("ui_connection_on_load", await uiConnected(win()));
+      record(
+        "login_by_the_page",
+        await inPage(win(), `({ fragment_left: location.hash, token_kept: (sessionStorage.getItem("pulse.token") || "").length > 0, no_access_screen: document.querySelector(".no-access") !== null })`),
       );
-      record("login_exchange_from_page", exchange);
+      await screenshot(win(), "1-ui-signed-in");
+      // A reload of the window keeps working without a new code.
       lastFinished = "";
       win().webContents.reload();
       await until("the UI to reload", onDaemonPage);
       await rendered(win());
       record("ui_connection_after_login", await uiConnected(win()));
       record("page_text_after_login", (await inPage<string>(win(), "document.body.innerText")).slice(0, 300));
-      await screenshot(win(), "2-ui-signed-in");
+      await screenshot(win(), "2-ui-after-reload");
 
       // The renderer's reach.
       record(
@@ -428,6 +423,27 @@ async function main(): Promise<void> {
       record("close_hides", shell.closeHides());
       win().close();
       // The app quits by itself; e2e/run.sh checks that the process ended and the daemon did not.
+      break;
+    }
+
+    // Not in run.sh's list: for the docs screenshot, against a Pulse home that already has
+    // activity (a running daemon is adopted). Run with XDG_CURRENT_DESKTOP=GNOME so closing the
+    // window quits.
+    case "showcase": {
+      await until("a daemon", connected);
+      await until("the UI to load", onDaemonPage);
+      await rendered(win());
+      record("ui_connection_on_load", await uiConnected(win()));
+      // The demo home has a run waiting for approval: wait for the feed and the run index both.
+      record("rows", await inPage(win(), `new Promise((resolve) => {
+        const n = () => document.querySelectorAll(".event-row").length;
+        const ready = () => n() >= 5 && document.querySelector(".banner-approval") !== null;
+        if (ready()) return resolve(n());
+        const o = new MutationObserver(() => { if (ready()) { o.disconnect(); resolve(n()); } });
+        o.observe(document, { subtree: true, childList: true });
+      })`));
+      await screenshot(win(), "feed");
+      win().close();
       break;
     }
 
