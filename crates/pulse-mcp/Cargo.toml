@@ -1,10 +1,13 @@
 [package]
 name = "pulse-mcp"
+description = "Lictory Pulse: the MCP server."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [features]
 # The MCP Events extension (SEP-3415), in one module. Also off at runtime unless

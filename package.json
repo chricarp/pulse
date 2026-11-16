@@ -1,6 +1,13 @@
 {
   "name": "pulse",
   "private": true,
+  "description": "Lictory Pulse: wakes coding agents when something happens on your machine (workspace root).",
+  "license": "MIT",
+  "author": "Christian Carpinelli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chricarp/pulse.git"
+  },
   "type": "module",
   "packageManager": "pnpm@12.16.1",
   "engines": {

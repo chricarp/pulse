@@ -6,8 +6,11 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/pulse-dev/pulse"
+authors = ["Christian Carpinelli"]
+repository = "https://github.com/chricarp/pulse"
 rust-version = "1.85"
+# Nothing here is published to crates.io; the product ships as one binary and a desktop app.
+publish = false
 
 [workspace.dependencies]
 pulse-contracts = { path = "crates/pulse-contracts" }

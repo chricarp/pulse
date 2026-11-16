@@ -2,8 +2,14 @@
   "name": "@pulse/desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Pulse: the local event layer for AI agents (desktop app).",
+  "description": "Lictory Pulse: the desktop app (a window, tray menu and notifications around the daemon's UI).",
   "license": "MIT",
+  "author": "Christian Carpinelli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chricarp/pulse.git",
+    "directory": "apps/desktop"
+  },
   "type": "module",
   "main": "dist/main.cjs",
   "desktopName": "pulse-desktop.desktop",

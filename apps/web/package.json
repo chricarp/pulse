@@ -1,6 +1,14 @@
 {
   "name": "@pulse/web",
   "private": true,
+  "description": "Lictory Pulse: the web UI the daemon serves.",
+  "license": "MIT",
+  "author": "Christian Carpinelli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chricarp/pulse.git",
+    "directory": "apps/web"
+  },
   "version": "0.1.0",
   "type": "module",
   "scripts": {
