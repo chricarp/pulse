@@ -6,9 +6,39 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-# Add pulse-core, pulse-store, pulse-sources, pulse-agents and pulse-mcp (all declared in the
-# workspace) as the wiring lands.
 [dependencies]
+pulse-contracts.workspace = true
+pulse-core.workspace = true
+pulse-store.workspace = true
+pulse-sources.workspace = true
+pulse-agents.workspace = true
+pulse-mcp.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+ulid.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "fs", "io-util"] }
+tokio-util.workspace = true
+
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws", "json", "query"] }
+futures-util = { version = "0.3.31", default-features = false, features = ["sink", "std"] }
+getrandom = "0.4.3"
+hmac = "0.13.0"
+notify = { version = "7.0.0", default-features = false, features = ["macos_fsevent"] }
+rust-embed = { version = "8.7.2", features = ["debug-embed", "mime-guess"] }
+rustix = { version = "1.1.2", features = ["fs", "process"] }
+sha2 = "0.11.0"
+tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect", "handshake"] }
+toml_edit = "0.25.4"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "std", "ansi"] }
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["process", "test-util", "io-util"] }
 
 [lints]
 workspace = true

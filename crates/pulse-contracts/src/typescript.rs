@@ -21,6 +21,7 @@ use crate::catalog::{
     ScheduleFiredData,
 };
 use crate::rpc::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Notification};
+use crate::status::{DaemonInfo, UiLoginRequest, UiLoginResponse};
 
 struct Collect<'a> {
     cfg: &'a ts_rs::Config,
@@ -47,6 +48,9 @@ pub fn typescript_bindings() -> String {
     c.visit::<JsonRpcRequest>();
     c.visit::<JsonRpcResponse>();
     c.visit::<JsonRpcNotification>();
+    c.visit::<DaemonInfo>();
+    c.visit::<UiLoginRequest>();
+    c.visit::<UiLoginResponse>();
     c.visit::<EventTypeInfo>();
     c.visit::<FsFileData>();
     c.visit::<FsMovedData>();

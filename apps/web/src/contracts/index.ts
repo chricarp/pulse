@@ -129,6 +129,8 @@ export type ConfigErrorList = { errors: Array<ConfigError>, };
 
 export type ConfigOrigin = { "kind": "user", path: string, } | { "kind": "project", name: string, dir: string, path: string, };
 
+export type DaemonInfo = { pid: number, port: number, version: string, started_at: Timestamp, };
+
 export type DebounceBy = "rule" | "subject";
 
 export type Decision = { rule: string, agent: string, outcome: Outcome, 
@@ -499,7 +501,12 @@ matched: boolean,
 /**
  * What routing would decide; `None` when it does not match.
  */
-decision?: Decision | null, };
+decision?: Decision | null, 
+/**
+ * When `decision` is `debounced`: what would happen once the debounce elapses (including
+ * the rendered prompt).
+ */
+after_debounce?: Decision | null, };
 
 export type RuleUpsertParams = { 
 /**
@@ -661,6 +668,15 @@ export type TrustState = "untrusted" | "trusted" | "changed" | "missing";
 export type TypeGlob = string;
 
 export type TypeGlobs = Array<TypeGlob>;
+
+export type UiLoginRequest = { code: string, };
+
+export type UiLoginResponse = { 
+/**
+ * The daemon token. Send it as `Authorization: Bearer <token>`, or for a browser WebSocket
+ * as the subprotocols `["pulse", "pulse.token.<token>"]`.
+ */
+token: string, };
 
 export type Unsubscribe = { subscription: SubscriptionId, };
 

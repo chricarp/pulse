@@ -12,8 +12,10 @@ rust-version = "1.85"
 [workspace.dependencies]
 pulse-contracts = { path = "crates/pulse-contracts" }
 pulse-core = { path = "crates/pulse-core" }
-# pulse-store, pulse-sources, pulse-agents and pulse-mcp: add here when the daemon depends on
-# them (Cargo warns about declared-but-unused workspace dependencies).
+pulse-store = { path = "crates/pulse-store" }
+pulse-sources = { path = "crates/pulse-sources" }
+pulse-agents = { path = "crates/pulse-agents" }
+pulse-mcp = { path = "crates/pulse-mcp" }
 pulse-daemon = { path = "crates/pulse-daemon" }
 
 serde = { version = "1.0.229", features = ["derive"] }
