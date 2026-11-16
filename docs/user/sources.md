@@ -102,7 +102,8 @@ the working tree, so a checkout that rewrites thousands of files is one `git.bra
 An amend is a new commit; a rebase reports no commits (and `git.merge.conflicted` if it stops on
 a conflict); a fast-forward merge or pull reports nothing. Detached HEAD: `to` is the commit id,
 and commits have `branch: null`. Worktrees and submodules are followed. History is not replayed
-at startup. A push to a URL with no remote-tracking branch leaves no trace and is not seen.
+at startup, and is not replayed when git rewrites a reflog (`gc`) or the repository is replaced;
+a new commit or push is reported whatever date it carries. A push to a URL with no remote-tracking branch leaves no trace and is not seen.
 
 ## `schedule`: a timer
 
