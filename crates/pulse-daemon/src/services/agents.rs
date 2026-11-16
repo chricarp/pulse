@@ -7,7 +7,7 @@ use pulse_contracts::rpc::{
 };
 
 use pulse_contracts::config::ConfigOrigin;
-use pulse_contracts::rpc::Expected;
+use pulse_contracts::rpc::{Expected, StateTopic};
 
 use super::{Edit, Services, written_revision};
 use crate::config::{DefKind, Snapshot, bare_name};
@@ -179,6 +179,29 @@ impl Services {
             Edit::Modify(&set),
         )
         .await?;
+        self.sources_get(name)
+    }
+
+    /// Stops the source completely and starts it again from its definition as it is in effect:
+    /// the way back from `failed` without editing the file, and a fresh start after fixing
+    /// something it depends on (a mount, the network). Events the old instance had produced are
+    /// recorded before the new one starts; what a source keeps across a daemon restart (a
+    /// schedule's last fire, a calendar's fired occurrences) it keeps across this too. Refused
+    /// for a disabled source: enabling it is what starts it.
+    pub async fn sources_restart(&self, name: &str) -> ServiceResult<SourceInfo> {
+        // Reloads and write-back start and stop sources under this lock too.
+        let loader = self.shared.loader.lock().await;
+        let snapshot = self.shared.snapshot();
+        let s =
+            snapshot.config.source(name).ok_or_else(|| ServiceError::not_found("source", name))?;
+        if !s.config.enabled {
+            return Err(ServiceError::Conflict(format!(
+                "the source {name:?} is disabled; enable it to start it"
+            )));
+        }
+        self.shared.sources.reconcile(&self.shared, &snapshot.config, Some(name)).await;
+        drop(loader);
+        self.shared.notify_state(&[StateTopic::Sources]);
         self.sources_get(name)
     }
 

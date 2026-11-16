@@ -13,7 +13,8 @@ pub enum SourceState {
     /// Working, with a problem worth showing (a watch limit hit, a calendar fetch failing and
     /// retrying).
     Degraded,
-    /// Stopped by an error; will not recover without a config change or restart.
+    /// Stopped by an error. Not retried on its own: it starts again when restarted
+    /// (`sources.restart`), when its configuration changes, or when the daemon restarts.
     Failed,
     Stopped,
     Disabled,

@@ -128,6 +128,13 @@ function SourceDetail({ info }: { info: SourceInfo }) {
   const tone = sourceTone(h.state);
   // Changes `enabled` of the source as it is in its file, not this cached copy of it.
   const toggle = () => void attempt(c.enabled ? "Disable" : "Enable", () => client.call("sources.set_enabled", { name: c.name, enabled: !c.enabled }), c.enabled ? `Disabled ${c.name}` : `Enabled ${c.name}`);
+  // A failed source is not retried on its own; this is its way back once the cause is fixed.
+  // A disabled one is started by enabling it, so it has no restart.
+  const restart = () => void attempt("Restart", () => client.call("sources.restart", { name: c.name }), `Restarted ${c.name}`);
+  useBindings([
+    { keys: "shift+e", label: "Enable or disable the source", group: "Sources", run: toggle },
+    { keys: "shift+r", label: "Restart the source", group: "Sources", run: () => c.enabled && restart() },
+  ]);
   const settings: [string, ReactNode][] = [["Kind", <span key="k" className="mono">{c.kind}</span>]];
   switch (c.kind) {
     case "fs":
@@ -153,7 +160,12 @@ function SourceDetail({ info }: { info: SourceInfo }) {
         <span className={cx("dot", `tone-${tone}`)} />
         <h2 className="detail-title mono">{c.name}</h2>
         <div className="detail-head-actions">
-          <Button size="sm" onClick={toggle}>{c.enabled ? "Disable" : "Enable"}</Button>
+          {c.enabled && (
+            <Button size="sm" variant={h.state === "failed" ? "attention" : "default"} icon="rerun" onClick={restart} shortcut="shift+r" title="Stop the source and start it again">
+              Restart
+            </Button>
+          )}
+          <Button size="sm" onClick={toggle} shortcut="shift+e">{c.enabled ? "Disable" : "Enable"}</Button>
           <Button size="sm" icon="edit" onClick={() => navigate({ view: "sources", name: c.name, mode: "edit" })}>Edit</Button>
           <Button size="sm" variant="danger" icon="trash" onClick={() => setConfirm(true)}>Remove</Button>
           <IconButton icon="x" label="Close (Esc)" onClick={() => navigate({ view: "sources", name: null, mode: "show" })} size="sm" variant="ghost" className="hide-narrow" />
@@ -162,6 +174,7 @@ function SourceDetail({ info }: { info: SourceInfo }) {
       <div className="detail-body">
         <Notice tone={tone} title={<>{h.state[0]?.toUpperCase()}{h.state.slice(1)} <span className="faint num">since {dayAndTime(h.since, Date.now())}</span></>}>
           {(h.message && shortText(h.message)) ?? (h.state === "healthy" ? "Watching. Changes become events after the source's quiet period." : h.state === "disabled" ? "Not watching. Enable it to start again." : "")}
+          {h.state === "failed" && <p>A failed source is not retried on its own. Fix what the message says, then restart it (or edit it).</p>}
         </Notice>
         {h.last_error && (
           <Section title="Last error">

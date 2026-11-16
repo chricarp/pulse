@@ -876,6 +876,7 @@ export type RpcMethods = {
   "sources.upsert": { params: SourceUpsertParams; result: SourceInfo };
   "sources.delete": { params: DeleteParams; result: Empty };
   "sources.set_enabled": { params: SetEnabledParams; result: SourceInfo };
+  "sources.restart": { params: NameParams; result: SourceInfo };
   "runs.list": { params: RunsListParams; result: RunPage };
   "runs.get": { params: RunIdParams; result: Run };
   "runs.output": { params: RunOutputParams; result: RunOutputPage };
@@ -928,6 +929,7 @@ export const RPC_METHOD_NAMES = [
   "sources.upsert",
   "sources.delete",
   "sources.set_enabled",
+  "sources.restart",
   "runs.list",
   "runs.get",
   "runs.output",

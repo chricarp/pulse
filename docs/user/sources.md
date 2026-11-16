@@ -16,6 +16,7 @@ pulse sources add calendar lectures ~/Calendar/lectures.ics
 pulse sources                       # list them with their health
 pulse sources disable hourly        # stop watching, keep the definition
 pulse sources enable hourly
+pulse sources restart lectures      # start it again after fixing why it failed
 pulse sources remove hourly
 ```
 
@@ -31,10 +32,24 @@ it to appear"), a calendar URL that failed ("retrying in 2m"), the inotify watch
 queue overflow, file names that are not valid UTF-8 and were skipped. A missing folder or
 repository is not an error: the source waits for it.
 
-Failed means the source stopped: its settings are invalid, or it hit a problem it cannot work
-around (or a bug in Pulse), and the message says which. A failed source is not retried on its
-own; it starts again the next time the configuration changes (edit it, or re-add it) or the
-daemon restarts.
+Failed means the source stopped: it hit a problem it cannot work around (or a bug in Pulse),
+and the message says which. A failed source is not retried on its own, because the same input
+would usually fail it again. Once you have fixed the cause, restart it:
+
+```console
+$ pulse sources restart lectures
+Restarted source lectures.
+```
+
+In the UI, open the source and press **Restart** (Shift+R). Editing the source or restarting the
+daemon also starts it again.
+
+You can restart a healthy source too, for example after remounting a drive or reconnecting to
+a network. Pulse stops the source completely before starting it again, and records every event
+the source had already produced, once. A restart loses what a daemon restart loses and no more.
+A schedule's last fire and a calendar's fired events are kept, so nothing fires twice. A file
+change still settling (within `quiet`) is not reported. Git activity during the moment the source
+is stopped is not reported either. A disabled source is not restarted: enable it instead.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/sources-dark.png">

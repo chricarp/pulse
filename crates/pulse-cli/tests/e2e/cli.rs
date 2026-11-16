@@ -82,9 +82,16 @@ async fn adding_and_removing_definitions() {
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("Disabled source tick"), "{out}");
     assert!(env.read_config().contains("every = \"1h\"\nenabled = false"), "{}", env.read_config());
+    // A disabled source is enabled, not restarted; an enabled one restarts.
+    let (code, _, err) = env.run(&["sources", "restart", "tick"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("disabled; enable it"), "{err}");
     let (code, _, err) = env.run(&["sources", "enable", "tick"]).await;
     assert_eq!(code, 0, "{err}");
     assert!(!env.read_config().contains("enabled = false"), "{}", env.read_config());
+    let (code, out, err) = env.run(&["sources", "restart", "tick"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("Restarted source tick."), "{out}");
     let (code, _, err) = env.run(&["sources", "disable", "nope"]).await;
     assert_eq!(code, 1);
     assert!(err.contains("nope"), "{err}");

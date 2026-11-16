@@ -112,7 +112,7 @@ Event fields and run output come from files, commits, calendars and processes ([
 
 One `keydown` listener and a registry (`app/keys.ts`). Views register their bindings while mounted; the help overlay (`?`) and the System view list whatever is registered, and buttons show their shortcut. Single keys are ignored while typing in a field; `mod+` combinations and Escape are not. While a modal dialog is open it owns the keyboard.
 
-Global: `mod+k` palette, `?` help, `g f/u/r/a/s/p/y` views, `g i` next approval, `shift+p` pause or resume everything, `n` new rule, `shift+t` theme. Lists: `j`/`k`, Escape. Feed: `/` filter, space pause the tail, Home newest. Runs: `shift+a` approve, `shift+x` reject, `shift+c` cancel, `shift+r` rerun, End follow output. Rules: `e` edit, `shift+e` enable or disable, `mod+enter` test, `mod+s` save.
+Global: `mod+k` palette, `?` help, `g f/u/r/a/s/p/y` views, `g i` next approval, `shift+p` pause or resume everything, `n` new rule, `shift+t` theme. Lists: `j`/`k`, Escape. Feed: `/` filter, space pause the tail, Home newest. Runs: `shift+a` approve, `shift+x` reject, `shift+c` cancel, `shift+r` rerun, End follow output. Rules: `e` edit, `shift+e` enable or disable, `mod+enter` test, `mod+s` save. Sources: `shift+r` restart (shown only while the source is enabled; a failed source's button is amber), `shift+e` enable or disable.
 
 ## Design
 

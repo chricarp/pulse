@@ -2,7 +2,7 @@
 
 use pulse_contracts::config::RuleConfig;
 use pulse_contracts::rpc::*;
-use pulse_contracts::status::TrustState;
+use pulse_contracts::status::{SourceState, TrustState};
 use pulse_daemon::client::{Client, ClientError};
 use tokio::sync::mpsc;
 
@@ -90,10 +90,48 @@ async fn hand_edits_reload_and_broken_files_keep_the_last_good_config() {
 
     // A changed source is restarted; an unchanged one is left alone.
     let built = t.sources.built().len();
-    t.write_config(&BASE.replace("every = \"1h\"", "every = \"2h\""));
+    let edited = BASE.replace("every = \"1h\"", "every = \"2h\"");
+    t.write_config(&edited);
     until_state(&mut notes, StateTopic::Sources, |_| async { t.sources.built().len() > built })
         .await;
     assert_eq!(t.sources.built().len(), built + 1);
+
+    // A source that ended on its own is failed and stays failed; restarting it is the way back
+    // without touching the file.
+    let health = |name: &'static str| {
+        let client = &client;
+        async move {
+            let list = client.call::<method::SourcesList>(Empty {}).await.unwrap();
+            list.sources.into_iter().find(|s| s.config.name == name).unwrap().health
+        }
+    };
+    t.sources.end("fake");
+    until_state(&mut notes, StateTopic::Sources, |_| async {
+        health("fake").await.state == SourceState::Failed
+    })
+    .await;
+    assert!(health("fake").await.message.unwrap().contains("stopped by itself"));
+    let restart =
+        |name: &str| client.call::<method::SourcesRestart>(NameParams { name: name.into() });
+    let s = restart("fake").await.unwrap();
+    assert_ne!(s.health.state, SourceState::Failed, "{s:?}");
+    assert_eq!(t.sources.built().len(), built + 2);
+    // A healthy source restarts too, and the old instance has stopped before the new one is
+    // built, here as on a reload.
+    restart("fake").await.unwrap();
+    assert_eq!(t.sources.built().len(), built + 3);
+    assert_eq!(t.sources.overlaps(), Vec::<String>::new());
+    assert_eq!(t.read_config(), edited, "a restart does not touch the file");
+    // A disabled source is not started behind the user's back, and an unknown one is not found.
+    client
+        .call::<method::SourcesSetEnabled>(SetEnabledParams { name: "fake".into(), enabled: false })
+        .await
+        .unwrap();
+    let err = restart("fake").await.unwrap_err();
+    assert!(err.to_string().contains("disabled; enable it"), "{err}");
+    assert_eq!(health("fake").await.state, SourceState::Disabled);
+    let err = restart("nope").await.unwrap_err();
+    assert!(err.to_string().contains("not found"), "{err}");
     t.stop().await;
 }
 

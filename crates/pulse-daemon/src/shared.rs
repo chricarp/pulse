@@ -281,7 +281,7 @@ impl Shared {
                 let snapshot = Arc::new(snapshot);
                 *self.snapshot.write().unwrap_or_else(|p| p.into_inner()) = snapshot.clone();
                 let _ = self.engine.control(Control::Config(snapshot.clone())).await;
-                self.sources.reconcile(self, &snapshot.config);
+                self.sources.reconcile(self, &snapshot.config, None).await;
                 self.worker.wake();
                 self.config_version.send_modify(|v| *v = v.wrapping_add(1));
             } else {

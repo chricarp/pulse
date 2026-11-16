@@ -29,7 +29,9 @@ Work down this list.
 
 1. **No event.** `pulse events -s <source>` shows nothing:
    - `pulse sources` says the source is `degraded` or `failed`, and why (a folder that does not
-     exist yet, a calendar that cannot be fetched, the inotify watch limit).
+     exist yet, a calendar that cannot be fetched, the inotify watch limit). A degraded source
+     recovers on its own once the problem is gone. A failed one does not: fix the cause, then
+     `pulse sources restart <name>` (or **Restart** on the source in the UI).
    - An `fs` event appears only after the file has been quiet for 2 s (the source's `quiet`).
    - The file is ignored: VCS folders, `node_modules`, editor swap files, `*.tmp`, downloads in
      progress, and your `ignore` globs.

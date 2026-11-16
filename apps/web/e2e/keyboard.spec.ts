@@ -94,3 +94,19 @@ test("a rule draft is tested against a past event before it is saved", async ({ 
   await expect(page.locator(".prompt-instruction")).toContainText("Look at /home/ada/");
   await expect(page.locator(".prompt-data")).toContainText("Untrusted event data");
 });
+
+test("a failed source is restarted from its detail, by key or button; a disabled one is enabled instead", async ({ page }) => {
+  await page.goto("/sources/lectures?trickle=0");
+  const detail = page.locator(".detail");
+  await expect(detail.locator(".detail-title")).toHaveText("lectures");
+  await expect(detail.getByText("A failed source is not retried on its own")).toBeVisible();
+  await page.keyboard.press("Shift+R");
+  await expect(page.locator(".toast").filter({ hasText: "Restarted lectures" })).toBeVisible();
+  await expect(page.locator(".source-row.is-selected .pill").filter({ hasText: "healthy" })).toBeVisible();
+
+  await page.goto("/sources/old-photos?trickle=0");
+  await expect(detail.locator(".detail-title")).toHaveText("old-photos");
+  await expect(detail.getByRole("button", { name: "Restart" })).toHaveCount(0);
+  await page.keyboard.press("Shift+E");
+  await expect(detail.getByRole("button", { name: "Restart" })).toBeVisible();
+});

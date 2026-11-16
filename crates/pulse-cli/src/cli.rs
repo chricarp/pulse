@@ -50,7 +50,7 @@ pub enum Command {
     /// MCP over stdio, for MCP clients that launch a server: a bridge to the daemon's /mcp as
     /// one agent. Stdout carries MCP messages only.
     Mcp(McpArgs),
-    /// Sources and their health: list, add, remove, enable, disable.
+    /// Sources and their health: list, add, remove, enable, disable, restart.
     Sources(SourcesArgs),
     /// Trust or untrust a repository's pulse.toml.
     #[command(subcommand)]
@@ -367,6 +367,11 @@ pub enum SourcesCmd {
     },
     /// Stop watching, keeping the definition (`enable` reverses it).
     Disable {
+        name: String,
+    },
+    /// Stop the source and start it again, as it is defined now: the way back from `failed`
+    /// once what it needs is fixed. Refused for a disabled source (enable it instead).
+    Restart {
         name: String,
     },
 }

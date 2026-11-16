@@ -82,25 +82,50 @@ impl SourceManager {
         self.running.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Brings running sources in line with `config`: stops removed ones, restarts changed ones,
-    /// starts new ones.
-    pub(crate) fn reconcile(&self, shared: &Arc<Shared>, config: &Config) {
-        let mut running = self.lock();
+    /// Brings running sources in line with `config`: stops removed ones, restarts changed ones
+    /// and ones that ended (failed, see [`supervise`]), and `restart` if named, starts new ones.
+    /// This is the only way sources start and stop while the daemon runs (a reload, and
+    /// `sources.restart`); callers hold the loader lock, so two never interleave.
+    ///
+    /// A source being replaced is stopped **completely** before its replacement is built: its
+    /// task has returned (so a state file it writes is written, and the new one reads it), and
+    /// its forwarder has handed every event the source had produced to the engine. Without the
+    /// wait, two instances of one source could run at once for a moment, and both would read the
+    /// same state file.
+    pub(crate) async fn reconcile(
+        &self,
+        shared: &Arc<Shared>,
+        config: &Config,
+        restart: Option<&str>,
+    ) {
         let wanted: BTreeMap<&str, &Sourced<SourceConfig>> =
             config.sources.iter().map(|s| (s.config.name.as_str(), s)).collect();
-        // Changed or removed, or ended (failed, see `supervise`): a reload is the way back.
-        let stale: Vec<String> = running
-            .iter()
-            .filter(|(name, r)| {
-                wanted.get(name.as_str()).is_none_or(|w| **w != r.config) || r.ended()
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-        for name in stale {
-            if let Some(r) = running.remove(&name) {
-                r.cancel.cancel();
+        let stopping: Vec<Running> = {
+            let mut running = self.lock();
+            let stale: Vec<String> = running
+                .iter()
+                .filter(|(name, r)| {
+                    wanted.get(name.as_str()).is_none_or(|w| **w != r.config)
+                        || r.ended()
+                        || restart == Some(name.as_str())
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            stale.iter().filter_map(|name| running.remove(name)).collect()
+        };
+        for r in &stopping {
+            r.cancel.cancel();
+        }
+        for r in stopping {
+            for t in r.tasks {
+                let _ = t.await;
             }
         }
+        // Shutting down: `stop_all` has taken (or will take) what is running; start nothing.
+        if shared.shutdown.is_cancelled() {
+            return;
+        }
+        let mut running = self.lock();
         for (name, s) in wanted {
             if !running.contains_key(name) {
                 running.insert(name.to_owned(), start(shared, s));
@@ -169,8 +194,9 @@ fn fixed(
 ///
 /// It is not restarted here. A source already retries what it knows to be transient (and says
 /// so as `degraded`); ending means a bug (a panic, which the same input would trigger again) or
-/// a condition the source judged permanent. It is started again the next time the
-/// configuration is loaded ([`SourceManager::reconcile`]): any edit, or a daemon restart.
+/// a condition the source judged permanent. It is started again when the user asks
+/// (`sources.restart`), the next time the configuration is loaded (any edit), or when the
+/// daemon restarts, all through [`SourceManager::reconcile`].
 async fn supervise(source: Box<dyn Source>, cx: SourceContext, name: String) {
     let reporter = cx.health.clone();
     let stop = cx.shutdown.clone();
