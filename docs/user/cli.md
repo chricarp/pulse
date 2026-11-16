@@ -109,7 +109,7 @@ Filters for `tail` and `events`:
 
 ## Rules
 
-`pulse rules <COMMAND>`; a subcommand is required.
+`pulse rules [COMMAND]`; without one, `list`.
 
 | Command | Does |
 |---|---|
@@ -130,7 +130,7 @@ limit). Records nothing and runs nothing.
 
 ## Runs
 
-`pulse runs <COMMAND>`; a subcommand is required.
+`pulse runs [COMMAND]`; without one, `list`.
 
 | Command | Does |
 |---|---|
@@ -167,7 +167,7 @@ full id is used as it is.
 | `pulse sources remove <NAME>` | Delete it. |
 | `pulse project trust <DIR> [--name <NAME>] [--hash <HASH>]` | Without `--hash`: show what `DIR/pulse.toml` would load, what changed since it was trusted, and its content hash; trust nothing (exit status 1). With `--hash`: trust it only if it still has that content. `--name` is the prefix for its definitions (default: the directory's name). See [Projects](projects.md). |
 | `pulse project untrust <DIR>` | Make it inactive. |
-| `pulse project list` | Projects and their trust state. |
+| `pulse project` / `pulse project list` | Projects and their trust state. |
 
 `agents add`, `rules add` and `sources add` edit the same file as the UI and your editor, through
 the daemon, so it must be running. They create; `--replace` replaces a definition of that name

@@ -1,6 +1,7 @@
 //! The CLI as scripts and people use it: exit codes, `--json` shapes, `pulse run` passing its
 //! command's exit through, and adding definitions without opening the config file.
 
+use pulse_contracts::status::SourceState;
 use serde_json::Value;
 
 use crate::support::*;
@@ -75,6 +76,16 @@ async fn adding_and_removing_definitions() {
         (Some("inbox"), Some("fs"))
     );
     assert!(s["health"]["state"].is_string(), "{s}");
+    // A source that cannot watch: `status` points at `pulse sources` right under the count.
+    let (code, _, err) = env.run(&["sources", "add", "fs", "gone", "~/gone"]).await;
+    assert_eq!(code, 0, "{err}");
+    daemon.watch().await.source_state(Some("gone"), SourceState::Degraded).await;
+    let (_, out, _) = env.run(&["status"]).await;
+    let lines: Vec<&str> = out.lines().collect();
+    let at = lines.iter().position(|l| l.starts_with("sources ")).unwrap();
+    assert!(lines[at + 1].trim().starts_with("`pulse sources` says"), "{out}");
+    let (code, _, err) = env.run(&["sources", "remove", "gone"]).await;
+    assert_eq!(code, 0, "{err}");
     let (code, _, err) = env.run(&["sources", "add", "schedule", "tick", "--every", "1h"]).await;
     assert_eq!(code, 0, "{err}");
     // Enable and disable change only `enabled` in the file, from the CLI as from the UI.
@@ -369,6 +380,42 @@ async fn command_paths(env: &Env) -> Vec<String> {
     found
 }
 
+/// `pulse help`, all the way down: every command, argument and option says what it is.
+#[tokio::test(flavor = "multi_thread")]
+async fn help_describes_every_command_and_argument() {
+    let env = Env::new();
+    let mut paths = command_paths(&env).await;
+    paths.push(String::new());
+    let mut missing = Vec::new();
+    for path in paths {
+        let mut args: Vec<&str> = path.split_whitespace().collect();
+        args.push("--help");
+        let (_, help, _) = env.run(&args).await;
+        let mut section = false;
+        for line in help.lines() {
+            if ["Commands:", "Arguments:", "Options:"].contains(&line) {
+                section = true;
+                continue;
+            }
+            if line.is_empty() {
+                section = false;
+            }
+            // `  name   Description`, or a description wrapped onto the next line.
+            let item = line.trim_start();
+            if section
+                && line.starts_with("  ")
+                && (item.starts_with('-') || line.len() - item.len() == 2)
+            {
+                let described = item.split("  ").filter(|p| !p.trim().is_empty()).count() > 1;
+                if !described {
+                    missing.push(format!("pulse {path}: {}", item.trim_end()));
+                }
+            }
+        }
+    }
+    assert!(missing.is_empty(), "no help for:\n{}", missing.join("\n"));
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Want {
     Ok,
@@ -416,6 +463,7 @@ async fn every_command_answers_json_or_a_json_error() {
         (&["ingest", "-s", "ci"], "{\"specversion\":\"1.0\",\"id\":\"1\",\"source\":\"ci\",\"type\":\"x\"}\n", Err("not_running"), Ok),
         (&["test-rule", "r", "--event", NO_ID], "", Err("not_running"), Err("not_found")),
         (&["rules", "list"], "", Err("not_running"), Ok),
+        (&["rules"], "", Err("not_running"), Ok),
         (&["rules", "show", "nope"], "", Err("not_running"), Err("not_found")),
         (&["rules", "add", "--file", "-"], rule, Err("not_running"), Err("stale")),
         (&["rules", "enable", "nope"], "", Err("not_running"), Err("not_found")),
@@ -428,6 +476,7 @@ async fn every_command_answers_json_or_a_json_error() {
         (&["rules", "remove", "nope"], "", Err("not_running"), Err("not_found")),
         (&["rules", "history", "r"], "", Err("not_running"), Ok),
         (&["runs", "list"], "", Err("not_running"), Ok),
+        (&["runs"], "", Err("not_running"), Ok),
         (&["runs", "show", NO_ID], "", Err("not_running"), Err("not_found")),
         (&["runs", "logs", NO_ID], "", Err("not_running"), Err("not_found")),
         (&["runs", "approve", NO_ID], "", Err("not_running"), Err("not_found")),
@@ -451,6 +500,7 @@ async fn every_command_answers_json_or_a_json_error() {
         (&["sources", "enable", "nope"], "", Err("not_running"), Err("not_found")),
         (&["sources", "disable", "nope"], "", Err("not_running"), Err("not_found")),
         (&["project", "list"], "", Err("not_running"), Ok),
+        (&["project"], "", Err("not_running"), Ok),
         (&["project", "trust", project], "", Err("not_running"), Err("not_trusted")),
         (&["project", "untrust", project], "", Err("not_running"), Err("not_found")),
         (&["frobnicate"], "", Err("usage"), Err("usage")),

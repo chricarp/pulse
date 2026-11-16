@@ -35,12 +35,16 @@ pub async fn run(ctx: &Ctx, command: Command) -> Res {
         Command::Ingest(args) => events::ingest(ctx, args).await,
         Command::Run(args) => events::run(ctx, args).await,
         Command::TestRule(args) => rules::test_rule(ctx, args).await,
-        Command::Rules(cmd) => rules::rules(ctx, cmd).await,
-        Command::Runs(cmd) => runs::runs(ctx, cmd).await,
+        Command::Rules(args) => {
+            rules::rules(ctx, args.cmd.unwrap_or(crate::cli::RulesCmd::List { all: false })).await
+        }
+        Command::Runs(args) => runs::runs(ctx, args.cmd.unwrap_or_default()).await,
         Command::Agents(args) => misc::agents(ctx, args).await,
         Command::Mcp(args) => mcp::bridge(ctx, args).await,
         Command::Sources(args) => misc::sources(ctx, args).await,
-        Command::Project(cmd) => misc::project(ctx, cmd).await,
+        Command::Project(args) => {
+            misc::project(ctx, args.cmd.unwrap_or(crate::cli::ProjectCmd::List)).await
+        }
     }
 }
 

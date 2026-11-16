@@ -258,6 +258,9 @@ pub async fn status(ctx: &Ctx) -> Res {
         "sources  {} healthy, {} degraded, {} failed, {} other",
         src.healthy, src.degraded, src.failed, src.other
     ));
+    if src.degraded + src.failed > 0 {
+        out.line("         `pulse sources` says what is wrong with them.");
+    }
     out.line(&format!(
         "runs     {} running, {} queued, {} waiting for approval",
         s.runs.running, s.runs.queued, s.runs.pending_approval
@@ -279,9 +282,6 @@ pub async fn status(ctx: &Ctx) -> Res {
         for e in &report.warnings {
             out.line(&format!("  {e}"));
         }
-    }
-    if src.degraded + src.failed > 0 {
-        out.line("         `pulse sources` says what is wrong with the sources.");
     }
     Ok(ExitCode::SUCCESS)
 }
