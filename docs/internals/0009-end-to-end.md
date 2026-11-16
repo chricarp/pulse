@@ -100,10 +100,14 @@ Limits that remain, stated plainly:
   Claude Code settings that print nothing (a formatter after `Write` usually rewrites the same
   file, which is covered), and Claude Code's own files under `~/.claude` if a source watches
   them.
-- **A reported path can be spelled differently from the event.** The daemon matches the path as
-  given, its canonical form and the canonical form spelled under the agent's configured `cwd`.
-  A write through a symlink that the fs source knows by yet another name (a source configured
-  through a symlink that is not the agent's `cwd`) does not match: taken for the user's.
+- **A path can be spelled differently from the event.** For a reported write the daemon matches
+  the path as given, its canonical form and the canonical form spelled under the agent's
+  configured `cwd`; for inference, the `cwd` as configured and canonical (inference compared the
+  configured text only, so an agent whose `cwd` reached a source's real folder through a symlink
+  was never inferred; found in review). A folder the fs source knows by a name the run does not
+  (a source configured through a symlink, an agent whose `cwd` is the real path) does not
+  match: taken for the user's. Canonicalizing every event's path would close it at the cost of
+  filesystem calls per event.
 - **Reported over-attributes a little.** A path the agent named is its own until 30 s after the
   run, even if the write was refused: the user's change to exactly that file in that window is
   skipped. An `fs.burst` whose sample contains one reported path is attributed whole.

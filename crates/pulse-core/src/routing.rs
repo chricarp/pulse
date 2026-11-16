@@ -17,10 +17,15 @@
 //! 6. **Cooldown**, then **rate limit** → `cooldown` / `rate_limited`. For an elapsed debounce,
 //!    these re-arm the debounce until the limit lifts instead of dropping the event.
 //! 7. **Circuit breaker**: one more fire would exceed `max_fires` within the window → the
-//!    breaker opens for `open_for` → `circuit_open`.
+//!    breaker opens for `open_for` → `circuit_open`. Only fires since the breaker last closed
+//!    (its hold ended, or `unsnooze`) count, so closing it is a fresh start, not a re-trip at
+//!    the next match.
 //! 8. **Agent backlog** (unsupervised rules): queued + running runs of the agent at
 //!    `max_concurrent + max_queued` → `agent_busy`. Concurrency itself is enforced by the
-//!    effect worker; queued runs wait for a slot.
+//!    effect worker; queued runs wait for a slot. For an elapsed debounce this is `waiting`
+//!    instead: the event is held until the backlog drops below the limit (the daemon sets it
+//!    when a run ends), then it is due at once and routed again. Without a debounce nothing
+//!    holds the event, and the agent's queue is the bound the user chose, so it is blocked.
 //! 9. **Render** the prompt → `render_failed` on error.
 //! 10. **Supervised** rules → `await_approval`; others → `fire`. Both count as fires for
 //!     cooldown, rate limit and breaker.
@@ -196,6 +201,9 @@ fn rule_matches(rule: &CompiledRule, event: &Event) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuleRuntime {
     pub snoozed_until: Option<Timestamp>,
+    /// When the circuit breaker's latest hold ends (or ended): open while it is in the future.
+    /// Once past, it is when the breaker closed, and the breaker counts only later fires; an
+    /// unsnooze sets it to the moment of the unsnooze. Kept after it passes for that reason.
     pub circuit_open_until: Option<Timestamp>,
     pub fires: FireHistory,
 }
@@ -215,12 +223,28 @@ pub struct DueDebounce {
     pub event: EventId,
 }
 
+/// An elapsed debounce held because its agent's backlog was full.
+#[derive(Clone, Debug)]
+struct Waiter {
+    event: EventId,
+    agent: String,
+    /// The agent's `max_concurrent + max_queued`, kept current by `retain_configured`.
+    max: u32,
+    /// When it started waiting: it is due from then on, as soon as the agent has room.
+    since: Timestamp,
+    /// Arrival order, so the longest waiting goes first.
+    seq: u64,
+}
+
 /// Everything `route` remembers between calls. Bounded: one entry per configured rule and agent,
-/// and a capacity-limited debouncer.
+/// and pending plus waiting debounces together at most `debounce_capacity`.
 #[derive(Clone, Debug)]
 pub struct RouterState {
     rules: BTreeMap<String, RuleRuntime>,
     debouncer: Debouncer<DebounceKey, EventId>,
+    waiting: BTreeMap<DebounceKey, Waiter>,
+    waiting_seq: u64,
+    debounce_capacity: usize,
     agent_backlog: BTreeMap<String, u32>,
 }
 
@@ -229,6 +253,9 @@ impl RouterState {
         RouterState {
             rules: BTreeMap::new(),
             debouncer: Debouncer::new(limits.debounce_capacity as usize),
+            waiting: BTreeMap::new(),
+            waiting_seq: 0,
+            debounce_capacity: (limits.debounce_capacity as usize).max(1),
             agent_backlog: BTreeMap::new(),
         }
     }
@@ -247,11 +274,16 @@ impl RouterState {
         self.rules.entry(rule.to_owned()).or_default().snoozed_until = Some(until);
     }
 
-    /// Clears a snooze and an open circuit breaker.
-    pub fn unsnooze(&mut self, rule: &str) {
+    /// Clears a snooze and closes an open circuit breaker. A breaker closed by hand counts
+    /// fires afresh from `now`, as it does when its hold ends: the fires that tripped it are
+    /// still in its window and would trip it again at the next match. Cooldown and rate limit
+    /// still count them.
+    pub fn unsnooze(&mut self, rule: &str, now: Timestamp) {
         if let Some(r) = self.rules.get_mut(rule) {
             r.snoozed_until = None;
-            r.circuit_open_until = None;
+            if r.circuit_open_until.is_some_and(|u| u > now) {
+                r.circuit_open_until = Some(now);
+            }
         }
     }
 
@@ -265,24 +297,74 @@ impl RouterState {
         self.agent_backlog.get(agent).copied().unwrap_or(0)
     }
 
-    /// When the caller should next call [`RouterState::take_due`]. Arm exactly one timer.
+    /// When the caller should next call [`RouterState::take_due`]. Arm exactly one timer. A
+    /// debounce waiting for its agent is due (at the time it started waiting, so at once) only
+    /// while the agent has room: a full agent arms nothing, and lowering its backlog with
+    /// [`RouterState::set_agent_backlog`] is what makes it due.
     pub fn next_deadline(&self) -> Option<Timestamp> {
-        self.debouncer.next_deadline()
+        let ready = self
+            .waiting
+            .values()
+            .filter(|w| self.agent_backlog(&w.agent) < w.max)
+            .map(|w| w.since)
+            .min();
+        match (self.debouncer.next_deadline(), ready) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
+    /// Elapsed debounces, and waiting ones whose agent has room (as many as it has, longest
+    /// waiting first). Route each with [`RouteMode::DebounceElapsed`].
     pub fn take_due(&mut self, now: Timestamp) -> Vec<DueDebounce> {
-        self.debouncer
-            .pop_due(now)
+        let ready: Vec<DebounceKey> = self.ready_waiters().into_iter().map(|(k, _)| k).collect();
+        let mut due: Vec<DueDebounce> = ready
             .into_iter()
-            .map(|(key, event)| DueDebounce { rule: key.rule, event })
-            .collect()
+            .filter_map(|key| {
+                let w = self.waiting.remove(&key)?;
+                Some(DueDebounce { rule: key.rule, event: w.event })
+            })
+            .collect();
+        due.extend(
+            self.debouncer
+                .pop_due(now)
+                .into_iter()
+                .map(|(key, event)| DueDebounce { rule: key.rule, event }),
+        );
+        due
     }
 
-    /// Drops state for rules and agents no longer configured. Call after a config reload.
+    /// Waiters whose agent has room, at most as many per agent as it has, longest waiting first.
+    fn ready_waiters(&self) -> Vec<(DebounceKey, &Waiter)> {
+        let mut by_age: Vec<(&DebounceKey, &Waiter)> = self.waiting.iter().collect();
+        by_age.sort_by_key(|(_, w)| w.seq);
+        let mut taken: BTreeMap<&str, u32> = BTreeMap::new();
+        let mut ready = Vec::new();
+        for (key, w) in by_age {
+            let n = taken.entry(w.agent.as_str()).or_default();
+            if self.agent_backlog(&w.agent).saturating_add(*n) < w.max {
+                *n += 1;
+                ready.push((key.clone(), w));
+            }
+        }
+        ready
+    }
+
+    /// Drops state for rules and agents no longer configured, and points waiting debounces at
+    /// their rule's current agent. Call after a config reload.
     pub fn retain_configured(&mut self, routing: &Routing) {
         let names: std::collections::BTreeSet<&str> = routing.rule_names().collect();
         self.rules.retain(|k, _| names.contains(k.as_str()));
         self.debouncer.retain(|k| names.contains(k.rule.as_str()));
+        self.waiting.retain(|k, w| {
+            let Some(rule) = routing.rules.iter().find(|r| r.name == k.rule) else {
+                return false;
+            };
+            let Some(agent) = routing.agents.get(&rule.agent) else { return false };
+            w.agent = rule.agent.clone();
+            w.max = agent.max_concurrent.saturating_add(agent.max_queued);
+            true
+        });
         self.agent_backlog.retain(|k, _| routing.agents.contains_key(k));
     }
 }
@@ -423,7 +505,13 @@ fn decide(
     };
     if let (Some(d), false) = (rule.debounce, debounce_elapsed) {
         let until = now.saturating_add(d);
-        if state.debouncer.push(key(), event.id, until).is_ok() {
+        let key = key();
+        // A waiting debounce for this key is replaced, as a pending one would be.
+        let had_waiter = state.waiting.remove(&key).is_some();
+        let full = !had_waiter
+            && !state.debouncer.contains(&key)
+            && state.debouncer.len() + state.waiting.len() >= state.debounce_capacity;
+        if !full && state.debouncer.push(key, event.id, until).is_ok() {
             return Outcome::Debounced { until };
         }
         // Full: fall through without debouncing.
@@ -464,7 +552,7 @@ fn decide(
 
     // 7. Circuit breaker.
     let breaker = &limits.circuit_breaker;
-    if breaker_trips(breaker, &runtime.fires, now) {
+    if breaker_trips(breaker, &runtime.fires, runtime.circuit_open_until, now) {
         let until = now.saturating_add(breaker.open_for);
         runtime.circuit_open_until = Some(until);
         return blocked(BlockReason::CircuitOpen { until });
@@ -474,7 +562,29 @@ fn decide(
     let max = agent.max_concurrent.saturating_add(agent.max_queued);
     let backlog = state.agent_backlog(&rule.agent);
     if !rule.supervised && backlog >= max {
-        return blocked(BlockReason::AgentBusy { backlog, max });
+        let reason = BlockReason::AgentBusy { backlog, max };
+        if debounce_elapsed {
+            // As for cooldown: a newer event pending for this key wins.
+            let key = key();
+            if let Some(until) = state.debouncer.deadline(&key) {
+                return Outcome::Debounced { until };
+            }
+            let room = state.waiting.contains_key(&key)
+                || state.debouncer.len() + state.waiting.len() < state.debounce_capacity;
+            if room {
+                state.waiting_seq += 1;
+                let waiter = Waiter {
+                    event: event.id,
+                    agent: rule.agent.clone(),
+                    max,
+                    since: now,
+                    seq: state.waiting_seq,
+                };
+                state.waiting.insert(key, waiter);
+                return Outcome::Waiting { reason };
+            }
+        }
+        return blocked(reason);
     }
 
     // 9. Render.

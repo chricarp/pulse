@@ -83,8 +83,18 @@ pub fn rate_limited_until(rate: Rate, history: &FireHistory, now: Timestamp) -> 
 }
 
 /// Whether one more fire now would exceed the breaker's `max_fires` within its window.
-pub fn breaker_trips(breaker: &CircuitBreaker, history: &FireHistory, now: Timestamp) -> bool {
-    history.count_after(now.saturating_sub(breaker.window)) >= breaker.max_fires as usize
+/// `closed_at` is when the breaker last closed (its hold ended, or it was unsnoozed): fires up
+/// to then tripped it or came before, and do not count toward it again. They still count for
+/// cooldown and rate limit.
+pub fn breaker_trips(
+    breaker: &CircuitBreaker,
+    history: &FireHistory,
+    closed_at: Option<Timestamp>,
+    now: Timestamp,
+) -> bool {
+    let window_start = now.saturating_sub(breaker.window);
+    let since = closed_at.map_or(window_start, |c| c.max(window_start));
+    history.count_after(since) >= breaker.max_fires as usize
 }
 
 #[cfg(test)]
@@ -136,9 +146,10 @@ mod tests {
             open_for: Duration::from_hours(1),
         };
         let t = Timestamp::from_millis;
-        assert!(!breaker_trips(&b, &hist(&[0, 1, 2]), t(60_000)));
-        assert!(breaker_trips(&b, &hist(&[1, 2, 3]), t(60_000)));
-        assert!(!breaker_trips(&b, &hist(&[1, 2]), t(60_000)));
+        assert!(!breaker_trips(&b, &hist(&[0, 1, 2]), None, t(60_000)));
+        assert!(breaker_trips(&b, &hist(&[1, 2, 3]), None, t(60_000)));
+        assert!(!breaker_trips(&b, &hist(&[1, 2]), None, t(60_000)));
+        assert!(!breaker_trips(&b, &hist(&[1, 2, 3]), Some(t(1)), t(60_000)));
         let mut h = FireHistory::default();
         for i in 0..10 {
             h.record(t(i), 4);

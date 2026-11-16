@@ -109,6 +109,7 @@ fn label(o: &Outcome) -> String {
         }
         Outcome::AwaitApproval { .. } => "await_approval".into(),
         Outcome::Debounced { until } => format!("debounced until {}", until.as_millis()),
+        Outcome::Waiting { reason } => format!("waiting: {reason:?}"),
         Outcome::Blocked { reason } => format!("{reason:?}"),
     }
 }
@@ -308,6 +309,72 @@ fn elapsed_debounce_waits_out_the_cooldown_instead_of_dropping() {
 }
 
 #[test]
+fn elapsed_debounce_waits_for_room_in_the_agents_queue() {
+    // `solo` takes one run at a time and queues none. Per-subject debounce, so a burst of
+    // files is one timer each.
+    let rule = "[[rule]]\nname = \"solo\"\non = \"fs.file.created\"\ndebounce = \"10s\"\ndebounce_by = \"subject\"\nrun = { agent = \"solo\", prompt = \"x\" }\n";
+    let r = routing(rule, "[limits]\ndebounce_capacity = 3");
+    let mut state = RouterState::new(r.limits());
+    let elapsed = |state: &mut RouterState, e: &Event, now| {
+        label(&run_route(e, RouteMode::DebounceElapsed("solo"), &r, state, at(now))[0].outcome)
+    };
+    let files: Vec<Event> = (1..=3).map(|n| pdf(n, &format!("{n}.pdf"))).collect();
+    for e in &files {
+        run_route(e, RouteMode::AllRules, &r, &mut state, at(0));
+    }
+    let due = state.take_due(t(10_000));
+    assert_eq!(due.len(), 3);
+    // The first fires and fills the agent; the others wait instead of being dropped.
+    assert_eq!(elapsed(&mut state, &files[0], 10_000), "fire");
+    let busy = "waiting: AgentBusy { backlog: 1, max: 1 }";
+    assert_eq!(elapsed(&mut state, &files[1], 10_000), busy);
+    assert_eq!(elapsed(&mut state, &files[2], 10_001), busy);
+    // Nothing to wake up for while the agent is full: no timer, no polling.
+    assert_eq!(state.next_deadline(), None);
+    assert!(state.take_due(t(99_000)).is_empty());
+
+    // A run ends: one slot, so one waiter is due, the one that waited longest.
+    state.set_agent_backlog("solo", 0);
+    assert_eq!(state.next_deadline(), Some(t(10_000)), "due at once");
+    let due = state.take_due(t(50_000));
+    assert_eq!(due, vec![DueDebounce { rule: "solo".into(), event: files[1].id }]);
+    assert_eq!(elapsed(&mut state, &files[1], 50_000), "fire");
+    assert_eq!(state.next_deadline(), None, "the fire took the slot");
+
+    // A newer event for a waiting key replaces it, as a newer event replaces a pending debounce.
+    let newer = pdf(4, "3.pdf");
+    assert_eq!(
+        label(&run_route(&newer, RouteMode::AllRules, &r, &mut state, at(51_000))[0].outcome),
+        "debounced until 61000"
+    );
+    state.set_agent_backlog("solo", 0);
+    assert_eq!(state.next_deadline(), Some(t(61_000)), "the waiter for 3.pdf is gone");
+    let due = state.take_due(t(61_000));
+    assert_eq!(due, vec![DueDebounce { rule: "solo".into(), event: newer.id }]);
+    assert_eq!(elapsed(&mut state, &newer, 61_000), "fire");
+
+    // Waiters count toward `debounce_capacity` with pending debounces. Past it, a new event
+    // skips the debounce, so finding the agent busy it is blocked, as without a debounce.
+    let more: Vec<Event> = (5..=8).map(|n| pdf(n, &format!("{n}.pdf"))).collect();
+    let got: Vec<String> = more
+        .iter()
+        .map(|e| label(&run_route(e, RouteMode::AllRules, &r, &mut state, at(70_000))[0].outcome))
+        .collect();
+    let held = "debounced until 80000";
+    assert_eq!(got, [held, held, held, "AgentBusy { backlog: 1, max: 1 }"]);
+    assert_eq!(state.take_due(t(80_000)).len(), 3);
+    let got: Vec<String> = more[..3].iter().map(|e| elapsed(&mut state, e, 80_000)).collect();
+    assert_eq!(got, [busy, busy, busy]);
+    let ninth = run_route(&pdf(9, "9.pdf"), RouteMode::AllRules, &r, &mut state, at(80_001));
+    assert_eq!(label(&ninth[0].outcome), "AgentBusy { backlog: 1, max: 1 }");
+
+    // A config change that removes the rule drops its waiters.
+    state.retain_configured(&routing("", ""));
+    state.set_agent_backlog("solo", 0);
+    assert_eq!(state.next_deadline(), None);
+}
+
+#[test]
 fn a_full_debouncer_degrades_to_no_debounce() {
     let r = routing(
         &format!("{RULE}debounce = \"10s\"\ndebounce_by = \"subject\"\n"),
@@ -337,35 +404,83 @@ fn dry_runs_do_not_touch_the_real_state() {
 }
 
 #[test]
-fn breaker_stays_open_and_unsnooze_closes_it() {
-    let r = routing(
-        RULE,
-        "[limits]\ncircuit_breaker = { max_fires = 1, window = \"1m\", open_for = \"1h\" }",
-    );
-    let mut state = RouterState::new(r.limits());
-    let a = pdf(1, "a.pdf");
-    let labels: Vec<String> = (0..3)
-        .map(|i| label(&run_route(&a, RouteMode::AllRules, &r, &mut state, at(i))[0].outcome))
-        .collect();
-    assert_eq!(
-        labels,
-        [
-            "fire",
-            "CircuitOpen { until: Timestamp(3600001) }",
-            "CircuitOpen { until: Timestamp(3600001) }"
-        ]
-    );
-    state.unsnooze("lecture");
-    assert_eq!(state.rule("lecture").unwrap().circuit_open_until, None);
-    // Still within the window: the breaker trips again on the next fire.
-    assert!(
-        label(&run_route(&a, RouteMode::AllRules, &r, &mut state, at(3))[0].outcome)
-            .starts_with("CircuitOpen")
-    );
-    assert_eq!(
-        label(&run_route(&a, RouteMode::AllRules, &r, &mut state, at(3_600_004))[0].outcome),
-        "fire"
-    );
+fn breaker_stays_open_and_closing_it_starts_the_count_afresh() {
+    // `(time, expected)` routes the same event; `(time, "unsnooze")` closes the breaker by hand.
+    let trip_1h = [(0, "fire"), (1, "fire"), (2, "CircuitOpen { until: Timestamp(3600002) }")];
+    type Steps = Vec<(i64, &'static str)>;
+    let cases: Vec<(&str, &str, Steps)> = vec![
+        // Unsnoozed inside the window: the fires that tripped it no longer count toward the
+        // breaker, so the next two matches fire and the third trips it again.
+        (
+            "",
+            "max_fires = 2, window = \"1m\", open_for = \"1h\"",
+            [
+                &trip_1h[..],
+                &[
+                    (3, "CircuitOpen { until: Timestamp(3600002) }"),
+                    (10, "unsnooze"),
+                    (11, "fire"),
+                    (12, "fire"),
+                    (13, "CircuitOpen { until: Timestamp(3600013) }"),
+                ],
+            ]
+            .concat(),
+        ),
+        // The user's own limits still count every fire: the rate limit set by the fires that
+        // tripped the breaker holds after the unsnooze.
+        (
+            "rate_limit = \"3/1m\"",
+            "max_fires = 2, window = \"1m\", open_for = \"1h\"",
+            [
+                &trip_1h[..],
+                &[(3, "unsnooze"), (4, "fire"), (5, "RateLimited { until: Timestamp(60000) }")],
+            ]
+            .concat(),
+        ),
+        // The hold ends on its own while the window still covers the fires that tripped it
+        // (open_for shorter than window): it closes as an unsnooze would.
+        (
+            "",
+            "max_fires = 2, window = \"1h\", open_for = \"1m\"",
+            vec![
+                (0, "fire"),
+                (1, "fire"),
+                (2, "CircuitOpen { until: Timestamp(60002) }"),
+                (60_001, "CircuitOpen { until: Timestamp(60002) }"),
+                (60_003, "fire"),
+                (60_004, "fire"),
+                (60_005, "CircuitOpen { until: Timestamp(120005) }"),
+            ],
+        ),
+        // Unsnoozing a rule whose breaker is closed forgets nothing.
+        (
+            "",
+            "max_fires = 2, window = \"1m\", open_for = \"1h\"",
+            vec![
+                (0, "fire"),
+                (1, "fire"),
+                (2, "unsnooze"),
+                (3, "CircuitOpen { until: Timestamp(3600003) }"),
+            ],
+        ),
+    ];
+    for (extra, breaker, steps) in cases {
+        let r = routing(
+            &format!("{RULE}{extra}\n"),
+            &format!("[limits]\ncircuit_breaker = {{ {breaker} }}"),
+        );
+        let mut state = RouterState::new(r.limits());
+        let a = pdf(1, "a.pdf");
+        for (now, want) in steps {
+            if want == "unsnooze" {
+                state.unsnooze("lecture", t(now));
+                continue;
+            }
+            let got =
+                label(&run_route(&a, RouteMode::AllRules, &r, &mut state, at(now))[0].outcome);
+            assert_eq!(got, want, "{extra} {breaker} at {now}");
+        }
+    }
 }
 
 #[test]

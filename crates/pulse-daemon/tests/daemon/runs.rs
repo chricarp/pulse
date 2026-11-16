@@ -417,3 +417,51 @@ async fn a_run_is_running_before_its_process_is_spawned() {
     assert_eq!(written.causation, Some(pulse_contracts::Causation::Inferred));
     t.stop().await;
 }
+
+/// The agent's `cwd` reaches the watched folder through a symbolic link, and the fs source
+/// reports the real path. Inference compares the event with every spelling of the run's working
+/// directory the daemon knows, as reported writes do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inference_sees_a_working_directory_through_a_symlink() {
+    let dirs = tempfile::tempdir().unwrap();
+    let real = dirs.path().canonicalize().unwrap().join("real");
+    let link = dirs.path().canonicalize().unwrap().join("link");
+    std::fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let (tx, mut spawned) = tokio::sync::mpsc::unbounded_channel();
+    let setup = Setup { supervisor: std::sync::Arc::new(SpawnGate(tx)), ..Setup::default() };
+    let agent = format!(
+        "[[agent]]\nname = \"sh\"\nadapter = \"command\"\ncommand = [\"true\"]\nallow = [\"ext.*\"]\ncwd = \"{}\"\n",
+        link.display()
+    );
+    let mut t = TestDaemon::start_with(
+        &format!(
+            "[[source]]\nname = \"fake\"\nkind = \"fs\"\npath = \"/\"\n{agent}\n[[rule]]\nname = \"r\"\non = \"ext.*\"\nrun = {{ agent = \"sh\" }}\n"
+        ),
+        setup,
+    )
+    .await;
+    let client = t.client().await;
+    let mut notes = client.notifications().unwrap();
+    client.call::<method::EventsSubscribe>(EventsSubscribeParams::default()).await.unwrap();
+    client.call::<method::EventsIngest>(ext("one")).await.unwrap();
+    let id = within("the spawn", spawned.recv()).await.unwrap();
+
+    let path = real.join("out.txt").display().to_string();
+    t.sources.push("fake", file_created("fake", &path)).await;
+    let written = within("the file event", async {
+        loop {
+            if let Notification::EventsBatch(b) = notes.recv().await.unwrap() {
+                if let Some(e) =
+                    b.batch.events.into_iter().find(|e| e.subject.as_deref() == Some(&path))
+                {
+                    return e;
+                }
+            }
+        }
+    })
+    .await;
+    assert_eq!(written.causation_run, Some(id));
+    assert_eq!(written.causation, Some(pulse_contracts::Causation::Inferred));
+    t.stop().await;
+}

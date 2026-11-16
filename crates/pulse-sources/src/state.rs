@@ -58,7 +58,13 @@ pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
     let mut f = std::fs::File::create(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path)?;
+    // The rename itself survives a power loss only once the directory is synced. A filesystem
+    // that cannot sync directories (EINVAL) offers no more.
+    match std::fs::File::open(dir).and_then(|d| d.sync_all()) {
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
+        r => r,
+    }
 }
 
 #[cfg(test)]

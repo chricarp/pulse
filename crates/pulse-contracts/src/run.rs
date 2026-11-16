@@ -278,6 +278,12 @@ pub enum Outcome {
     Debounced {
         until: Timestamp,
     },
+    /// An elapsed debounce that `reason` (`agent_busy`) would block is held instead, and is
+    /// routed again when one of the agent's runs ends. A later delivery for the same event says
+    /// what then happened; a newer matching event for the same debounce replaces it.
+    Waiting {
+        reason: BlockReason,
+    },
     Blocked {
         reason: BlockReason,
     },
@@ -289,6 +295,7 @@ impl Outcome {
             Outcome::Fire { .. } => DeliveryOutcome::Fired,
             Outcome::AwaitApproval { .. } => DeliveryOutcome::AwaitingApproval,
             Outcome::Debounced { until } => DeliveryOutcome::Debounced { until: *until },
+            Outcome::Waiting { reason } => DeliveryOutcome::Waiting { reason: reason.clone() },
             Outcome::Blocked { reason } => DeliveryOutcome::Blocked { reason: reason.clone() },
         }
     }
@@ -369,8 +376,16 @@ pub struct Delivery {
 pub enum DeliveryOutcome {
     Fired,
     AwaitingApproval,
-    Debounced { until: Timestamp },
-    Blocked { reason: BlockReason },
+    Debounced {
+        until: Timestamp,
+    },
+    /// See [`Outcome::Waiting`].
+    Waiting {
+        reason: BlockReason,
+    },
+    Blocked {
+        reason: BlockReason,
+    },
 }
 
 impl DeliveryOutcome {
@@ -379,6 +394,7 @@ impl DeliveryOutcome {
             DeliveryOutcome::Fired => "fired",
             DeliveryOutcome::AwaitingApproval => "awaiting_approval",
             DeliveryOutcome::Debounced { .. } => "debounced",
+            DeliveryOutcome::Waiting { .. } => "waiting",
             DeliveryOutcome::Blocked { .. } => "blocked",
         }
     }

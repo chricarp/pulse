@@ -29,8 +29,10 @@ use crate::path::{is_clean_absolute, is_within};
 pub struct RecentRun {
     pub id: RunId,
     pub rule: Option<String>,
-    /// Clean absolute working directory. Runs without one are never inferred causes.
-    pub cwd: Option<String>,
+    /// The working directory, in every clean absolute spelling the caller knows for it (as
+    /// configured, canonical), as for reported paths. Runs without one are never inferred
+    /// causes.
+    pub cwds: Vec<String>,
     pub started_at: Timestamp,
     pub ended_at: Option<Timestamp>,
     pub chain_depth: u32,
@@ -139,8 +141,8 @@ pub fn cause_of_change<'a>(
     }
     live.filter(|r| r.writes.is_opaque())
         .filter_map(|r| {
-            let cwd = r.cwd.as_deref()?;
-            paths.iter().any(|p| is_within(p, cwd)).then_some((cwd.len(), r.started_at, r))
+            let cwd = r.cwds.iter().filter(|c| paths.iter().any(|p| is_within(p, c)));
+            Some((cwd.map(String::len).max()?, r.started_at, r))
         })
         .max_by_key(|(depth, started, _)| (*depth, *started))
         .map(|(_, _, r)| (r, Causation::Inferred))
@@ -163,7 +165,7 @@ mod tests {
         RecentRun {
             id: RunId::from_ulid(Ulid::from_parts(n, 0)),
             rule: Some(format!("rule{n}")),
-            cwd: cwd.map(str::to_owned),
+            cwds: cwd.into_iter().flat_map(|c| c.split('|')).map(str::to_owned).collect(),
             started_at: Timestamp::from_millis(start),
             ended_at: end.map(Timestamp::from_millis),
             chain_depth: n as u32,
@@ -213,6 +215,8 @@ mod tests {
             ),
             // Opaque (it ran a shell command), but also reported a write.
             run(7, Some("/home/me/Mixed"), 1_000, None, wrote(&["/home/me/Else/y.md"], true)),
+            // Its working directory is a symbolic link (configured `|` canonical).
+            run(8, Some("/home/me/Link|/data/Real"), 1_000, None, opaque()),
         ];
         // (type, paths, time ms, expected (run, causation))
         type Case<'a> = (&'a str, Vec<&'a str>, i64, Option<(u64, Causation)>);
@@ -231,6 +235,9 @@ mod tests {
             ("process.exited", vec!["/home/me/University"], 1_500, None),
             ("calendar.event.starting", vec![], 1_500, None),
             ("fs.file.created", vec!["/home/me/Mixed/z"], 1_500, Some((7, I))),
+            // Either spelling of the working directory.
+            ("fs.file.created", vec!["/home/me/Link/z"], 1_500, Some((8, I))),
+            ("fs.file.created", vec!["/data/Real/z"], 1_500, Some((8, I))),
             // An observed run claims only what it wrote: the rest of its folder is the user's.
             ("fs.file.created", vec!["/home/me/Notes/b.pdf"], 1_500, None),
             ("fs.file.created", vec!["/home/me/Notes/a.md"], 1_500, Some((5, R))),

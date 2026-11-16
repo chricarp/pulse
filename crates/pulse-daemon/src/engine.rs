@@ -216,6 +216,14 @@ impl Engine {
         let runs =
             self.shared.store.read(move |q| q.query().runs_ended_since(since, limit)).await?;
         for run in runs {
+            let cwd = run.invocation.map(|i| i.cwd).filter(|c| !c.is_empty());
+            let cwds = match cwd {
+                Some(cwd) => {
+                    let real = tokio::fs::canonicalize(&cwd).await.ok();
+                    crate::worker::cwd_spellings(&cwd, real.as_ref().and_then(|r| r.to_str()))
+                }
+                None => Vec::new(),
+            };
             let started_at = run.started_at.unwrap_or(run.created_at);
             let ended_at = if interrupted.contains(&run.id) {
                 run.ended_at
@@ -226,7 +234,7 @@ impl Engine {
             self.recent.push(RecentRun {
                 id: run.id,
                 rule: run.rule,
-                cwd: run.invocation.map(|i| i.cwd).filter(|c| !c.is_empty()),
+                cwds,
                 started_at,
                 ended_at,
                 chain_depth: run.chain_depth,
@@ -340,7 +348,7 @@ impl Engine {
             Control::Snooze { rule, until, reply } => {
                 match until {
                     Some(until) => self.state.snooze(&rule, until),
-                    None => self.state.unsnooze(&rule),
+                    None => self.state.unsnooze(&rule, self.shared.clock.now()),
                 }
                 let row = self.rule_row(&rule);
                 let result = self.shared.store.write(move |s| s.set_rule_state(&row)).await;
@@ -410,7 +418,8 @@ impl Engine {
         Some(RecentRun {
             id: run.id,
             rule: run.rule,
-            cwd: run.invocation.map(|i| i.cwd),
+            // Only used as an exact cause: no inference.
+            cwds: Vec::new(),
             started_at: run.started_at.unwrap_or(run.created_at),
             ended_at: run.ended_at,
             chain_depth: run.chain_depth,
@@ -496,7 +505,9 @@ impl Engine {
             let created = match &d.outcome {
                 Outcome::Fire { prompt } => Some((RunStatus::Queued, prompt)),
                 Outcome::AwaitApproval { prompt } => Some((RunStatus::PendingApproval, prompt)),
-                Outcome::Debounced { .. } | Outcome::Blocked { .. } => None,
+                Outcome::Debounced { .. } | Outcome::Waiting { .. } | Outcome::Blocked { .. } => {
+                    None
+                }
             };
             let run = created.map(|(status, prompt)| {
                 let id = self.shared.ids.run();

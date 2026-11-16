@@ -196,6 +196,7 @@ pub enum OutcomeArg {
     Fired,
     AwaitingApproval,
     Debounced,
+    Waiting,
     Blocked,
 }
 

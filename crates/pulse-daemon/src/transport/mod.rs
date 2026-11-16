@@ -23,6 +23,8 @@ mod mcp;
 mod rpc;
 mod ui;
 
+pub(crate) use mcp::agent_open_files;
+
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};

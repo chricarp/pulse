@@ -105,6 +105,7 @@ pub fn outcome(o: &Outcome) -> String {
         Outcome::Fire { .. } => "fire: a run would start".into(),
         Outcome::AwaitApproval { .. } => "await approval: a run would wait for you".into(),
         Outcome::Debounced { until } => format!("debounced until {until}"),
+        Outcome::Waiting { reason: r } => format!("waiting: {}; fires when a run ends", reason(r)),
         Outcome::Blocked { reason: r } => format!("blocked: {}", reason(r)),
     }
 }
@@ -114,6 +115,9 @@ pub fn delivery_outcome(o: &DeliveryOutcome) -> String {
         DeliveryOutcome::Fired => "fired".into(),
         DeliveryOutcome::AwaitingApproval => "awaiting approval".into(),
         DeliveryOutcome::Debounced { until } => format!("debounced until {until}"),
+        DeliveryOutcome::Waiting { reason: r } => {
+            format!("waiting: {}; fires when a run ends", reason(r))
+        }
         DeliveryOutcome::Blocked { reason: r } => format!("blocked: {}", reason(r)),
     }
 }

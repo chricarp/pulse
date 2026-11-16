@@ -385,6 +385,76 @@ run = { agent = "sh" }
     .await;
     let rule = client.call::<method::RulesGet>(NameParams { name: "hot".into() }).await.unwrap();
     assert!(rule.state.circuit_open_until.is_some());
+
+    // Unsnoozing closes it for good, across a restart: the fire that tripped it is rebuilt from
+    // the log at startup and is still inside the window, but no longer counts.
+    let rule =
+        client.call::<method::RulesUnsnooze>(NameParams { name: "hot".into() }).await.unwrap();
+    assert_eq!(rule.state.circuit_open_until, None);
+    drop((client, notes));
+    t.stop().await;
+    t.boot(Setup::default()).await;
+    let client = t.client().await;
+    let res = client.call::<method::EventsIngest>(ingest("third")).await.unwrap();
+    let detail =
+        client.call::<method::EventsGet>(EventIdParams { id: res.accepted[0] }).await.unwrap();
+    assert_eq!(detail.deliveries[0].outcome, DeliveryOutcome::Fired);
+    t.stop().await;
+}
+
+/// A burst of debounced files larger than the agent's queue: the ones that find it full wait,
+/// and each run that ends lets the next one fire. Nothing is dropped, and each event's history
+/// says so.
+#[tokio::test(start_paused = true)]
+async fn a_debounced_burst_waits_for_room_in_the_agents_queue() {
+    let (tx, mut spawned) = tokio::sync::mpsc::unbounded_channel();
+    let agent = COMMAND_AGENT.replace("max_concurrent = 1", "max_concurrent = 1\nmax_queued = 1");
+    let rules = r#"
+[[rule]]
+name = "each"
+on = "fs.file.created"
+debounce = "10s"
+debounce_by = "subject"
+run = { agent = "sh" }
+"#;
+    let mut t = TestDaemon::start_with(
+        &format!("{FAKE_SOURCE}{agent}{rules}"),
+        Setup {
+            supervisor: Arc::new(SpawnGate(tx)),
+            clock: Clock::tokio(1_700_000_000_000),
+            watch_config: false,
+        },
+    )
+    .await;
+    let mut watch = RunWatch::new(t.client().await).await;
+    let client = t.client().await;
+    for n in 1..=4 {
+        t.sources.push("fake", file_created("fake", &format!("/w/{n}.pdf"))).await;
+    }
+    // One run at a time, one queued; the third and fourth wait. Each cancelled run makes room.
+    let mut ran = Vec::new();
+    for _ in 0..4 {
+        let id = spawned.recv().await.unwrap();
+        ran.push(client.call::<method::RunsGet>(RunIdParams { id }).await.unwrap().event);
+        client.call::<method::RunsCancel>(RunIdParams { id }).await.unwrap();
+        watch.until(Some(id), RunStatus::Cancelled).await;
+    }
+    let mut subjects = Vec::new();
+    for id in &ran {
+        let detail = client.call::<method::EventsGet>(EventIdParams { id: *id }).await.unwrap();
+        let kinds: Vec<&str> = detail.deliveries.iter().map(|d| d.outcome.kind_str()).collect();
+        subjects.push((detail.event.subject.unwrap(), kinds));
+    }
+    let waited = vec!["debounced", "waiting", "fired"];
+    assert_eq!(
+        subjects,
+        [
+            ("/w/1.pdf".to_owned(), vec!["debounced", "fired"]),
+            ("/w/2.pdf".to_owned(), vec!["debounced", "fired"]),
+            ("/w/3.pdf".to_owned(), waited.clone()),
+            ("/w/4.pdf".to_owned(), waited),
+        ]
+    );
     t.stop().await;
 }
 

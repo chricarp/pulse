@@ -226,6 +226,8 @@ export class MockDaemon {
   private readonly ruleState: Record<string, RuleRuntimeStatus>;
   private readonly fires = new Map<string, number[]>();
   private readonly debounces = new Map<string, { timer: ReturnType<typeof setTimeout>; event: Event }>();
+  /** Elapsed debounces that found their agent full, oldest first (simpler than the daemon: never replaced by a newer event). */
+  private readonly waiting: { rule: string; agent: string; event: Event }[] = [];
   private paused = false;
   private readonly conns = new Set<Conn>();
   private readonly closers = new Map<number, () => void>();
@@ -671,14 +673,20 @@ export class MockDaemon {
           return blocked({ kind: "blocked", reason: { reason: "rate_limited", until: iso((inWindow[0] ?? at) + rate.perMs) } });
         }
       }
-      const recent = fires.filter((t) => t > at - 10 * 60_000);
+      // Like the daemon: once the breaker has closed (its hold ended, or an unsnooze), only
+      // later fires count toward it.
+      const closedAt = st.circuit_open_until ? Date.parse(st.circuit_open_until) : -Infinity;
+      const recent = fires.filter((t) => t > at - 10 * 60_000 && t > closedAt);
       if (recent.length >= 20) {
         const until = iso(at + 3_600_000);
         return blocked({ kind: "blocked", reason: { reason: "circuit_open", until } });
       }
       const backlog = [...this.runs.values()].filter((r) => r.agent === agentName && (r.status === "queued" || r.status === "running")).length;
       if (backlog >= agent.max_concurrent + agent.max_queued) {
-        return blocked({ kind: "blocked", reason: { reason: "agent_busy", backlog, max: agent.max_concurrent + agent.max_queued } });
+        const reason: Extract<Outcome, { kind: "blocked" }>["reason"] = { reason: "agent_busy", backlog, max: agent.max_concurrent + agent.max_queued };
+        // Like the daemon: an elapsed debounce waits for a run of the agent to end.
+        if (opts.debounceElapsed) return { rule: rule.name, agent: agentName, outcome: { kind: "waiting", reason }, chain_depth };
+        return blocked({ kind: "blocked", reason });
       }
     }
     const problems = rule.run.prompt ? templateProblems(rule.run.prompt).problems : [];
@@ -739,6 +747,10 @@ export class MockDaemon {
         }
         break;
       }
+      case "waiting":
+        outcome = { kind: "waiting", reason: d.outcome.reason };
+        this.waiting.push({ rule: d.rule, agent: d.agent, event: e });
+        break;
       case "blocked":
         outcome = { kind: "blocked", reason: d.outcome.reason };
         if (d.outcome.reason.reason === "circuit_open" && !this.ruleState[d.rule]?.circuit_open_until) {
@@ -956,8 +968,18 @@ export class MockDaemon {
   }
 
   private lastCounts = "";
+  /** A run of `agent` ended: route its longest-waiting debounce again. */
+  private releaseWaiting(agent: string): void {
+    const i = this.waiting.findIndex((w) => w.agent === agent);
+    const w = i < 0 ? undefined : this.waiting.splice(i, 1)[0];
+    if (!w) return;
+    const later = this.route(w.event, this.now(), null, w.rule);
+    this.fanOutEvent(w.event, later.map(outcomeOf), false);
+  }
+
   private runChanged(run: Run): void {
     if (this.seeding) return;
+    if (terminal(run.status)) this.releaseWaiting(run.agent);
     const s = this.summary(run);
     for (const conn of this.conns) {
       for (const [id, sub] of conn.subs) {
@@ -1007,7 +1029,11 @@ export class MockDaemon {
   }
 
   private ruleInfo(def: Def<RuleConfig>): RuleInfo {
-    return { config: ruleWire(def.config), origin: def.origin, revision: this.revision(def, (r) => ruleWire(ruleDefaults(r))), state: { snoozed_until: null, circuit_open_until: null, last_fired_at: null, ...this.ruleState[def.config.name] } };
+    const st = this.ruleState[def.config.name] ?? {};
+    // Like the daemon, snooze and breaker are reported only while they hold.
+    const holding = (t: string | null | undefined) => (t && Date.parse(t) > this.now() ? t : null);
+    const state = { last_fired_at: st.last_fired_at ?? null, snoozed_until: holding(st.snoozed_until), circuit_open_until: holding(st.circuit_open_until) };
+    return { config: ruleWire(def.config), origin: def.origin, revision: this.revision(def, (r) => ruleWire(ruleDefaults(r))), state };
   }
 
   private getRuleDef(name: string): Def<RuleConfig> {
@@ -1203,7 +1229,8 @@ export class MockDaemon {
       const def = this.getRuleDef(name);
       const st = (this.ruleState[name] ??= {});
       st.snoozed_until = null;
-      st.circuit_open_until = null;
+      // The breaker closes now and counts afresh (see `decide`).
+      if (st.circuit_open_until && Date.parse(st.circuit_open_until) > this.now()) st.circuit_open_until = iso(this.now());
       this.broadcast(["rules"]);
       return this.ruleInfo(def);
     },

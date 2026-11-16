@@ -70,8 +70,9 @@ where = { source = "university" }                        # the source's name
 
 Path globs (strings starting with `/` or `~`): `*` stays within one path segment, `**` spans any
 number, `?`, `{a,b}`. Any other string is a plain text glob in which `*` also matches `/`, so
-`path = "*.pdf"` matches every PDF anywhere, while `path = "University/*.pdf"` never matches (event
-paths are absolute; Pulse warns about it).
+`path = "*.pdf"` matches every PDF anywhere (the rule's sources and the agent's scopes are what
+limit where), while `path = "University/*.pdf"` never matches (event paths are absolute; Pulse
+warns about it).
 
 ## Limits: debounce, cooldown, rate limit
 
@@ -85,6 +86,18 @@ paths are absolute; Pulse warns about it).
 
 A match held by a limit is recorded (`debounced`, `cooldown`, `rate_limited`), never silently
 dropped. A debounce that ends during a cooldown waits for the cooldown instead of being lost.
+
+A debounce that ends while the agent's queue is full (`max_concurrent` + `max_queued` runs
+running or queued) **waits** for room: its delivery says `waiting: the agent's queue is full`,
+and it fires as soon as one of the agent's runs ends, longest-waiting first. A burst of PDFs
+larger than the queue is summarized one after another, not dropped. A newer matching event for
+the same debounce replaces a waiting one, as it replaces a pending one. Waiting debounces count
+toward `[limits] debounce_capacity`, and are lost if the daemon restarts, like pending ones.
+
+A rule **without** a debounce whose agent's queue is full is `blocked` (`agent_busy`): nothing
+holds the event, and the queue is the bound you set. If a burst should all be handled, give the
+rule a `debounce` (with `debounce_by = "subject"` for one run per file) or raise the agent's
+`max_queued`. `pulse replay <event>` runs a blocked one later.
 
 ## Supervised rules
 
@@ -149,7 +162,9 @@ pulse rules history lecture-notes --outcome blocked
 pulse events show <event id>       # one event, every rule it reached, every run it caused
 ```
 
-Outcomes: `fired`, `awaiting approval`, `debounced`, or `blocked` with a reason: the rule is
+Outcomes: `fired`, `awaiting approval`, `debounced`, `waiting` (a debounced match held until
+the agent's queue has room; a later line for the same event says what then happened), or
+`blocked` with a reason: the rule is
 disabled, snoozed, Pulse is paused, the agent's scopes do not cover it, loop
 protection, the circuit breaker, cooldown, rate limit, the agent's queue is full, or the prompt
 could not be rendered. See [Troubleshooting](troubleshooting.md).
@@ -180,9 +195,10 @@ Every way in has a way out:
 - **Pause** stops every rule from firing (matches are recorded as blocked, "Pulse is paused")
   and holds runs already queued; they start on resume. Runs already running continue: cancel
   them with `pulse runs cancel`. In the UI: **Pause all** (Shift+P).
-- `unsnooze` also releases a rule held by the circuit breaker. The fires that tripped it still
-  count until they are older than the breaker's `window`, so the next match may trip it again
-  at once; fix the cause first.
+- `unsnooze` also releases a rule held by the circuit breaker, and the breaker counts from zero
+  again (as it does when its hold runs out). The rule's `cooldown` and `rate_limit` still count
+  the fires before it. If the cause is still there, the breaker trips again after `max_fires`
+  more runs; fix the cause first.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/rules-dark.png">

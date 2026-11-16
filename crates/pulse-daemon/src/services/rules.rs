@@ -18,16 +18,23 @@ use crate::config::{DefKind, Snapshot, bare_name};
 use crate::engine::{Control, OsNonces};
 use crate::error::{ServiceError, ServiceResult};
 
-fn runtime(rows: &[RuleStateRow], name: &str) -> RuleRuntimeStatus {
+/// Snooze and breaker are reported only while they hold: a breaker's stored time stays after
+/// it closes (it is when it closed, see `RuleRuntime`), and an expired snooze is not one.
+fn runtime(rows: &[RuleStateRow], name: &str, now: Timestamp) -> RuleRuntimeStatus {
     let row = rows.iter().find(|r| r.rule == name);
     RuleRuntimeStatus {
-        snoozed_until: row.and_then(|r| r.snoozed_until),
-        circuit_open_until: row.and_then(|r| r.circuit_open_until),
+        snoozed_until: row.and_then(|r| r.snoozed_until).filter(|u| *u > now),
+        circuit_open_until: row.and_then(|r| r.circuit_open_until).filter(|u| *u > now),
         last_fired_at: row.and_then(|r| r.last_fired_at),
     }
 }
 
-fn info(snapshot: &Snapshot, rule: &Sourced<RuleConfig>, rows: &[RuleStateRow]) -> RuleInfo {
+fn info(
+    snapshot: &Snapshot,
+    rule: &Sourced<RuleConfig>,
+    rows: &[RuleStateRow],
+    now: Timestamp,
+) -> RuleInfo {
     let bare = bare_name(&rule.config.name, &rule.origin);
     RuleInfo {
         config: rule.config.clone(),
@@ -35,7 +42,7 @@ fn info(snapshot: &Snapshot, rule: &Sourced<RuleConfig>, rows: &[RuleStateRow]) 
         revision: written_revision(&snapshot.files, &rule.origin, |f| {
             f.rules.iter().find(|r| r.name == bare)
         }),
-        state: runtime(rows, &rule.config.name),
+        state: runtime(rows, &rule.config.name, now),
     }
 }
 
@@ -47,12 +54,13 @@ impl Services {
     pub async fn rules_list(&self, include_archived: bool) -> ServiceResult<RuleList> {
         let snapshot = self.shared.snapshot();
         let rows = self.rule_rows().await?;
+        let now = self.shared.clock.now();
         let rules = snapshot
             .config
             .rules
             .iter()
             .filter(|r| include_archived || !r.config.archived)
-            .map(|r| info(&snapshot, r, &rows))
+            .map(|r| info(&snapshot, r, &rows, now))
             .collect();
         Ok(RuleList { rules })
     }
@@ -61,7 +69,7 @@ impl Services {
         let snapshot = self.shared.snapshot();
         let rule =
             snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
-        Ok(info(&snapshot, rule, &self.rule_rows().await?))
+        Ok(info(&snapshot, rule, &self.rule_rows().await?, self.shared.clock.now()))
     }
 
     /// Writes the rule into the user file (or a trusted project's file) and reloads.

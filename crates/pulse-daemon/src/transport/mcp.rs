@@ -82,14 +82,31 @@ fn raised_soft_limit(soft: Option<u64>, hard: Option<u64>) -> Option<u64> {
     soft.filter(|&s| s < want).map(|_| want)
 }
 
+/// The soft descriptor limit this process had before [`raise_open_file_limit`] raised it.
+/// Agents are given this one back (`SuperviseOptions::open_files`): the raise is for the
+/// daemon's connections, and programs that use `select()` misbehave above 1024. Process-wide,
+/// like the limit itself: a second daemon in the same process (tests) finds it raised already.
+static OPEN_FILES_AT_START: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+/// The soft limit agents should run with, if the daemon changed its own.
+pub(crate) fn agent_open_files() -> Option<u64> {
+    OPEN_FILES_AT_START.get().copied()
+}
+
 /// Raises this process's soft descriptor limit (see [`OPEN_FILES_WANTED`]). Called once, when
 /// `/mcp` is built at start. Failing is not fatal: the per-agent and total budgets still hold.
 fn raise_open_file_limit() {
     use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
     let limit = getrlimit(Resource::Nofile);
     let Some(soft) = raised_soft_limit(limit.current, limit.maximum) else { return };
+    let started = limit.current;
     match setrlimit(Resource::Nofile, Rlimit { current: Some(soft), maximum: limit.maximum }) {
-        Ok(()) => tracing::debug!("raised the open file limit to {soft}"),
+        Ok(()) => {
+            if let Some(started) = started {
+                let _ = OPEN_FILES_AT_START.set(started);
+            }
+            tracing::debug!("raised the open file limit to {soft}");
+        }
         Err(e) => tracing::warn!("cannot raise the open file limit to {soft}: {e}"),
     }
 }

@@ -178,9 +178,9 @@ export type Delivery = { id: DeliveryId, event: EventId, rule: string, agent: st
 
 export type DeliveryId = string;
 
-export type DeliveryKind = "fired" | "awaiting_approval" | "debounced" | "blocked";
+export type DeliveryKind = "fired" | "awaiting_approval" | "debounced" | "waiting" | "blocked";
 
-export type DeliveryOutcome = { "kind": "fired" } | { "kind": "awaiting_approval" } | { "kind": "debounced", until: Timestamp, } | { "kind": "blocked", reason: BlockReason, };
+export type DeliveryOutcome = { "kind": "fired" } | { "kind": "awaiting_approval" } | { "kind": "debounced", until: Timestamp, } | { "kind": "waiting", reason: BlockReason, } | { "kind": "blocked", reason: BlockReason, };
 
 export type DeliveryPage = { 
 /**
@@ -409,7 +409,7 @@ export type Notification = { "method": "events.batch", "params": EventsBatchWith
 
 export type Order = "newest_first" | "oldest_first";
 
-export type Outcome = { "kind": "fire", prompt?: RenderedPrompt | null, } | { "kind": "await_approval", prompt?: RenderedPrompt | null, } | { "kind": "debounced", until: Timestamp, } | { "kind": "blocked", reason: BlockReason, };
+export type Outcome = { "kind": "fire", prompt?: RenderedPrompt | null, } | { "kind": "await_approval", prompt?: RenderedPrompt | null, } | { "kind": "debounced", until: Timestamp, } | { "kind": "waiting", reason: BlockReason, } | { "kind": "blocked", reason: BlockReason, };
 
 export type OutputKind = "stdout" | "stderr" | "assistant" | "thinking" | "tool_use" | "tool_result" | "system" | "result" | "error" | "marker";
 

@@ -6,6 +6,15 @@
 //! and a key left out because it has its default stays left out. Unchanged keys keep their
 //! text, comments and position; a changed value keeps its key's comments and its trailing
 //! comment. New definitions are appended without keys that only restate defaults.
+//!
+//! Comments are kept where the person wrote them. `toml_edit` keeps the comments and blank lines
+//! before a table header as that table's prefix, and those at the end of the file as the
+//! document's trailer, so the first definition's prefix holds the file's header. A prefix is
+//! read as three parts: lines directly below the previous definition (up to the first blank
+//! line) belong to it; lines directly above the header (after the last blank line) belong to
+//! this definition; what lies between is free-standing. Removing a definition drops its own
+//! parts and moves the free-standing ones to whatever follows. A new definition goes at the
+//! very end, after any comments there.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -199,6 +208,16 @@ where
                 table.insert(&k, Item::Value(value.decorated(" ", "")));
             }
             tables.push(table);
+            // The trailer would be printed after the new table; it stays above it instead.
+            let trailer = raw(Some(doc.trailing()));
+            if !trailer.is_empty() {
+                let sep =
+                    if lines(&trailer).last().is_some_and(|l| is_blank(l)) { "" } else { "\n" };
+                doc.set_trailing("");
+                if let Some(t) = definitions(&mut doc, kind)?.iter_mut().last() {
+                    t.decor_mut().set_prefix(format!("{trailer}{sep}"));
+                }
+            }
         }
     }
     Ok(doc.to_string())
@@ -242,7 +261,9 @@ fn has_comment(decor: &toml_edit::Decor) -> bool {
     has(decor.prefix()) || has(decor.suffix())
 }
 
-/// Removes the definition named `name`.
+/// Removes the definition named `name`, with the comments directly above and below it and the
+/// blank line that separated it from what follows. Free-standing comments in its prefix (the
+/// file's header, for the first definition) move to whatever follows it.
 pub(crate) fn remove(text: &str, kind: DefKind, name: &str) -> Result<String, EditError> {
     let mut doc: DocumentMut = text.parse().map_err(|e| EditError::Parse(format!("{e}")))?;
     let tables = definitions(&mut doc, kind)?;
@@ -250,11 +271,113 @@ pub(crate) fn remove(text: &str, kind: DefKind, name: &str) -> Result<String, Ed
         .iter()
         .position(|t| t.get("name").and_then(Item::as_str) == Some(name))
         .ok_or(EditError::NotFound)?;
-    tables.remove(index);
+    let removed = tables.remove(index);
     if tables.is_empty() {
         doc.remove(kind.array());
     }
+    let (free, _own) = split_above(&raw(removed.decor().prefix()));
+    // Its own sub-tables (`[rule.run]`) follow it; what follows them is the next item.
+    let mut last = removed.position();
+    visit_tables(&removed, &mut |t| last = last.max(t.position()));
+    let mut next_pos = None;
+    if let Some(last) = last {
+        visit_tables(doc.as_table(), &mut |t| {
+            if let Some(p) = t.position().filter(|p| *p > last) {
+                next_pos = Some(next_pos.map_or(p, |n: isize| n.min(p)));
+            }
+        });
+    }
+    let mut next = None;
+    if let Some(pos) = next_pos {
+        visit_tables_mut(doc.as_table_mut(), &mut |t| {
+            if next.is_none() && t.position() == Some(pos) {
+                let prefix = join(&free, below(&raw(t.decor().prefix())));
+                t.decor_mut().set_prefix(prefix);
+                next = Some(pos);
+            }
+        });
+    }
+    if next.is_none() {
+        let trailer = join(&free, below(&raw(Some(doc.trailing()))));
+        let end = lines(&trailer).iter().rposition(|l| !is_blank(l)).map_or(0, |i| i + 1);
+        doc.set_trailing(lines(&trailer)[..end].concat());
+    }
     Ok(doc.to_string())
+}
+
+fn raw(r: Option<&toml_edit::RawString>) -> String {
+    r.and_then(|r| r.as_str()).unwrap_or_default().to_owned()
+}
+
+fn lines(s: &str) -> Vec<&str> {
+    s.split_inclusive('\n').collect()
+}
+
+fn is_blank(line: &str) -> bool {
+    line.trim().is_empty()
+}
+
+/// A prefix split at its last blank line: free-standing lines (ending with that blank line),
+/// and the lines directly above the header.
+fn split_above(prefix: &str) -> (String, String) {
+    let lines = lines(prefix);
+    let at = lines.iter().rposition(|l| is_blank(l)).map_or(0, |i| i + 1);
+    (lines[..at].concat(), lines[at..].concat())
+}
+
+/// A prefix (or the trailer) without the lines directly below the previous item, which belong
+/// to it. Lines with no blank line after them are the next header's, not the previous item's.
+fn below(prefix: &str) -> String {
+    let lines = lines(prefix);
+    match lines.iter().position(|l| is_blank(l)) {
+        Some(i) => lines[i..].concat(),
+        None => prefix.to_owned(),
+    }
+}
+
+/// `free` (empty, or ending with a blank line) followed by `rest`, without the blank lines that
+/// separated the removed definition from `rest`.
+fn join(free: &str, rest: String) -> String {
+    let lines = lines(&rest);
+    let start = lines.iter().position(|l| !is_blank(l)).unwrap_or(lines.len());
+    format!("{free}{}", lines[start..].concat())
+}
+
+/// Every table below `table` with a header of its own, in no particular order.
+fn visit_tables(table: &Table, f: &mut dyn FnMut(&Table)) {
+    for (_, item) in table.iter() {
+        match item {
+            Item::Table(t) => {
+                f(t);
+                visit_tables(t, f);
+            }
+            Item::ArrayOfTables(a) => {
+                for t in a.iter() {
+                    f(t);
+                    visit_tables(t, f);
+                }
+            }
+            Item::None | Item::Value(_) => {}
+        }
+    }
+}
+
+fn visit_tables_mut(table: &mut Table, f: &mut dyn FnMut(&mut Table)) {
+    for (_, item) in table.iter_mut() {
+        match item {
+            Item::Table(t) => {
+                f(t);
+                visit_tables_mut(t, f);
+            }
+            Item::ArrayOfTables(a) => {
+                for t in a.iter_mut() {
+                    f(t);
+                    visit_tables_mut(t, f);
+                }
+            }
+            Item::None | Item::Value(_) => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -322,6 +445,87 @@ run = { agent = "notify" }
         assert!(!out.contains("debounce"), "{out}");
         assert!(out.contains("# The study rule.\n[[rule]]\nname = \"new-lecture\""), "{out}");
         assert_eq!(rule(&out, "new-lecture"), r);
+    }
+
+    /// A file's header, free-standing comments between definitions and at the end, comments
+    /// attached above and below definitions, and definitions of two kinds interleaved.
+    const HEAD: &str = "# Header 1\n# Header 2\n\n# Free before first.\n\n";
+    const FIRST: &str = "# attached to first\n[[rule]]\nname = \"first\"\non = \"a.*\"\nrun = { agent = \"n\" }\n# below first\n\n";
+    const BETWEEN: &str = "# Free between.\n\n";
+    const SECOND: &str = "# attached to second\n[[agent]]\nname = \"n\"\nadapter = \"command\"\ncommand = [\"true\"]\nallow = [\"*\"]\n\n";
+    const THIRD: &str =
+        "[[rule]]\nname = \"third\"\non = \"b.*\"\nrun = { agent = \"n\" }\n# below third\n";
+    const END: &str = "\n# Free at the end.\n";
+
+    #[test]
+    fn removing_drops_the_definition_and_its_own_comments_only() {
+        let file = [HEAD, FIRST, BETWEEN, SECOND, THIRD, END].concat();
+        // (kind, name, the exact text that goes: the definition, the comments directly above and
+        // below it, and one blank line that separated it)
+        let cases = [
+            (DefKind::Rule, "first", FIRST.to_owned()),
+            (DefKind::Agent, "n", SECOND.to_owned()),
+            (DefKind::Rule, "third", format!("{THIRD}\n")),
+        ];
+        for (kind, name, cut) in cases {
+            let out = remove(&file, kind, name).unwrap();
+            assert_eq!(out, file.replacen(&cut, "", 1), "removing {name}");
+        }
+        // The only definition in the file.
+        let only = [HEAD, FIRST, END].concat();
+        assert_eq!(
+            remove(&only, DefKind::Rule, "first").unwrap(),
+            [HEAD, "# Free at the end.\n"].concat()
+        );
+        // Without comments, and with nothing after it.
+        let bare = "[[rule]]\nname = \"a\"\non = \"x\"\nrun = { agent = \"n\" }\n\n[[rule]]\nname = \"b\"\non = \"x\"\nrun = { agent = \"n\" }\n";
+        let (a, b) = bare.split_at(bare.find("\n\n").unwrap() + 2);
+        assert_eq!(remove(bare, DefKind::Rule, "a").unwrap(), b);
+        assert_eq!(remove(bare, DefKind::Rule, "b").unwrap(), &a[..a.len() - 1]);
+        assert_eq!(remove(b, DefKind::Rule, "b").unwrap(), "");
+    }
+
+    #[test]
+    fn removing_the_first_definition_keeps_the_files_comments() {
+        // The template as `pulse init --template` writes it: its explanation (and, in a starter
+        // file, the starter's examples) is the first definition's decor in `toml_edit`.
+        let file = include_str!("../../../../templates/lecture-notes.toml");
+        let out = remove(file, DefKind::Source, "university").unwrap();
+        let comments = |t: &str| t.lines().filter(|l| l.starts_with('#')).count();
+        assert_eq!(comments(&out), comments(file), "{out}");
+        let source =
+            "[[source]]\nname = \"university\"\nkind = \"fs\"\npath = \"~/University\"\n\n";
+        assert_eq!(out, file.replacen(source, "", 1));
+        // The last definition, with a sub-table and a comment among its keys.
+        let rule = &file[file.find("\n[[rule]]").unwrap()..];
+        assert_eq!(
+            remove(file, DefKind::Rule, "lecture-notes").unwrap(),
+            file.replacen(rule, "", 1)
+        );
+    }
+
+    #[test]
+    fn appending_goes_after_everything_already_in_the_file() {
+        let r = rule(&[HEAD, FIRST, BETWEEN, SECOND, THIRD].concat(), "third");
+        let new = |name: &str| RuleConfig { name: name.into(), ..r.clone() };
+        let added = |name: &str| {
+            format!("[[rule]]\nname = \"{name}\"\non = [\"b.*\"]\nrun = {{ agent = \"n\" }}\n")
+        };
+        // A comment directly below the last definition stays with it, and free-standing comments
+        // at the end stay where they were written: the new definition goes after both.
+        for file in [
+            [HEAD, FIRST, BETWEEN, SECOND, THIRD, END].concat(),
+            [HEAD, FIRST, BETWEEN, SECOND, THIRD].concat(),
+            [FIRST, "\n# Ends with a blank line.\n\n"].concat(),
+            // Only comments (the starter file).
+            HEAD.trim_end().to_owned() + "\n",
+        ] {
+            let out = upsert(&file, DefKind::Rule, "new", &new("new")).unwrap();
+            let sep = if file.ends_with("\n\n") { "" } else { "\n" };
+            assert_eq!(out, format!("{file}{sep}{}", added("new")), "{file}");
+            let twice = upsert(&out, DefKind::Rule, "newer", &new("newer")).unwrap();
+            assert_eq!(twice, format!("{out}\n{}", added("newer")));
+        }
     }
 
     #[derive(serde::Deserialize)]

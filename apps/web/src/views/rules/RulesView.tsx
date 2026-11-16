@@ -377,7 +377,7 @@ const OUTCOME_TABS: { key: string; label: string; kinds: DeliveryKind[] }[] = [
   { key: "all", label: "All", kinds: [] },
   { key: "fired", label: "Fired", kinds: ["fired"] },
   { key: "approval", label: "Approval", kinds: ["awaiting_approval"] },
-  { key: "debounced", label: "Debounced", kinds: ["debounced"] },
+  { key: "debounced", label: "Debounced", kinds: ["debounced", "waiting"] },
   { key: "blocked", label: "Blocked", kinds: ["blocked"] },
 ];
 

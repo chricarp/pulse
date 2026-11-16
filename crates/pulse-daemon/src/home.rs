@@ -137,6 +137,10 @@ impl PulseHome {
                 let token = crate::auth::hex(&bytes);
                 f.write_all(token.as_bytes())?;
                 f.sync_all()?;
+                // The new name too: after a power loss the daemon would otherwise make another
+                // token, and every client and agent configuration holding this one would stop
+                // working.
+                sync_dir(&self.root)?;
                 Ok(token)
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -242,12 +246,14 @@ pub(crate) fn resolve_links(path: &Path) -> io::Result<PathBuf> {
     Err(io::Error::other(format!("{}: too many levels of symbolic links", path.display())))
 }
 
-/// Writes `bytes` to a temporary file next to `path`, flushes it, and renames it over `path`, so
-/// readers see the old content or the new, never a mix. When `path` is a symbolic link (a
+/// Writes `bytes` to a temporary file next to `path`, syncs it, renames it over `path` and syncs
+/// the directory, so readers see the old content or the new, never a mix, and after a power loss
+/// the file is the new content (an unsynced file can be empty after the rename survives it; an
+/// unsynced directory can lose the rename, reverting an edit the user was told succeeded). When `path` is a symbolic link (a
 /// `pulse.toml` kept in a dotfiles repository), the file it points to is replaced and the link
 /// stays: renaming over the link would turn it into a regular file, and later edits to the
 /// linked copy would be silently ignored.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let path = &resolve_links(path)?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
@@ -263,7 +269,20 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<(
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
-    result
+    result?;
+    sync_dir(dir)
+}
+
+/// Syncs a directory, so that names created or renamed in it survive a power loss. A
+/// filesystem that cannot sync directories (some network and FUSE ones refuse with `EINVAL`)
+/// gives no such guarantee and is not an error.
+pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
+    match File::open(dir).and_then(|d| d.sync_all()) {
+        Err(e) if matches!(e.kind(), io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported) => {
+            Ok(())
+        }
+        r => r,
+    }
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ export function deliveryTone(o: DeliveryOutcome | Outcome): Tone {
     case "await_approval":
       return "attention";
     case "debounced":
+    case "waiting":
       return "waiting";
     case "blocked":
       return isLoopProtection(o.reason) ? "loop" : "blocked";
@@ -33,6 +34,8 @@ export function deliveryLabel(o: DeliveryOutcome | Outcome): string {
       return "awaiting approval";
     case "debounced":
       return "debounced";
+    case "waiting":
+      return `waiting: ${blockLabel(o.reason)}`;
     case "blocked":
       return blockLabel(o.reason);
   }
@@ -103,6 +106,8 @@ export function outcomeSentence(o: DeliveryOutcome | Outcome, agent: string, whe
       return `A run of ${agent} is waiting for approval (the rule is supervised).`;
     case "debounced":
       return `Held by the debounce until ${when(o.until)}; if no newer matching event comes, it fires then.`;
+    case "waiting":
+      return `${blockSentence(o.reason, agent, when)} The debounce holds the event and fires it when one of ${agent}'s runs ends, unless a newer matching event replaces it.`;
     case "blocked":
       return blockSentence(o.reason, agent, when);
   }
