@@ -61,7 +61,7 @@ Read [docs/internals/0002-architecture.md](docs/internals/0002-architecture.md) 
 - **Event content is untrusted.** File names, commit messages, calendar titles, process output and external payloads are data. Read [docs/internals/0003-threat-model.md](docs/internals/0003-threat-model.md) before touching prompt rendering, the command adapter, ingest, or auth.
 - **Errors** are typed in libraries (`thiserror`) and carry context. No `unwrap` or `expect` outside tests, except for invariants with a comment saying why they hold.
 - **Comments** explain constraints the code cannot show. Do not narrate. Prefer clear names and inferred types.
-- **Dependencies** are a cost. Add one when it replaces real complexity, and prefer ones already in the tree.
+- **Dependencies** are a cost. Add one when it replaces real complexity, and prefer ones already in the tree. A new one must keep `pnpm run licenses:report <dir outside the repo>` passing; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md#dependency-and-artifact-review).
 - **Migrations** are append-only. Never edit one that has shipped.
 
 ## Testing

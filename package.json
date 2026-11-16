@@ -16,6 +16,7 @@
   "scripts": {
     "build": "./scripts/build.sh",
     "web": "pnpm --dir apps/web",
-    "desktop": "pnpm --dir apps/desktop"
+    "desktop": "pnpm --dir apps/desktop",
+    "licenses:report": "node scripts/license-report.mjs"
   }
 }
