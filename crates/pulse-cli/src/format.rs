@@ -47,7 +47,7 @@ pub fn reason(r: &BlockReason) -> String {
             format!("the agent's scopes do not cover it (it would need \"{needed}\")")
         }
         BlockReason::LoopSelfTrigger { run } => {
-            format!("loop protection: the event was caused by this rule's own run {run}")
+            format!("loop protection: the event was attributed to this rule's own run {run}")
         }
         BlockReason::LoopChainDepth { depth, max } => {
             format!("loop protection: a chain of {depth} runs exceeds max_chain_depth {max}")
@@ -86,7 +86,22 @@ pub fn delivery_outcome(o: &DeliveryOutcome) -> String {
 
 pub fn delivery_line(d: &Delivery) -> String {
     let run = d.run.map(|r| format!("  run {r}")).unwrap_or_default();
-    format!("{}  {:<20} {}{run}  [event {}]", d.at, d.rule, delivery_outcome(&d.outcome), d.event)
+    let mut line = format!(
+        "{}  {:<20} {}{run}  [event {}]",
+        d.at,
+        d.rule,
+        delivery_outcome(&d.outcome),
+        d.event
+    );
+    // Attribution can be inferred (a file appeared in the run's working directory while it
+    // ran), and then a change the user made is taken for the agent's: say how to undo that.
+    if matches!(
+        &d.outcome,
+        DeliveryOutcome::Blocked { reason: BlockReason::LoopSelfTrigger { .. } }
+    ) {
+        line.push_str(&format!("\n    if you made this change yourself: pulse replay {}", d.event));
+    }
+    line
 }
 
 pub fn decision(d: &Decision) -> String {

@@ -11,6 +11,11 @@
 # - At most one run at a time, at most 20 per hour.
 # Pulse's scopes control what the agent is told; Claude Code's own permissions control what it
 # can do. Neither is a complete sandbox: see docs/internals/0003-threat-model.md.
+#
+# Loop protection: files that appear under ~/University while a run is active (and for 30 s
+# after) are taken to be the agent's, since Pulse cannot see who wrote them. That stops the
+# agent from triggering itself, but a PDF *you* save during a run is skipped too, recorded as
+# "loop protection" in `pulse rules history lecture-notes`; `pulse replay <event>` runs it.
 
 [[source]]
 name = "university"
