@@ -133,7 +133,7 @@ Where the mock is simpler than the daemon: no dedupe, no `debounce_capacity`, th
 ## Testing
 
 - Unit (Vitest, `pnpm --dir apps/web test`): the RPC client (out-of-order responses, errors with data, timeouts, queued calls, no resend after a drop, backoff and reset, 4401, resubscribe with fresh params, early notifications, unsubscribe races, `state.changed`), the feed buffer (bounds, batching, gaps and their counts, merging history, disconnection gaps), filters (EventFilter mapping, URL round trip, query syntax), the rule and agent forms (round trips of every field and adapter, problems per field), formatting of untrusted text and prompts, and the mock's scenarios through the real client.
-- Browser (Playwright, `pnpm --dir apps/web test:browser`): the production build with the mock compiled in. Storms, gap rows, holding the tail, a dropped connection, keyboard paths, the palette, the filter syntax, shortcut discovery, a draft dry run, megabytes of output, structured output, and the measurements below. Tests wait for conditions, never for time.
+- Browser (Playwright, `pnpm --dir apps/web test:browser`): the production build with the mock compiled in. Storms, gap rows, holding the tail, a dropped connection, keyboard paths, the palette, the filter syntax, shortcut discovery, a draft dry run, creating a rule and taking it through every reverse state, untrusting and re-trusting a project, megabytes of output, structured output, and the measurements below. Tests wait for conditions, never for time.
 
 ## Measurements
 
