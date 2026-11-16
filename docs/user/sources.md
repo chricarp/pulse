@@ -121,6 +121,15 @@ a suspend or restart) still happens and `minutes_until` shows how late. A URL is
 `refresh` (default 15 minutes) with caching headers; failures retry with backoff and show in the
 source's health.
 
+A calendar can come from someone else (a subscribed feed, an invitation), so the work Pulse does
+for it is limited whatever it contains: at most 2,000 occurrences of one recurring event and
+20,000 of the whole calendar in the window it looks at (about a day back to a day ahead), and a
+fixed amount of computation per event and per calendar. A real calendar stays far below these:
+an event that repeats daily since 2010 costs a few steps. If a calendar reaches a limit, the
+source shows as degraded and says which event and which limit (`some occurrences are not read:
+event "Standup" has more than 2000 occurrences …`); everything within the limits still fires. An
+event longer than 366 days is read as 366 days long, and the source's last error says so.
+
 ## `process.exited`: wrap a command with `pulse run`
 
 ```sh

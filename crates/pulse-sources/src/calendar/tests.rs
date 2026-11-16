@@ -26,7 +26,7 @@ fn occurrence(key: &str, start: &str, end: &str) -> Occurrence {
 
 #[test]
 fn planner_fires_once_per_occurrence_and_kind() {
-    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new() };
+    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new(), steps: 0 };
     let a = occurrence("a", "2026-11-16T10:00:00Z", "2026-11-16T11:00:00Z");
     let show = |fires: Vec<(Kind, Occurrence)>| {
         fires.into_iter().map(|(k, o)| (k, o.key)).collect::<Vec<_>>()
@@ -48,22 +48,22 @@ fn planner_fires_once_per_occurrence_and_kind() {
     assert_eq!(show(p.due(&[moved], t("2026-11-16T16:00:00Z")).0), vec![(Kind::Ended, "a".into())]);
 
     // Removed before its time: never fires.
-    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new() };
+    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new(), steps: 0 };
     let b = occurrence("b", "2026-11-16T10:00:00Z", "2026-11-16T11:00:00Z");
     let _ = p.due(std::slice::from_ref(&b), t("2026-11-16T09:00:00Z"));
     assert_eq!(show(p.due(&[], t("2026-11-16T12:00:00Z")).0), vec![]);
 
     // Slept through the start: late within the grace period, dropped after it.
-    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new() };
+    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new(), steps: 0 };
     assert_eq!(
         show(p.due(std::slice::from_ref(&b), t("2026-11-16T10:10:00Z")).0),
         vec![(Kind::Starting, "b".into())]
     );
-    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new() };
+    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new(), steps: 0 };
     let (fires, next) = p.due(std::slice::from_ref(&b), t("2026-11-16T10:20:00Z"));
     assert_eq!((show(fires), next), (vec![], Some(t("2026-11-16T11:00:00Z"))));
     // Ended long ago (a first start in the afternoon): nothing.
-    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new() };
+    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new(), steps: 0 };
     assert_eq!(show(p.due(&[b], t("2026-11-16T15:00:00Z")).0), vec![]);
 }
 
@@ -382,4 +382,63 @@ fn a_file_is_read_through_its_limit_and_must_be_a_regular_file() {
     std::fs::write(&big, vec![b'x'; MAX_ICS_BYTES as usize + 1]).unwrap();
     let err = read_file(&big, &Validators::default()).unwrap_err();
     assert!(err.contains("larger than"), "{err}");
+}
+
+#[test]
+fn planner_evicts_the_oldest_in_one_pass() {
+    let mut p = Planner { lead: Duration::from_mins(10), fired: BTreeMap::new(), steps: 0 };
+    let now = t("2026-11-16T09:00:00Z");
+    let extra = 2_000;
+    for i in 0..MAX_FIRED + extra {
+        let end = Timestamp::from_millis(now.as_millis() + i as i64);
+        p.fired.insert((format!("k{i}"), Kind::Starting), end);
+    }
+    let _ = p.due(&[], now);
+    assert_eq!(p.fired.len(), MAX_FIRED);
+    assert!(!p.fired.contains_key(&(format!("k{}", extra - 1), Kind::Starting)));
+    assert!(p.fired.contains_key(&(format!("k{extra}"), Kind::Starting)));
+    let visited = MAX_FIRED + extra;
+    assert!(p.steps <= 4 * visited, "{} steps for {visited} entries", p.steps);
+}
+
+#[tokio::test(start_paused = true)]
+async fn fires_reuse_the_expansion_and_a_budget_reached_shows_in_health() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("uni.ics");
+    let mut events: Vec<String> = (0..4)
+        .map(|i| {
+            let start = format!("20261116T{:02}0000Z", 10 + i);
+            let end = format!("20261116T{:02}3000Z", 10 + i);
+            vevent(&format!("e{i}"), &format!("Lecture {i}"), &start, &end)
+        })
+        .collect();
+    events.push(
+        "BEGIN:VEVENT\r\nUID:s\r\nSUMMARY:Every second\r\nDTSTART:19000101T000000Z\r\nRRULE:FREQ=SECONDLY\r\nEND:VEVENT\r\n".into(),
+    );
+    std::fs::write(&path, calendar(&events)).unwrap();
+    let settings = CalendarSourceSettings {
+        url: None,
+        path: Some(path.to_str().unwrap().into()),
+        refresh: Some(Duration::from_mins(15)),
+        lead: Some(Duration::from_mins(10)),
+    };
+    let env = SourceEnv { home: dir.path().into(), pulse_home: dir.path().into() };
+    let mut src = CalendarSource::new("uni", &settings, &env).unwrap();
+    src.zone = Zone::Named(chrono_tz::Europe::Rome);
+    src.clock = Arc::new(TokioClock::new(t("2026-11-16T09:00:00Z")));
+    let expansions = src.expansions.clone();
+    let (cx, mut rx, mut health) =
+        crate::context(src.source.clone(), 8, CancellationToken::new(), Timestamp::EPOCH);
+    tokio::spawn(Box::new(src).run(cx));
+    let mut titles = Vec::new();
+    while titles.len() < 8 {
+        let e = rx.recv().await.unwrap();
+        titles.push(format!("{} {}", e.type_.as_str(), e.data["title"].as_str().unwrap()));
+    }
+    assert_eq!(titles.last().map(String::as_str), Some("calendar.event.ended Lecture 3"));
+    // Eight fires and twelve reads of the (unchanged) file over four hours: one expansion.
+    assert_eq!(expansions.load(std::sync::atomic::Ordering::Relaxed), 1);
+    let h = health.wait_for(|h| h.state == pulse_contracts::status::SourceState::Degraded).await;
+    let message = h.unwrap().message.clone().unwrap();
+    assert!(message.contains("\"Every second\" has more than 2000 occurrences"), "{message}");
 }

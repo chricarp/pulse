@@ -20,11 +20,12 @@ chrono-tz = "0.10.1"
 miniz_oxide = "0.8"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 pty-process = { version = "0.5", features = ["async"] }
-rrule = "0.14"
 rustix = { version = "1", features = ["fs", "process", "pty", "termios", "time", "stdio"] }
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
 
 [dev-dependencies]
+# Only to check `calendar::recur` against: the expander itself is ours, so its cost is bounded.
+rrule = "0.14"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "test-util"] }
 

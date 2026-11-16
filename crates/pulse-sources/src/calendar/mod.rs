@@ -13,12 +13,22 @@
 //! fired is kept in a state file in the Pulse home, so a restart does not repeat it.
 //!
 //! **Untrusted input:** the download is capped at [`MAX_ICS_BYTES`] with a 30 s timeout, the
-//! number of events and instances is capped, and titles and locations are cut to 1 KiB.
+//! number of events and instances is capped, and titles and locations are cut to 1 KiB. Parsing
+//! and expansion run on the blocking pool, and an expansion's cost is bounded whatever the file
+//! says (see [`expand`] and [`recur`]): when a budget is reached, health says which event and
+//! which limit, and everything within budget still fires.
+//!
+//! **Work per wake.** A calendar is parsed only when its content changed (a 304, an unchanged
+//! file, or a body identical to the last one is not parsed again), and expanded only when it
+//! changed or the window it was expanded for (a day past what the next read needs) runs out, so
+//! a fire costs one pass of the planner over the occurrences, not a new expansion.
 
 mod expand;
 mod ics;
+mod recur;
 
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use pulse_contracts::catalog::{BuiltinEvent, CalendarEventData};
@@ -26,7 +36,8 @@ use pulse_contracts::config::CalendarSourceSettings;
 use pulse_contracts::{Duration, SourceKind, SourceRef, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use self::expand::{Occurrence, Zone};
+use self::expand::{Expanded, Occurrence, Zone};
+use self::ics::Calendar;
 use crate::clock::{Clock, SystemClock};
 use crate::state::StateFile;
 use crate::{BoxFuture, Source, SourceContext, SourceEnv, SourceError};
@@ -58,6 +69,8 @@ struct Planner {
     lead: Duration,
     /// (occurrence key, kind) → the occurrence's end, for pruning.
     fired: BTreeMap<(String, Kind), Timestamp>,
+    /// Entries visited, so tests can bound the work of a call.
+    steps: usize,
 }
 
 impl Planner {
@@ -90,13 +103,15 @@ impl Planner {
             }
         }
         let horizon = now.saturating_sub(Duration::from_days(2));
+        self.steps += occs.len() * 2 + self.fired.len();
         self.fired.retain(|_, end| *end >= horizon);
-        while self.fired.len() > MAX_FIRED {
-            let oldest = self.fired.iter().min_by_key(|(_, end)| **end).map(|(k, _)| k.clone());
-            match oldest {
-                Some(k) => self.fired.remove(&k),
-                None => break,
-            };
+        if self.fired.len() > MAX_FIRED {
+            // Keep the latest-ending, in one pass.
+            let mut by_end: Vec<_> = std::mem::take(&mut self.fired).into_iter().collect();
+            self.steps += by_end.len();
+            let cut = by_end.len() - MAX_FIRED;
+            by_end.select_nth_unstable_by_key(cut, |(_, end)| *end);
+            self.fired = by_end.into_iter().skip(cut).collect();
         }
         (out, next)
     }
@@ -135,6 +150,9 @@ pub struct CalendarSource {
     zone: Zone,
     state: StateFile,
     clock: Arc<dyn Clock>,
+    /// Expansions done, so tests can check a fire does not cause one.
+    #[cfg(test)]
+    expansions: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl CalendarSource {
@@ -176,6 +194,8 @@ impl CalendarSource {
             lead,
             zone: Zone::System,
             clock: Arc::new(SystemClock),
+            #[cfg(test)]
+            expansions: Arc::default(),
         })
     }
 }
@@ -204,7 +224,7 @@ enum Fetched {
     Body { text: String, etag: Option<String>, last_modified: Option<String> },
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Validators {
     etag: Option<String>,
     last_modified: Option<String>,
@@ -301,73 +321,161 @@ fn fetch_url(
     Ok(Fetched::Body { text, etag, last_modified })
 }
 
+/// Runs `f` on the blocking pool. `None` if the source is stopped meanwhile (the job finishes
+/// on its own, within its budget). A panic there ends the source: it would repeat on the same
+/// input.
+async fn blocking<T: Send + 'static>(
+    cx: &SourceContext,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<Option<T>, SourceError> {
+    let job = tokio::task::spawn_blocking(f);
+    tokio::select! {
+        () = cx.shutdown.cancelled() => Ok(None),
+        r = job => r.map(Some).map_err(|e| SourceError::Platform(format!("reading the calendar failed: {e}"))),
+    }
+}
+
+/// A new version of the calendar, parsed.
+struct Got {
+    cal: Calendar,
+    hash: u64,
+}
+
+fn hash_text(text: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+/// Reads the calendar and, if its content is new, parses it (and caches a URL's body). Updates
+/// the validators for the next read. Blocking.
+fn read_and_parse(
+    origin: &Origin,
+    v: &mut Validators,
+    last_hash: Option<u64>,
+    cache: &std::path::Path,
+) -> Result<(Option<Got>, Option<String>), String> {
+    let fetched = match origin {
+        Origin::File(p) => {
+            let (f, stamp) = read_file(p, v)?;
+            v.file_stamp = stamp;
+            f
+        }
+        Origin::Url(u) => {
+            fetch_url(u, v.etag.as_deref(), v.last_modified.as_deref(), FETCH_TIMEOUT)?
+        }
+    };
+    let Fetched::Body { text, etag, last_modified } = fetched else { return Ok((None, None)) };
+    if matches!(origin, Origin::Url(_)) {
+        v.etag = etag;
+        v.last_modified = last_modified;
+    }
+    let hash = hash_text(&text);
+    if Some(hash) == last_hash {
+        return Ok((None, None));
+    }
+    let mut cache_error = None;
+    if matches!(origin, Origin::Url(_)) {
+        if let Err(e) = crate::state::write_atomic(cache, text.as_bytes()) {
+            cache_error = Some(format!("cannot cache the calendar: {e}"));
+        }
+    }
+    Ok((Some(Got { cal: ics::parse(&text), hash }), cache_error))
+}
+
+/// The occurrences of one calendar version in a window that reaches `to`.
+struct Expansion {
+    occs: Vec<Occurrence>,
+    to: Timestamp,
+}
+
+/// What the source's health shows besides fetch problems: budgets reached.
+fn limits_message(limits: &[String]) -> Option<String> {
+    let (first, rest) =
+        (limits.iter().take(3).cloned().collect::<Vec<_>>(), limits.len().saturating_sub(3));
+    if first.is_empty() {
+        return None;
+    }
+    let mut m = format!("some occurrences are not read: {}", first.join("; "));
+    if rest > 0 {
+        m.push_str(&format!(" (and {rest} more)"));
+    }
+    Some(m)
+}
+
 async fn run(src: CalendarSource, cx: &SourceContext) -> Result<(), SourceError> {
     let origin_key = src.origin.describe();
     let saved = src.state.load::<Saved>().filter(|s| s.origin == origin_key).unwrap_or_default();
     let body_cache = src.state.sibling("ics");
-    let mut planner = Planner { lead: src.lead, fired: BTreeMap::new() };
+    let mut planner = Planner { lead: src.lead, fired: BTreeMap::new(), steps: 0 };
     for (k, kind, end) in saved.fired {
         planner.fired.insert((k, kind), end);
     }
     let mut validators =
         Validators { etag: saved.etag, last_modified: saved.last_modified, file_stamp: None };
     // A URL answered with 304 needs the body from last time.
-    let mut calendar = match &src.origin {
-        Origin::Url(_) => read_limited(&body_cache)
-            .ok()
-            .flatten()
-            .map(|b| ics::parse(&String::from_utf8_lossy(&b))),
+    let mut last_hash: Option<u64> = None;
+    let mut calendar: Option<Arc<Calendar>> = match &src.origin {
+        Origin::Url(_) => {
+            let cache = body_cache.clone();
+            let job = blocking(cx, move || {
+                let bytes = read_limited(&cache).ok().flatten()?;
+                let text = String::from_utf8_lossy(&bytes);
+                Some((ics::parse(&text), hash_text(&text)))
+            });
+            let Some(cached) = job.await? else { return Ok(()) };
+            cached.map(|(cal, hash)| {
+                last_hash = Some(hash);
+                Arc::new(cal)
+            })
+        }
         Origin::File(_) => None,
     };
     if calendar.is_none() {
         validators.etag = None;
         validators.last_modified = None;
     }
+    let mut expansion: Option<Expansion> = None;
+    let mut fetch_problem: Option<String> = None;
+    let mut limit_problem: Option<String> = None;
+    let mut shown: Option<Option<String>> = None;
     let mut next_fetch = src.clock.now();
     let mut failures: u32 = 0;
+    // What the planner needs ahead of now: up to the next read, plus the lead.
+    let ahead = Duration::from_millis(
+        src.refresh.max(Duration::from_hours(1)).as_millis().saturating_add(src.lead.as_millis()),
+    );
     loop {
         let mut dirty = false;
         let now = src.clock.now();
         if now >= next_fetch {
-            let result = match &src.origin {
-                Origin::File(p) => read_file(p, &validators).map(|(f, stamp)| {
-                    validators.file_stamp = stamp;
-                    f
-                }),
-                Origin::Url(u) => {
-                    let (u, e, m) =
-                        (u.clone(), validators.etag.clone(), validators.last_modified.clone());
-                    let job = tokio::task::spawn_blocking(move || {
-                        fetch_url(&u, e.as_deref(), m.as_deref(), FETCH_TIMEOUT)
-                    });
-                    tokio::select! {
-                        () = cx.shutdown.cancelled() => return Ok(()),
-                        r = job => r.unwrap_or_else(|e| Err(format!("the fetch task failed: {e}"))),
-                    }
-                }
-            };
+            let (origin, mut v, cache) =
+                (src.origin.clone(), validators.clone(), body_cache.clone());
+            let job = blocking(cx, move || {
+                let r = read_and_parse(&origin, &mut v, last_hash, &cache);
+                (r, v)
+            });
+            let Some((result, v)) = job.await? else { return Ok(()) };
+            dirty = v.etag != validators.etag || v.last_modified != validators.last_modified;
+            validators = v;
             let now = src.clock.now();
             match result {
-                Ok(fetched) => {
+                Ok((got, cache_error)) => {
                     failures = 0;
+                    fetch_problem = None;
                     next_fetch = now.saturating_add(src.refresh);
-                    if let Fetched::Body { text, etag, last_modified } = fetched {
-                        let cal = ics::parse(&text);
-                        for w in &cal.warnings {
+                    if let Some(e) = cache_error {
+                        cx.health.error(e);
+                    }
+                    if let Some(got) = got {
+                        for w in &got.cal.warnings {
                             cx.health.error(w.clone());
                         }
-                        if matches!(src.origin, Origin::Url(_)) {
-                            if let Err(e) = crate::state::write_atomic(&body_cache, text.as_bytes())
-                            {
-                                cx.health.error(format!("cannot cache the calendar: {e}"));
-                            }
-                            validators.etag = etag;
-                            validators.last_modified = last_modified;
-                        }
-                        calendar = Some(cal);
+                        last_hash = Some(got.hash);
+                        calendar = Some(Arc::new(got.cal));
+                        expansion = None;
                         dirty = true;
                     }
-                    cx.health.healthy();
                 }
                 Err(message) => {
                     failures += 1;
@@ -378,26 +486,36 @@ async fn run(src: CalendarSource, cx: &SourceContext) -> Result<(), SourceError>
                             .min(src.refresh.as_millis()),
                     );
                     next_fetch = now.saturating_add(wait);
-                    cx.health.degraded(format!("{message}; retrying in {wait}"));
+                    fetch_problem = Some(format!("{message}; retrying in {wait}"));
                 }
             }
         }
         let now = src.clock.now();
         let mut next = next_fetch;
         if let Some(cal) = &calendar {
-            let horizon = src
-                .refresh
-                .max(Duration::from_hours(1))
-                .as_millis()
-                .saturating_add(src.lead.as_millis())
-                .saturating_add(Duration::from_days(1).as_millis());
-            let to = now.saturating_add(Duration::from_millis(horizon));
-            let (occs, warnings) =
-                expand::occurrences(cal, src.zone, now.saturating_sub(Duration::from_days(1)), to);
-            for w in warnings {
-                cx.health.error(w);
+            let needed = now.saturating_add(ahead);
+            if expansion.as_ref().is_none_or(|e| e.to < needed) {
+                let (cal, zone) = (cal.clone(), src.zone);
+                let (from, to) = (
+                    now.saturating_sub(Duration::from_days(1)),
+                    needed.saturating_add(Duration::from_days(1)),
+                );
+                let Some(x): Option<Expanded> =
+                    blocking(cx, move || expand::occurrences(&cal, zone, from, to)).await?
+                else {
+                    return Ok(());
+                };
+                #[cfg(test)]
+                src.expansions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                for w in x.warnings {
+                    cx.health.error(w);
+                }
+                limit_problem = limits_message(&x.limits);
+                expansion = Some(Expansion { occs: x.occs, to });
             }
-            let (fires, next_fire) = planner.due(&occs, now);
+        }
+        if let Some(exp) = &expansion {
+            let (fires, next_fire) = planner.due(&exp.occs, now);
             if let Some(n) = next_fire {
                 next = next.min(n);
             }
@@ -443,6 +561,15 @@ async fn run(src: CalendarSource, cx: &SourceContext) -> Result<(), SourceError>
                     cx.health.error(format!("cannot save calendar state: {e}"));
                 }
             }
+        }
+        // Only on a change: a fetch failure first, then budgets reached, else healthy.
+        let problem = fetch_problem.clone().or_else(|| limit_problem.clone());
+        if shown.as_ref() != Some(&problem) {
+            match &problem {
+                Some(m) => cx.health.degraded(m.clone()),
+                None => cx.health.healthy(),
+            }
+            shown = Some(problem);
         }
         tokio::select! {
             () = cx.shutdown.cancelled() => return Ok(()),

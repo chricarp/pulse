@@ -88,6 +88,8 @@ Pulse signals only process groups it created in this daemon lifetime. It never k
 
 A directory with a million files, an agent writing in a tight loop, a chatty external source. Bounded queues, storm folding, per-source and per-rule rate limits, capped run output, retention.
 
+A calendar is input other people control: a subscribed feed, or an invitation that lands in one. Its cost is bounded whatever it says, by budgets stated in [0005](0005-sources.md#calendar-calendar): parsing is linear in the (10 MiB) input, and one expansion takes at most 2,000,000 steps and 20,000 occurrences (100,000 steps and 2,000 occurrences per recurring event), with one-off events read first. Parsing and expansion run on the blocking pool, only when the calendar changed or once a day. A budget reached shows in the source's health, naming the event and the limit, and everything within budget still fires. What this does not bound: a feed can still fill the occurrences it is allowed with events that wake agents, which is what rules, rate limits and the per-agent scopes are for.
+
 ## Out of scope for v1
 
 - Defending against malware already running as the user.
