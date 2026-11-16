@@ -6,7 +6,7 @@ import { useBindings } from "../../app/keys";
 import { href, navigate } from "../../app/router";
 import { attempt, toast } from "../../app/toasts";
 import type { ConfigError, Expected, SourceConfig, SourceInfo } from "../../contracts";
-import { expectedFor, staleOf } from "../../lib/edits";
+import { expectedFor, refusedCurrent, staleOf } from "../../lib/edits";
 import { sourceTone } from "../../lib/explain";
 import { toSearchParams, EMPTY_FILTER } from "../../lib/filter";
 import { count, dayAndTime, plural } from "../../lib/format";
@@ -298,9 +298,10 @@ function SourceEditor({ opened, current }: { opened: SourceInfo | null; current:
       toast(existing ? `Saved ${info.config.name}` : `Added ${info.config.name}`, "ok", `Written to ${info.origin.path}`);
       navigate({ view: "sources", name: info.config.name, mode: "show" }, { replace: true });
     } catch (e) {
-      if (staleOf(e)) {
+      const stale = staleOf(e);
+      if (stale) {
         const now = await client.call("sources.list", {}).catch(() => null);
-        setRefused({ current: now?.sources.find((x) => x.config.name === fullSourceName) ?? null });
+        setRefused({ current: refusedCurrent(stale, now?.sources.find((x) => x.config.name === fullSourceName) ?? null) });
       } else if (e instanceof RpcCallError && e.code === ErrorCodes.ConfigInvalid) setServerErrors((e.data as { errors?: ConfigError[] })?.errors ?? []);
       else toast("Save failed", "error", e instanceof Error ? e.message : String(e));
     }

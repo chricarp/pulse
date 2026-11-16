@@ -5,7 +5,7 @@ import { useBindings } from "../../app/keys";
 import { href, navigate } from "../../app/router";
 import { attempt, toast } from "../../app/toasts";
 import type { AgentConfig, AgentInfo, ConfigError, EventTypeInfo, Expected, McpCredentials } from "../../contracts";
-import { expectedFor, staleOf } from "../../lib/edits";
+import { expectedFor, refusedCurrent, staleOf } from "../../lib/edits";
 import { ADAPTERS, agentToForm, emptyAgentForm, formToAgent, type AgentForm } from "../../lib/agentForm";
 import { plural } from "../../lib/format";
 import { parseScope, typeGlobMatches } from "../../lib/syntax";
@@ -385,7 +385,8 @@ function AgentEditor({ opened, current }: { opened: AgentInfo | null; current: A
       toast(existing ? `Saved ${info.config.name}` : `Created ${info.config.name}`, "ok", `Written to ${info.origin.path}`);
       navigate({ view: "agents", name: info.config.name, mode: "show" }, { replace: true });
     } catch (e) {
-      if (staleOf(e)) setRefused({ current: await client.call("agents.get", { name: fullAgentName }).catch(() => null) });
+      const stale = staleOf(e);
+      if (stale) setRefused({ current: refusedCurrent(stale, await client.call("agents.get", { name: fullAgentName }).catch(() => null)) });
       else if (e instanceof RpcCallError && e.code === ErrorCodes.ConfigInvalid) setServerErrors((e.data as { errors?: ConfigError[] })?.errors ?? []);
       else toast("Save failed", "error", e instanceof Error ? e.message : String(e));
     }

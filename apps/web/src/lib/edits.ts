@@ -18,6 +18,16 @@ export function staleOf(err: unknown): Stale | null {
   return { current: current ?? null };
 }
 
+/**
+ * The definition to show after a save was refused: what the daemon reports now, carrying the
+ * revision the refusal named (the file's, which a list that has not reloaded yet may lag), so
+ * "save mine anyway" names exactly what is in the file. `null`: it does not exist.
+ */
+export function refusedCurrent<T extends { revision: string }>(stale: Stale, now: T | null): T | null {
+  if (stale.current === null || now === null) return stale.current === null ? null : now;
+  return { ...now, revision: stale.current };
+}
+
 export interface FieldChange {
   field: string;
   before: unknown;

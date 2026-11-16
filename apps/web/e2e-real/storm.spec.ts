@@ -60,11 +60,12 @@ test("10,000 files unzipped into a watched folder", async ({ page, daemon }) => 
   const burst = page.locator(".event-row", { hasText: "fs.burst" }).first();
   await expect(burst).toBeVisible({ timeout: 30_000 });
   const perf = await stopPerf(page);
-  const line = `real daemon, 10,000 files: ${summarize(perf)}`;
+  const after = await respondsToKeys(page);
+  const line = `real daemon, 10,000 files: ${summarize(perf)} | key after storm ${after}ms`;
   console.log(line);
   test.info().annotations.push({ type: "storm-files", description: line });
   expect(Math.max(0, ...perf.longTasks)).toBeLessThan(LONG_TASK_BOUND);
-  expect(await respondsToKeys(page)).toBeLessThan(INTERACTIVE_BOUND);
+  expect(after).toBeLessThan(INTERACTIVE_BOUND);
   expect(await page.locator(".event-row").count()).toBeLessThan(80);
 });
 

@@ -5,7 +5,7 @@ import { useBindings } from "../../app/keys";
 import { navigate, useLocation } from "../../app/router";
 import { toast } from "../../app/toasts";
 import type { ConfigError, Expected, RuleInfo } from "../../contracts";
-import { expectedFor, staleOf } from "../../lib/edits";
+import { expectedFor, refusedCurrent, staleOf } from "../../lib/edits";
 import {
   LIST_OPS,
   NO_VALUE_OPS,
@@ -107,10 +107,11 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
       toast(existing ? `Saved ${info.config.name}` : `Created ${info.config.name}`, "ok", `Written to ${info.origin.path}`);
       navigate({ view: "rules", name: info.config.name, mode: "show" }, { replace: true });
     } catch (err) {
-      if (staleOf(err)) {
+      const stale = staleOf(err);
+      if (stale) {
         // Changed (or created, or removed) elsewhere: show what is there now; the form stays.
         const now = await client.call("rules.get", { name: fullName(form) }).catch(() => null);
-        setRefused({ current: now });
+        setRefused({ current: refusedCurrent(stale, now) });
       } else if (err instanceof RpcCallError && err.code === ErrorCodes.ConfigInvalid) {
         setServerErrors((err.data as { errors?: ConfigError[] } | undefined)?.errors ?? [{ message: err.message }]);
       } else {
