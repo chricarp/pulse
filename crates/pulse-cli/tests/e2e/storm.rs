@@ -213,14 +213,11 @@ async fn a_clone_and_a_checkout_in_a_watched_folder_stay_bounded() {
         git_events.len(),
         runs.len()
     );
-    for r in &runs {
-        let e = watch.detail(r.event).await.event;
-        println!("  run {:?} for {} {:?}", r.rule, e.type_, e.subject);
-    }
     assert_eq!(git_events.len(), 1, "{git_events:#?}");
-    // The clone (about 300 files) and the checkout each settle as one `fs.burst`, plus the
-    // marker. Runs: the git rule's, the marker's, and whatever top-level files settled on
-    // their own.
+    // The clone (about 300 files) and the checkout fold: into a burst each, or, when the
+    // checkout starts within the clone's quiet period, into their net effect (files created
+    // then deleted are nothing; the survivors are reported once). Runs: the git rule's, the
+    // marker's, and those survivors'.
     assert!(
         fs <= 10,
         "{fs} fs events: {:#?}",
