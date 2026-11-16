@@ -122,7 +122,7 @@ export function createWindow(opts: WindowOptions): BrowserWindow {
     minWidth: MIN_SIZE.width,
     minHeight: MIN_SIZE.height,
     show: false,
-    title: "Pulse",
+    title: "Lictory Pulse",
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#141217" : "#fbfafc",
     ...(opts.icon !== null && process.platform === "linux" ? { icon: opts.icon } : {}),
     webPreferences: {

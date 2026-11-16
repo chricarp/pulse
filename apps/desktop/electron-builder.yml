@@ -1,8 +1,13 @@
 # Packaging for the desktop app. Run through `node scripts/package.mjs` (or the repository's
 # scripts/build.sh), which builds first and sets the version from the bundled `pulse` binary.
-appId: dev.pulse.desktop
-productName: Pulse
-copyright: Copyright © Pulse contributors
+# The product's name is what people read: the macOS app bundle, the Linux launcher entry, the
+# window and the menus. The app id is reverse DNS under the owner's lictory.com and keys macOS
+# preferences and notification permission, so it must not change once a package is released.
+# Identifiers stay `pulse`: the executable, the .desktop file (package.json desktopName) and the
+# bundled CLI. Artifact file names have no spaces, so they can be used in a shell unquoted.
+appId: com.lictory.pulse
+productName: Lictory Pulse
+copyright: Copyright © 2026 Christian Carpinelli
 directories:
   output: release
   buildResources: build
@@ -50,7 +55,7 @@ linux:
   # WM_CLASS matches the .desktop file, so docks group the window with its launcher.
   syncDesktopName: true
   synopsis: The local event layer for AI agents
-  artifactName: Pulse-${version}-linux-${arch}.${ext}
+  artifactName: Lictory-Pulse-${version}-linux-${arch}.${ext}
 mac:
   target: dmg
   category: public.app-category.developer-tools
@@ -59,6 +64,6 @@ mac:
   # ID yet. Gatekeeper still blocks the app on first open (docs/internals/0010-desktop-shell.md).
   identity: "-"
   hardenedRuntime: false
-  artifactName: Pulse-${version}-mac-${arch}.${ext}
+  artifactName: Lictory-Pulse-${version}-mac-${arch}.${ext}
 dmg:
-  artifactName: Pulse-${version}-mac-${arch}.${ext}
+  artifactName: Lictory-Pulse-${version}-mac-${arch}.${ext}

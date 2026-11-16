@@ -1,4 +1,4 @@
-# Pulse web UI
+# Lictory Pulse web UI
 
 The React app the daemon serves at `/`. Design and reasoning: [docs/internals/0008-web-ui.md](../../docs/internals/0008-web-ui.md).
 

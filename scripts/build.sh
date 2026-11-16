@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds everything for this machine: the web UI, the `pulse` binary with the UI embedded, and the
+# Builds Lictory Pulse for this machine: the web UI, the `pulse` binary with the UI embedded, and the
 # desktop app (Linux: AppImage; macOS: dmg), from the repository root:
 #
 #   ./scripts/build.sh            all three
@@ -9,7 +9,7 @@
 # package.json's packageManager; `corepack enable` provides it). The headless binary alone needs
 # only `cargo build --release -p pulse-cli`, without Node; it then serves a placeholder page.
 #
-# Outputs: target/release/pulse and apps/desktop/release/.
+# Outputs: target/release/pulse and apps/desktop/release/Lictory-Pulse-<version>-<os>-<arch>.*
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -18,7 +18,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-app) app=0 ;;
     -h | --help)
-      sed -n '2,13p' "$0"
+      sed -n '2,12p' "$0"
       exit 0
       ;;
     *)

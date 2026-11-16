@@ -76,9 +76,9 @@ describe("trayModel", () => {
     ]);
     const m = trayModel(input({ activity }));
     expect(lines(m.items)).toEqual([
-      "Pulse: Running · 1 run in progress",
+      "Lictory Pulse: Running · 1 run in progress",
       "---",
-      "Open Pulse",
+      "Open Lictory Pulse",
       "---",
       "Waiting for approval (7)",
       "deploy · a",
@@ -94,10 +94,10 @@ describe("trayModel", () => {
       "[x] Keep running in the tray when the window closes",
       "Install command line tool…",
       "---",
-      "Quit Pulse",
-      "Quit Pulse and stop the daemon",
+      "Quit Lictory Pulse",
+      "Quit Lictory Pulse and stop the daemon",
     ]);
-    expect(m).toMatchObject({ badge: "7", dim: false, tooltip: "Pulse: Running · 1 run in progress · 7 waiting for approval" });
+    expect(m).toMatchObject({ badge: "7", dim: false, tooltip: "Lictory Pulse: Running · 1 run in progress · 7 waiting for approval" });
   });
 
   it("clicking a run opens it; pause and quit carry their actions", () => {
@@ -113,7 +113,7 @@ describe("trayModel", () => {
     const m = trayModel(input({ activity: withStatus(EMPTY_ACTIVITY, status({ paused: true })) }));
     expect(lines(m.items)).toContain("Resume");
     expect(lines(m.items)).not.toContain("Pause everything");
-    expect(lines(m.items)[0]).toBe("Pulse: Paused: nothing fires");
+    expect(lines(m.items)[0]).toBe("Lictory Pulse: Paused: nothing fires");
     expect(m.dim).toBe(true);
   });
 
@@ -126,10 +126,10 @@ describe("trayModel", () => {
       }),
     );
     expect(lines(m.items)).toEqual([
-      "Pulse: The daemon could not start",
+      "Lictory Pulse: The daemon could not start",
       "cannot listen on 127.0.0.1:7477 in use",
       "---",
-      "Open Pulse",
+      "Open Lictory Pulse",
       "---",
       "Pause everything (off)",
       "Start the daemon",
@@ -137,8 +137,8 @@ describe("trayModel", () => {
       "[x] Notifications",
       "Install command line tool…",
       "---",
-      "Quit Pulse",
-      "Quit Pulse and stop the daemon (off)",
+      "Quit Lictory Pulse",
+      "Quit Lictory Pulse and stop the daemon (off)",
     ]);
     expect(m).toMatchObject({ dim: true, badge: "" });
   });
@@ -156,7 +156,7 @@ describe("trayModel", () => {
   });
 
   it("starting and stopping", () => {
-    expect(lines(trayModel(input({ lifecycle: { kind: "starting" }, activity: EMPTY_ACTIVITY })).items)[0]).toBe("Pulse: Starting the Pulse daemon…");
+    expect(lines(trayModel(input({ lifecycle: { kind: "starting" }, activity: EMPTY_ACTIVITY })).items)[0]).toBe("Lictory Pulse: Starting the Pulse daemon…");
     const stoppingDaemon = { info: { pid: 1, port: 1, version: "0.1.0", started_at: "x" }, owned: true };
     const m = trayModel(input({ lifecycle: { kind: "stopping", daemon: stoppingDaemon, then: "quit" } }));
     expect(lines(m.items)).toContain("Pause everything (off)");

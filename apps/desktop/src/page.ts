@@ -10,7 +10,7 @@ export function statusPage(title: string, lines: readonly string[]): string {
   const body = lines.map((l) => `<p>${text(l)}</p>`).join("");
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-<title>Pulse</title><style>
+<title>Lictory Pulse</title><style>
 :root{color-scheme:light dark;--fg:#1d1b20;--muted:#5f5b66;--bg:#fbfafc;--accent:#9333ea}
 @media (prefers-color-scheme:dark){:root{--fg:#ece9f1;--muted:#a7a1b0;--bg:#141217}}
 body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);

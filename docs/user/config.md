@@ -1,6 +1,6 @@
 # The config file
 
-Everything Pulse watches and does is defined in one TOML file, `$PULSE_HOME/pulse.toml`
+Everything Lictory Pulse watches and does is defined in one TOML file, `$PULSE_HOME/pulse.toml`
 (`~/.pulse/pulse.toml` by default), plus any [trusted project files](projects.md). The UI and the
 CLI edit this same file: there is no second copy of a rule anywhere.
 

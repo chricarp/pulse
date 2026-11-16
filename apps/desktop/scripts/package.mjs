@@ -33,4 +33,4 @@ execFileSync(builder, [platform, arch, "--publish", "never", `--config.extraMeta
   cwd: root,
 });
 
-console.log(`packaged Pulse ${version} into ${join(root, "release")}`);
+console.log(`packaged Lictory Pulse ${version} into ${join(root, "release")}`);

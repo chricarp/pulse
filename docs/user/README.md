@@ -1,4 +1,4 @@
-# Pulse user guide
+# Lictory Pulse user guide
 
 Task-oriented guides for people running Pulse. For how and why it is built the way it is, see
 [docs/internals/](../internals/).

@@ -112,9 +112,9 @@ impl PulseHome {
         let js = serde_json::to_string(url).map_err(io::Error::other)?.replace('<', "\\u003c");
         let page = format!(
             "<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\">\n\
-             <meta http-equiv=\"refresh\" content=\"0;url={attr}\"><title>Opening Pulse</title>\n\
+             <meta http-equiv=\"refresh\" content=\"0;url={attr}\"><title>Opening Lictory Pulse</title>\n\
              <script>location.replace({js})</script></head>\n\
-             <body><p>Opening <a href=\"{attr}\">Pulse</a>…</p></body></html>\n"
+             <body><p>Opening <a href=\"{attr}\">Lictory Pulse</a>…</p></body></html>\n"
         );
         let path = self.login_page();
         write_atomic(&path, page.as_bytes(), 0o600)?;

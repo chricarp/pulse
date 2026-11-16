@@ -1,7 +1,7 @@
 # Loop protection
 
 An agent that writes a file into the folder its own rule watches would wake itself again, and
-again. Pulse stops a rule from being triggered by its own run, and limits how long a chain of
+again. Lictory Pulse stops a rule from being triggered by its own run, and limits how long a chain of
 runs triggering other runs can get. This page says how it decides, which part of that is a
 guess, and what to do when it guesses wrong.
 

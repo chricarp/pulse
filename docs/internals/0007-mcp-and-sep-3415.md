@@ -2,7 +2,7 @@
 
 Status: v1, 2026-11-16. Implements SEP-3415 as of PR modelcontextprotocol/modelcontextprotocol#3415 at commit `4165cc2e` (2026-11-14), on MCP protocol revision 2026-07-28, with `rmcp` 3.10.0. Code: `crates/pulse-mcp`.
 
-Pulse launches agents, but it also tells agents that are **already running** what happened: they list event types, search history and subscribe, over MCP. This page says how, and why it is built this way. Section 4 is for whoever updates the SEP-3415 module next.
+Lictory Pulse launches agents, but it also tells agents that are **already running** what happened: they list event types, search history and subscribe, over MCP. This page says how, and why it is built this way. Section 4 is for whoever updates the SEP-3415 module next.
 
 ## 1. What exists
 

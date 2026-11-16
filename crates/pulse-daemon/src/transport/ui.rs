@@ -21,10 +21,10 @@ struct Assets;
 
 const PLACEHOLDER: &str = r#"<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pulse</title>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Lictory Pulse</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#222;background:#fff}
 @media (prefers-color-scheme:dark){body{color:#ddd;background:#111}}code{background:rgba(127,127,127,.15);padding:.1em .3em;border-radius:3px}</style></head>
-<body><h1>Pulse is running</h1>
+<body><h1>Lictory Pulse is running</h1>
 <p>The web UI was not built into this binary. Build it, then rebuild Pulse:</p>
 <pre><code>pnpm --dir apps/web install
 pnpm --dir apps/web build

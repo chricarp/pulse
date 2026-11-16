@@ -199,7 +199,7 @@ export class Throttle {
       this.heldApproval = false;
       this.show({
         kind: "summary",
-        title: "Pulse",
+        title: "Lictory Pulse",
         body: `${count} more update${count === 1 ? "" : "s"}. Open Pulse to see them.`,
         route: approvals ? { kind: "approvals" } : { kind: "home" },
         event: null,

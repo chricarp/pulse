@@ -23,13 +23,13 @@ export function toTemplate(items: readonly MenuItem[], onAction: (a: Action) => 
   });
 }
 
-/** The window's menu bar (the app menu on macOS): Pulse's items plus the standard roles that
+/** The window's menu bar (the app menu on macOS): the app's items plus the standard roles that
  * make copy, paste and window shortcuts work. */
 export function applicationMenu(model: TrayModel, onAction: (a: Action) => void, devTools: boolean): Menu {
   const mac = process.platform === "darwin";
   const pulse: MenuItemConstructorOptions[] = toTemplate(model.items, onAction);
   const template: MenuItemConstructorOptions[] = [
-    { label: "Pulse", submenu: mac ? [{ role: "about" }, { type: "separator" }, ...pulse, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }] : pulse },
+    { label: "Lictory Pulse", submenu: mac ? [{ role: "about" }, { type: "separator" }, ...pulse, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }] : pulse },
     { role: "editMenu" },
     {
       label: "View",

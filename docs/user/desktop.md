@@ -1,6 +1,6 @@
 # The desktop app
 
-The desktop app is a window, a tray menu and notifications around the same UI the daemon serves
+The Lictory Pulse desktop app is a window, a tray menu and notifications around the same UI the daemon serves
 to your browser. It is optional: the daemon does all the work and keeps running without it.
 
 > **Status.** The desktop app has been run only on Linux arm64, under a virtual display (Xvfb),
@@ -19,8 +19,8 @@ to your browser. It is optional: the daemon does all the work and keeps running 
 
 `./scripts/build.sh` (without `--no-app`) builds the app for the machine you run it on:
 
-- Linux: `apps/desktop/release/Pulse-<version>-linux-<arch>.AppImage`
-- macOS: `apps/desktop/release/Pulse-<version>-mac-<arch>.dmg`
+- Linux: `apps/desktop/release/Lictory-Pulse-<version>-linux-<arch>.AppImage`
+- macOS: `apps/desktop/release/Lictory-Pulse-<version>-mac-<arch>.dmg`
 
 See [Getting started](getting-started.md#build) for prerequisites. The package contains the same
 `pulse` binary as the headless build.
@@ -57,7 +57,7 @@ no window.
 ## Tray and notifications
 
 The tray menu shows the daemon's state, **Pause everything / Resume**, runs waiting for approval
-(click to open one), recent runs, **Open Pulse**, **Install command line tool**, a notifications
+(click to open one), recent runs, **Open Lictory Pulse**, **Install command line tool**, a notifications
 switch, and the two quit items. The window's menu bar carries the same items, so they work where
 no tray shows.
 
@@ -72,15 +72,15 @@ circuit breaker is); look in the feed or `pulse rules history`.
 **Install command line tool…** links `~/.local/bin/pulse` to the app's binary. It never
 overwrites a `pulse` that is not such a link. By hand:
 
-- macOS: `ln -s /Applications/Pulse.app/Contents/Resources/bin/pulse /usr/local/bin/pulse`
-- AppImage: `./Pulse-*.AppImage --appimage-extract`, then link `squashfs-root/resources/bin/pulse`.
+- macOS: `ln -s "/Applications/Lictory Pulse.app/Contents/Resources/bin/pulse" /usr/local/bin/pulse`
+- AppImage: `./Lictory-Pulse-*.AppImage --appimage-extract`, then link `squashfs-root/resources/bin/pulse`.
 
 ## Platform notes
 
 **macOS.** The app has only an ad-hoc signature, no Developer ID and no notarization, so
-Gatekeeper blocks the first open. Drag Pulse to Applications, open it once, then System
+Gatekeeper blocks the first open. Drag Lictory Pulse to Applications, open it once, then System
 Settings → Privacy & Security → **Open Anyway**; or run
-`xattr -dr com.apple.quarantine /Applications/Pulse.app`. Do not run it from the mounted `.dmg`.
+`xattr -dr com.apple.quarantine "/Applications/Lictory Pulse.app"`. Do not run it from the mounted `.dmg`.
 None of this has been tried on a Mac yet.
 
 **Linux AppImage and the Chromium sandbox.** Chromium's OS-level sandbox needs unprivileged user

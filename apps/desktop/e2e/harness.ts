@@ -395,7 +395,7 @@ async function main(): Promise<void> {
       win().close();
       await until("the window to hide", () => !win().isVisible());
       record("after_close", { visible: win().isVisible(), destroyed: win().isDestroyed(), state: shell.state.kind });
-      click("Open Pulse");
+      click("Open Lictory Pulse");
       await until("the window to show again", () => win().isVisible());
 
       // A second instance focuses this one and exits.
@@ -417,7 +417,7 @@ async function main(): Promise<void> {
       record("open_external_calls", [...opened]);
 
       // Quit: the daemon keeps running.
-      click("Quit Pulse");
+      click("Quit Lictory Pulse");
       break;
     }
 
@@ -438,7 +438,7 @@ async function main(): Promise<void> {
       const again = await until("a new daemon", connected);
       record("restarted", { owned: again.daemon.owned, pid: again.daemon.info.pid, port: again.daemon.info.port });
       await until("the UI to load again", onDaemonPage);
-      click("Quit Pulse and stop the daemon");
+      click("Quit Lictory Pulse and stop the daemon");
       break;
     }
 
@@ -452,7 +452,7 @@ async function main(): Promise<void> {
         received_token: seen.includes(token()),
         received_websocket: /upgrade/i.test(seen),
       });
-      click("Quit Pulse and stop the daemon");
+      click("Quit Lictory Pulse and stop the daemon");
       break;
     }
 
@@ -464,7 +464,7 @@ async function main(): Promise<void> {
       const replaced = await until("the replacement daemon", () => connected()?.daemon.owned && connected());
       record("replacement", { owned: replaced.daemon.owned, version: replaced.daemon.info.version, pid: replaced.daemon.info.pid });
       record("menu", menuLabels());
-      click("Quit Pulse and stop the daemon");
+      click("Quit Lictory Pulse and stop the daemon");
       break;
     }
 

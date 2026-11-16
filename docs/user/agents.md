@@ -2,7 +2,7 @@
 
 An **agent** is a named identity: how to start it (its **adapter**), where it works, and which
 events it may hear about (its **scopes**). A rule wakes an agent; the same agent can serve
-several rules. Pulse never runs a model itself: it starts the agent's own program.
+several rules. Lictory Pulse never runs a model itself: it starts the agent's own program.
 
 ```toml
 [[agent]]

@@ -26,14 +26,14 @@ const log = (msg: string) => {
  * runs for this Pulse home (that one is focused and this one quits).
  */
 export function boot(): Promise<Boot | null> {
-  app.setName("Pulse");
+  app.setName("Lictory Pulse");
   app.enableSandbox();
   const home = pulseHome(process.env, homedir(), process.cwd());
   const userData = userDataFor(app.getPath("userData"), home, homedir());
   app.setPath("userData", userData);
 
   if (!app.requestSingleInstanceLock({ home })) {
-    log("Pulse is already open for this Pulse home; focusing it");
+    log("Lictory Pulse is already open for this Pulse home; focusing it");
     app.quit();
     return Promise.resolve(null);
   }
@@ -89,7 +89,7 @@ export function boot(): Promise<Boot | null> {
     try {
       await shell.start();
     } catch (e) {
-      dialog.showErrorBox("Pulse could not start", (e as Error).message);
+      dialog.showErrorBox("Lictory Pulse could not start", (e as Error).message);
       app.exit(1);
     }
     log(`home ${home}, data ${userData}, daemon binary ${shell.config.binary ?? "(none)"}`);

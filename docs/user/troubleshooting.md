@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Pulse records every event, and for every rule an event matches, a **delivery**: what happened and
+Lictory Pulse records every event, and for every rule an event matches, a **delivery**: what happened and
 why. So "why did this fire?" and "why didn't it?" are answered from the log, not guessed.
 
 ## Start here

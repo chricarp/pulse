@@ -99,7 +99,7 @@ test("a supervised run waits for approval everywhere, and approve and reject bot
   daemon.ingest("review", "commit", "second");
   await expect(page.locator(".banner")).toContainText("2 runs are waiting for your approval");
   await expect(page.locator(".nav-item", { hasText: "Runs" }).locator(".badge.tone-attention")).toHaveText("2");
-  await expect(page).toHaveTitle(/\(2\) Pulse/);
+  await expect(page).toHaveTitle(/\(2\) Lictory Pulse/);
 
   await page.getByRole("button", { name: "Review" }).click();
   await page.locator(".run-detail").getByRole("button", { name: /^Approve/ }).click();
@@ -110,7 +110,7 @@ test("a supervised run waits for approval everywhere, and approve and reject bot
   await page.getByRole("dialog").getByRole("button", { name: "Reject" }).click();
   await expect(page.locator(".run-detail .pill").first()).toHaveText("rejected");
   await expect(page.locator(".banner", { hasText: "approval" })).toHaveCount(0);
-  await expect(page).toHaveTitle("Pulse");
+  await expect(page).toHaveTitle("Lictory Pulse");
   expect(daemon.pulse("runs", "list")).toMatch(/rejected/);
 });
 

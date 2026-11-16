@@ -3,7 +3,7 @@
 This page takes you from a clone to a rule that runs, first with a harmless command (free, no
 model), then with the two shipped templates (which run a real agent and cost money).
 
-Pulse is developed and run on Linux. macOS should work but has not been run by anyone yet; see
+Lictory Pulse is developed and run on Linux. macOS should work but has not been run by anyone yet; see
 [Status](../../README.md#status-and-honest-limits).
 
 ## Build
@@ -25,8 +25,8 @@ From the repository root:
 | Output | What |
 |---|---|
 | `target/release/pulse` | the daemon and CLI, one binary (about 16 MB), with the web UI embedded |
-| `apps/desktop/release/Pulse-<version>-linux-<arch>.AppImage` | the desktop app, on Linux |
-| `apps/desktop/release/Pulse-<version>-mac-<arch>.dmg` | the desktop app, on macOS (never built by a developer yet) |
+| `apps/desktop/release/Lictory-Pulse-<version>-linux-<arch>.AppImage` | the desktop app, on Linux |
+| `apps/desktop/release/Lictory-Pulse-<version>-mac-<arch>.dmg` | the desktop app, on macOS (never built by a developer yet) |
 
 The release build is slow (link-time optimisation: about 7 minutes on an 8-core arm64 machine
 from a cold cache). Without Node, `cargo build --release -p pulse-cli` builds the binary alone; it

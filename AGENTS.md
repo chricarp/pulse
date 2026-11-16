@@ -1,6 +1,6 @@
-# Pulse
+# Lictory Pulse
 
-Pulse is the local event layer for AI agents. A Rust daemon watches the machine (files, git, processes, schedules, calendars, external sources), turns raw signals into a small number of meaningful events, records them, and wakes agents according to rules and per-agent permissions. A web UI, a desktop shell and a CLI are clients of that daemon. Pulse never runs a model itself.
+Lictory Pulse is the local event layer for AI agents. A Rust daemon watches the machine (files, git, processes, schedules, calendars, external sources), turns raw signals into a small number of meaningful events, records them, and wakes agents according to rules and per-agent permissions. A web UI, a desktop shell and a CLI are clients of that daemon. Pulse never runs a model itself.
 
 Read [docs/internals/0002-architecture.md](docs/internals/0002-architecture.md) before changing the engine. It is short.
 

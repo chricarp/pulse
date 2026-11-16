@@ -2,7 +2,7 @@
 
 Status: v1. Short and honest. If a control here is weaker in the code than it reads on this page, fix the page.
 
-## What Pulse is, from a security view
+## What Lictory Pulse is, from a security view
 
 A local daemon that turns machine activity into prompts and commands for coding agents, which can themselves edit files and run programs. That makes two things valuable to an attacker: **the ability to cause a run**, and **the text that ends up in a run's prompt**.
 

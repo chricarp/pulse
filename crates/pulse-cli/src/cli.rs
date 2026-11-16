@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "pulse", version, about = "The local event layer for AI agents.", long_about = None)]
+#[command(name = "pulse", version, about = "Lictory Pulse: the local event layer for AI agents.", long_about = None)]
 pub struct Cli {
     /// The Pulse home. Default: $PULSE_HOME, else ~/.pulse.
     #[arg(long, global = true, value_name = "DIR")]

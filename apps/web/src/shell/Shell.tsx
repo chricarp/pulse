@@ -76,7 +76,7 @@ export function Shell({ children }: { children: ReactNode }) {
 
   // The title carries what needs attention, for when the window is in the background.
   useEffect(() => {
-    document.title = pending.length ? `(${pending.length}) Pulse · approval needed` : "Pulse";
+    document.title = pending.length ? `(${pending.length}) Lictory Pulse · approval needed` : "Lictory Pulse";
   }, [pending.length]);
 
   return (
@@ -138,7 +138,7 @@ function Sidebar({ active, onPalette }: { active: ViewName; onPalette: () => voi
     <nav className="sidebar" aria-label="Views">
       <div className="brand">
         <img src={iconUrl} alt="" width={20} height={20} />
-        <span className="brand-name">Pulse</span>
+        <span className="brand-name">Lictory Pulse</span>
         {status && <span className="brand-version num">{status.version}</span>}
       </div>
       <button type="button" className="palette-trigger" onClick={onPalette}>

@@ -1,7 +1,7 @@
 # Connecting an MCP client
 
 Rules start agents. MCP is the other direction: an agent that is **already running** (a Claude
-Code or Codex session, any MCP client) asks Pulse what happened. It can list the event types it
+Code or Codex session, any MCP client) asks Lictory Pulse what happened. It can list the event types it
 may see, search the log, and subscribe and wait for new events. MCP cannot approve runs, change
 rules, or read outside the agent's scopes.
 

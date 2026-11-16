@@ -30,7 +30,7 @@ export function SystemView() {
             <Empty title={connection.kind === "open" ? "Loading…" : "Not connected to the daemon"} />
           ) : (
             <>
-              <Section title="Pulse">
+              <Section title="Lictory Pulse">
                 <div className="pause-panel">
                   <div>
                     <strong>{status.paused ? "Paused" : "Running"}</strong>

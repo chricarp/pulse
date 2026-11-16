@@ -365,7 +365,7 @@ export class Shell extends EventEmitter {
       defaultId: 0,
       cancelId: 1,
       message: "The running Pulse daemon is older than this app",
-      detail: `The daemon is version ${info.version}; this app comes with ${this.advice.app}. Restarting it with ${this.advice.app} interrupts runs in progress. You can also do this later from the Pulse menu.`,
+      detail: `The daemon is version ${info.version}; this app comes with ${this.advice.app}. Restarting it with ${this.advice.app} interrupts runs in progress. You can also do this later from the Lictory Pulse menu.`,
     });
     if (response === 0 && currentDaemon(this.state)?.info.started_at === info.started_at) this.send({ type: "replace" });
   }
@@ -564,7 +564,7 @@ export class Shell extends EventEmitter {
         this.trayHintShown = true;
         this.throttle.offer({
           kind: "daemon",
-          title: "Pulse is still in the tray",
+          title: "Lictory Pulse is still in the tray",
           body: "The daemon keeps running either way. Quit from the tray menu to close the app.",
           route: { kind: "home" },
           event: null,
@@ -618,12 +618,12 @@ export class Shell extends EventEmitter {
             s.reason === "start_failed" ? "The Pulse daemon could not start" : "The Pulse daemon is not running",
             [
               ...(s.detail ? [s.detail] : []),
-              "Rules do not run while it is stopped. Start it from the Pulse menu, or run pulse start in a terminal: this window picks it up either way.",
+              "Rules do not run while it is stopped. Start it from the Lictory Pulse menu, or run pulse start in a terminal: this window picks it up either way.",
             ],
           ]
         : s.kind === "stopping"
           ? ["Stopping the Pulse daemon…", ["Runs in progress are being stopped."]]
-          : ["Starting Pulse…", [`Pulse home: ${this.config.home}`]];
+          : ["Starting Lictory Pulse…", [`Pulse home: ${this.config.home}`]];
     this.showing = { kind: "status" };
     void win.loadURL(statusPage(title, lines)).catch(() => {});
   }
@@ -649,7 +649,7 @@ export class Shell extends EventEmitter {
       this.log(`could not load the UI: ${msg}`);
       if (this.window === win && !win.isDestroyed() && isDaemonUrl(win.webContents.getURL(), origin) === false) {
         this.showing = { kind: "status" };
-        void win.loadURL(statusPage("Pulse could not open its window", [msg])).catch(() => {});
+        void win.loadURL(statusPage("Lictory Pulse could not open its window", [msg])).catch(() => {});
       }
     }
   }

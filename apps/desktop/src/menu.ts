@@ -1,4 +1,4 @@
-// The tray menu (and the window's Pulse menu, which is the same list) as data, built from the
+// The tray menu (and the window's Lictory Pulse menu, which is the same list) as data, built from the
 // daemon's state. `tray.ts` turns it into Electron menus; tests read it directly.
 
 import { type Activity, approvalsWaiting } from "./activity.ts";
@@ -107,7 +107,7 @@ export function trayModel(input: MenuInput): TrayModel {
   const waiting = connected ? approvalsWaiting(activity) : 0;
   const status = statusLine(lifecycle, activity);
 
-  const items: MenuItem[] = [{ kind: "label", label: `Pulse: ${status}` }];
+  const items: MenuItem[] = [{ kind: "label", label: `Lictory Pulse: ${status}` }];
   if (connected && advice?.kind === "daemon_newer") {
     items.push({ kind: "label", label: `The daemon (${advice.daemon}) is newer than this app (${advice.app})` });
   }
@@ -115,7 +115,7 @@ export function trayModel(input: MenuInput): TrayModel {
   if (lifecycle.kind === "unreachable" && lifecycle.detail) {
     items.push({ kind: "label", label: menuLabel(lifecycle.detail, 60) });
   }
-  items.push({ kind: "separator" }, action("Open Pulse", open({ kind: "home" })));
+  items.push({ kind: "separator" }, action("Open Lictory Pulse", open({ kind: "home" })));
 
   if (connected) {
     items.push({ kind: "separator" });
@@ -161,11 +161,11 @@ export function trayModel(input: MenuInput): TrayModel {
   items.push(
     action("Install command line tool…", { type: "install_cli" }),
     { kind: "separator" },
-    action("Quit Pulse", { type: "quit" }),
-    action("Quit Pulse and stop the daemon", { type: "quit_and_stop" }, connected),
+    action("Quit Lictory Pulse", { type: "quit" }),
+    action("Quit Lictory Pulse and stop the daemon", { type: "quit_and_stop" }, connected),
   );
 
-  const tooltipParts = [`Pulse: ${status}`];
+  const tooltipParts = [`Lictory Pulse: ${status}`];
   if (waiting > 0) tooltipParts.push(`${waiting} waiting for approval`);
   return {
     items,

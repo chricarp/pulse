@@ -1,11 +1,27 @@
-# Pulse
+<p align="center">
+  <img src="assets/icon.svg" alt="" width="96" height="96" />
+</p>
 
-Pulse is a small daemon that watches your machine and wakes coding agents when something happens.
-A lecture PDF lands in `~/University`, and a summary and flashcards appear beside it. A build
-fails, and a diagnosis of why is waiting when you look. Pulse watches files, git repositories,
-commands that exit, schedules, calendars and anything that can send it JSON. It records every
-event in a durable log, matches events against your rules, and starts Claude Code, Codex, any
-command, or wakes an MCP client, within the permissions you give each agent.
+<h1 align="center">Lictory Pulse</h1>
+
+<p align="center">
+  Wakes coding agents when something happens on your machine, and records why.
+</p>
+
+<p align="center">
+  <a href="docs/user/getting-started.md">Get started</a> ·
+  <a href="docs/user/README.md">User guide</a> ·
+  <a href="docs/internals/">Design record</a> ·
+  <a href="CONTRIBUTING.md">Contribute</a> ·
+  <a href=".github/SECURITY.md">Security</a>
+</p>
+
+Lictory Pulse is a small daemon that watches your machine and wakes coding agents when something
+happens. A lecture PDF lands in `~/University`, and a summary and flashcards appear beside it. A
+build fails, and a diagnosis of why is waiting when you look. Pulse watches files, git
+repositories, commands that exit, schedules, calendars and anything that can send it JSON. It
+records every event in a durable log, matches events against your rules, and starts Claude Code,
+Codex, any command, or wakes an MCP client, within the permissions you give each agent.
 
 Pulse never runs a model itself. It decides **when** an agent runs, **what it is told**, and keeps
 a record of **why**: for every rule an event matched, whether it fired, and if not, the reason.
@@ -112,7 +128,7 @@ There are no prebuilt packages yet. You need:
   the web UI and the desktop app.
 
 ```sh
-git clone <this repository> pulse && cd pulse
+git clone https://github.com/chricarp/pulse.git && cd pulse
 ./scripts/build.sh --no-app    # web UI + the pulse binary (UI embedded): target/release/pulse
 ./scripts/build.sh             # the same, plus the desktop app in apps/desktop/release/
 ```
@@ -122,7 +138,7 @@ git clone <this repository> pulse && cd pulse
   (`pulse open` signs your browser in). Put it on your `PATH`. Without Node,
   `cargo build --release -p pulse-cli` builds the binary alone, serving a placeholder page
   instead of the UI.
-- **Desktop app:** `Pulse-<version>-linux-<arch>.AppImage` on Linux, a `.dmg` on macOS. It finds or
+- **Desktop app:** `Lictory-Pulse-<version>-linux-<arch>.AppImage` on Linux, a `.dmg` on macOS. It finds or
   starts the daemon and shows the same UI in a window, with a tray menu and notifications.
   Quitting it does not stop the daemon. See [The desktop app](docs/user/desktop.md).
 

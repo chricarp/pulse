@@ -56,7 +56,7 @@ const ROTATE =
 
 const NO_ACCESS: Record<NoAccessReason, { title: string; body: string; more?: string }> = {
   "no-code": {
-    title: "Open Pulse from the command line",
+    title: "Open Lictory Pulse from the command line",
     body: "This window has no access to the daemon yet. Pulse gives a window a one-time login code when you open it with the command below. If you typed this address or used a bookmark, run it instead.",
   },
   "code-refused": {
