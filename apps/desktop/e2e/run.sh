@@ -62,6 +62,8 @@ stop_daemon() {
   local home=$1 pid
   pid=$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$home/daemon.json" 2>/dev/null || true)
   "$bin" --home "$home" stop >/dev/null 2>&1 || true
+  # `pulse stop` returns when the lock is released, a moment before the process is gone.
+  if [ -n "$pid" ]; then timeout 10 tail --pid="$pid" -f /dev/null || true; fi
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "daemon $pid still running" >&2; return 1; fi
   echo "${pid:-none}"
 }
@@ -125,4 +127,3 @@ for s in "${scenarios[@]}"; do
       ;;
   esac
 done
-cat "$summary"

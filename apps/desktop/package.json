@@ -2,10 +2,11 @@
   "name": "@pulse/desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Pulse desktop shell: window, tray and notifications around the pulse daemon.",
+  "description": "Pulse: the local event layer for AI agents (desktop app).",
   "license": "MIT",
   "type": "module",
   "main": "dist/main.cjs",
+  "desktopName": "pulse-desktop.desktop",
   "scripts": {
     "build": "node scripts/build.mjs",
     "icons": "node scripts/icons.mjs",

@@ -11,7 +11,7 @@
 
 import { execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import electron, { type BrowserWindow, type MenuItem, type Notification, app } from "electron";
@@ -55,7 +55,16 @@ electron.dialog.showMessageBox = (async (...args: unknown[]) => {
   return { response: answer, checkboxChecked: false };
 }) as typeof electron.dialog.showMessageBox;
 
+/** The URL of the last page that finished loading in any web contents (there is one window). */
+let lastFinished = "";
+
 app.on("web-contents-created", (_e, wc) => {
+  wc.on("did-finish-load", () => {
+    lastFinished = wc.getURL();
+    tick.emit("tick");
+  });
+  wc.on("did-finish-load", () => process.stderr.write(`[e2e] did-finish-load ${wc.getURL().replace(/#.*/, "").slice(0, 80)}\n`));
+  wc.on("did-fail-load", (_ev, code, desc, url) => process.stderr.write(`[e2e] did-fail-load ${code} ${desc} ${url.replace(/#.*/, "").slice(0, 80)}\n`));
   for (const ev of ["did-finish-load", "did-navigate", "did-navigate-in-page", "did-fail-load", "will-frame-navigate"] as const) {
     wc.on(ev as "did-finish-load", () => tick.emit("tick"));
   }
@@ -156,7 +165,37 @@ function rendered(win: BrowserWindow): Promise<boolean> {
   );
 }
 
+/** Proportional set size per Electron process (shared pages split between their users). */
+function memory(): { type: string; pid: number; pssMB: number | null; rssMB: number | null }[] {
+  return app.getAppMetrics().map((m) => {
+    let pss: number | null = null;
+    let rss: number | null = null;
+    try {
+      const text = readFileSync(`/proc/${m.pid}/smaps_rollup`, "utf8");
+      pss = Number(/^Pss:\s+(\d+)/m.exec(text)?.[1]) / 1024;
+      rss = Number(/^Rss:\s+(\d+)/m.exec(text)?.[1]) / 1024;
+    } catch {
+      // Not Linux.
+    }
+    return { type: m.type, pid: m.pid, pssMB: pss === null ? null : Math.round(pss), rssMB: rss === null ? null : Math.round(rss) };
+  });
+}
+
 const urlOf = (win: BrowserWindow) => new URL(win.webContents.getURL());
+
+/** Waits (up to the ceiling) until the UI no longer says it is connecting; reports which. */
+function uiConnected(win: BrowserWindow): Promise<string> {
+  return inPage(
+    win,
+    `new Promise((resolve) => {
+      const done = () => !document.body.innerText.includes("Connecting");
+      if (done()) return resolve("connected");
+      const o = new MutationObserver(() => { if (done()) { o.disconnect(); resolve("connected"); } });
+      o.observe(document, { subtree: true, childList: true, characterData: true });
+      setTimeout(() => { o.disconnect(); resolve("still connecting after ${CEILING / 1000}s"); }, ${CEILING});
+    })`,
+  );
+}
 
 async function main(): Promise<void> {
   const booted = await boot();
@@ -179,7 +218,7 @@ async function main(): Promise<void> {
   const win = () => shell.window as BrowserWindow;
   const onDaemonPage = () => {
     const origin = shell.origin();
-    return origin !== null && shell.window !== null && win().webContents.getURL().startsWith(origin) && !win().webContents.isLoading();
+    return origin !== null && shell.window !== null && lastFinished.startsWith(origin) && win().webContents.getURL().startsWith(origin);
   };
 
   switch (scenario) {
@@ -212,9 +251,11 @@ async function main(): Promise<void> {
         })()`,
       );
       record("login_exchange_from_page", exchange);
+      lastFinished = "";
       win().webContents.reload();
       await until("the UI to reload", onDaemonPage);
       await rendered(win());
+      record("ui_connection_after_login", await uiConnected(win()));
       record("page_text_after_login", (await inPage<string>(win(), "document.body.innerText")).slice(0, 300));
       await screenshot(win(), "2-ui-signed-in");
 
@@ -262,6 +303,7 @@ async function main(): Promise<void> {
         frame_blocked: await inPage(win(), `document.querySelector("iframe").contentDocument !== null && document.querySelector("iframe").contentDocument.location.href`),
         permissions,
       });
+      lastFinished = "";
       await inPage(win(), `window.open(location.origin + "/rules"); 1`);
       await until("a UI link from window.open to load in the window", () => onDaemonPage() && urlOf(win()).pathname === "/rules");
       record("ui_link_in_window", { path: urlOf(win()).pathname, windows: electron.BrowserWindow.getAllWindows().length });
@@ -282,8 +324,10 @@ async function main(): Promise<void> {
       await until("a breaker notification", () => notices.some((n) => n.shown.kind === "breaker"));
       record("ingest_fail", (await pulse(["ingest", "-s", "test"], lines("fail", 1))).code);
       await until("a failure notification", () => notices.some((n) => n.shown.kind === "failed"));
-      record("ingest_approve", (await pulse(["ingest", "-s", "test"], lines("approve", 12))).code);
+      record("ingest_approve", (await pulse(["ingest", "-s", "test"], lines("approve", 1))).code);
       await until("an approval notification", () => notices.some((n) => n.shown.kind === "approval"));
+      // Three shown so far: the burst is used up. A storm now must be summarized, not shown.
+      record("ingest_storm", (await pulse(["ingest", "-s", "test"], lines("approve", 12))).code);
       const shownBeforeSummary = notices.length;
       await until("the storm summary", () => notices.some((n) => n.shown.kind === "summary"));
       record("notifications", notices.map((n) => n.shown));
@@ -292,13 +336,19 @@ async function main(): Promise<void> {
       record("menu_with_activity", menuLabels());
       record("tray_model", shell.model());
       const approval = notices.find((n) => n.shown.kind === "approval");
-      approval?.note?.emit("click");
+      lastFinished = "";
+      // Without a notification service here there is no Notification object to click; then the
+      // shell's click handler (openRoute with the notice's route) is called directly.
+      record("notification_click", approval?.note ? "emitted click on the Notification" : "no notification service: called the click handler");
+      if (approval?.note) approval.note.emit("click");
+      else if (approval) await shell.openRoute(approval.shown.route);
       await until("the run to open from its notification", () => {
         if (!onDaemonPage() || approval?.shown.route.kind !== "run") return false;
         return urlOf(win()).pathname === `/runs/${approval.shown.route.id}`;
       });
       record("notification_click_opened", urlOf(win()).pathname);
       await rendered(win());
+      await uiConnected(win());
       await screenshot(win(), "3-run-from-notification");
 
       // Closing the window hides it to the tray (XDG_CURRENT_DESKTOP=KDE here).
@@ -317,6 +367,12 @@ async function main(): Promise<void> {
       await until("the window to be shown by the second instance", () => win().isVisible());
       record("second_instance", { pid: second.pid, exit_code: secondExit, first_window_visible: win().isVisible(), said: secondErr.split("\n").filter((l) => l.includes("[pulse-desktop]")) });
 
+      record("memory_window_shown", memory());
+      win().hide();
+      // Give the hidden page nothing to do; measure what a tray-only app holds.
+      await inPage(win(), "new Promise((r) => requestIdleCallback(() => r(1)))");
+      record("memory_window_hidden", memory());
+      win().show();
       record("app_metrics", app.getAppMetrics().map((m) => ({ type: m.type, pid: m.pid, workingSetMB: Math.round(m.memory.workingSetSize / 1024), privateMB: m.memory.privateBytes === undefined ? null : Math.round(m.memory.privateBytes / 1024) })));
       record("open_external_calls", [...opened]);
 
@@ -333,10 +389,11 @@ async function main(): Promise<void> {
       record("external_pulse_stop", stop.code);
       await until("the shell to see the daemon gone", state("unreachable"));
       await until("a notification about it", () => notices.some((n) => n.shown.kind === "daemon"));
-      await until("the status page", () => win().webContents.getURL().startsWith("data:") && !win().webContents.isLoading());
+      await until("the status page", () => lastFinished.startsWith("data:"));
       await screenshot(win(), "1-daemon-gone");
       record("menu_while_gone", menuLabels());
       record("notifications", notices.map((n) => n.shown));
+      lastFinished = "";
       click("Start the daemon");
       const again = await until("a new daemon", connected);
       record("restarted", { owned: again.daemon.owned, pid: again.daemon.info.pid, port: again.daemon.info.port });

@@ -36,6 +36,9 @@ export interface MenuInput {
   advice: VersionAdvice | null;
   /** Whether closing the window currently hides it (see `closeHidesToTray`). */
   closeHides: boolean;
+  /** Chromium runs with `--no-sandbox` (the AppImage launcher adds it where user namespaces
+   * are not available). Said in the menu: it weakens the isolation of the window. */
+  sandboxOff: boolean;
 }
 
 export interface TrayModel {
@@ -108,6 +111,7 @@ export function trayModel(input: MenuInput): TrayModel {
   if (connected && advice?.kind === "daemon_newer") {
     items.push({ kind: "label", label: `The daemon (${advice.daemon}) is newer than this app (${advice.app})` });
   }
+  if (input.sandboxOff) items.push({ kind: "label", label: "Running without the Chromium sandbox (--no-sandbox)" });
   if (lifecycle.kind === "unreachable" && lifecycle.detail) {
     items.push({ kind: "label", label: menuLabel(lifecycle.detail, 60) });
   }

@@ -36,12 +36,19 @@ electronFuses:
   enableEmbeddedAsarIntegrityValidation: true
   onlyLoadAppFromAsar: true
   grantFileProtocolExtraPrivileges: false
+# The upstream static AppImage runtime (beta in electron-builder 26). The default one links
+# libfuse.so.2, which Ubuntu 22.04 and later do not install, and on arm64 the unversioned
+# libz.so, which only zlib's development package provides: the AppImage would not start.
+toolsets:
+  appimage: "1.0.3"
 linux:
   target: AppImage
   category: Development
   icon: build/icons/icon.png
   # Not `pulse`: that name belongs to the CLI.
   executableName: pulse-desktop
+  # WM_CLASS matches the .desktop file, so docks group the window with its launcher.
+  syncDesktopName: true
   synopsis: The local event layer for AI agents
   artifactName: Pulse-${version}-linux-${arch}.${ext}
 mac:

@@ -7,7 +7,7 @@
 // where it is built.
 
 import { Resvg } from "@resvg/resvg-js";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 // resvg does not know `system-ui`; the SVG's generic `sans-serif` gets a font present on build
@@ -52,7 +52,11 @@ export async function renderIcons(sourcePath, outDir) {
     ["trayTemplate.png", render(template, 16)],
     ["trayTemplate@2x.png", render(template, 32)],
   ];
-  for (const [name, png] of outputs) await writeFile(join(outDir, name), png);
+  for (const [name, png] of outputs) {
+    await writeFile(join(outDir, name), png);
+    // Packaging copies these into the app as they are; not writable by others whatever the umask.
+    await chmod(join(outDir, name), 0o644);
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

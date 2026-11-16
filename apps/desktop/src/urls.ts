@@ -76,6 +76,6 @@ export function loginCodeFrom(url: string, origin: string): string | null {
 export function redact(url: string): string {
   const u = parse(url);
   if (u === null) return "<unparseable url>";
-  if (u.protocol === "data:") return "data:<status page>";
-  return `${u.origin}${u.pathname}`;
+  if (u.protocol === "http:" || u.protocol === "https:") return `${u.origin}${u.pathname}`;
+  return `${u.protocol}…`;
 }

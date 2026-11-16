@@ -59,6 +59,8 @@ describe("navigation", () => {
     expect(loginCodeFrom("http://127.0.0.1:9999/#login=1763.0f9a", origin)).toBeNull();
     expect(loginCodeFrom(`${origin}/#login=<script>`, origin)).toBeNull();
     expect(redact(`${origin}/runs/1?q=2#login=123.abc`)).toBe(`${origin}/runs/1`);
+    expect(redact("about:blank")).toBe("about:…");
+    expect(redact("data:text/html,secret")).toBe("data:…");
   });
 });
 

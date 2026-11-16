@@ -48,6 +48,7 @@ export interface ShellConfig {
   trayIconDir: string;
   startHidden: boolean;
   devTools: boolean;
+  sandboxOff: boolean;
   env: NodeJS.ProcessEnv;
   log: (msg: string) => void;
 }
@@ -85,6 +86,7 @@ export class Shell extends EventEmitter {
   private readonly shownNotifications: Notification[] = [];
   private lastMenuKey = "";
   private trayHintShown = false;
+  private unsupportedLogged = false;
   private askedAbout = new Set<string>();
   quitting = false;
 
@@ -443,7 +445,8 @@ export class Shell extends EventEmitter {
       .join("\n");
     const shown: ShownNotice = { kind: n.kind, title, body, route: n.route };
     if (!Notification.isSupported()) {
-      this.log("notifications are not supported here");
+      if (!this.unsupportedLogged) this.log("this system has no notification service; notifications are not shown");
+      this.unsupportedLogged = true;
       this.emit("notification", shown, null);
       return;
     }
@@ -615,7 +618,7 @@ export class Shell extends EventEmitter {
             s.reason === "start_failed" ? "The Pulse daemon could not start" : "The Pulse daemon is not running",
             [
               ...(s.detail ? [s.detail] : []),
-              "Rules do not run while it is stopped. Start it from the Pulse menu, or run `pulse start` in a terminal; this window picks it up either way.",
+              "Rules do not run while it is stopped. Start it from the Pulse menu, or run pulse start in a terminal: this window picks it up either way.",
             ],
           ]
         : s.kind === "stopping"
@@ -668,6 +671,7 @@ export class Shell extends EventEmitter {
       platform: this.config.platform,
       advice: this.advice,
       closeHides: this.closeHides(),
+      sandboxOff: this.config.sandboxOff,
     });
   }
 

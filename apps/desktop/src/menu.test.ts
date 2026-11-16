@@ -43,6 +43,7 @@ const input = (over: Partial<MenuInput> = {}): MenuInput => ({
   platform: "linux",
   advice: { kind: "same" },
   closeHides: true,
+  sandboxOff: false,
   ...over,
 });
 
@@ -146,6 +147,10 @@ describe("trayModel", () => {
     const newer = trayModel(input({ advice: { kind: "daemon_newer", daemon: "0.3.0", app: "0.2.0" } }));
     expect(lines(newer.items)[1]).toBe("The daemon (0.3.0) is newer than this app (0.2.0)");
     expect(lines(newer.items).some((l) => l.startsWith("Restart"))).toBe(false);
+  });
+
+  it("says when the Chromium sandbox is off", () => {
+    expect(lines(trayModel(input({ sandboxOff: true })).items)[1]).toBe("Running without the Chromium sandbox (--no-sandbox)");
   });
 
   it("starting and stopping", () => {

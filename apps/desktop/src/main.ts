@@ -58,6 +58,8 @@ export function boot(): Promise<Boot | null> {
     windowIcon: join(resources, "icons", "icon.png"),
     trayIconDir: join(resources, "icons"),
     startHidden: process.argv.includes("--hidden"),
+    // AppImage launchers add it on argv, where `app.commandLine` does not see it.
+    sandboxOff: process.argv.includes("--no-sandbox") || app.commandLine.hasSwitch("no-sandbox"),
     devTools: !packaged || process.env.PULSE_DESKTOP_DEVTOOLS === "1",
     env: process.env,
     log,
@@ -91,6 +93,7 @@ export function boot(): Promise<Boot | null> {
       app.exit(1);
     }
     log(`home ${home}, data ${userData}, daemon binary ${shell.config.binary ?? "(none)"}`);
+    if (shell.config.sandboxOff) log("running without the Chromium sandbox (--no-sandbox)");
     return { shell, home };
   });
 }
