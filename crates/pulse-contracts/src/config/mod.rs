@@ -286,6 +286,10 @@ pub struct FsSourceSettings {
     pub path: String,
     /// Globs relative to `path` (or absolute) added to the built-in ignores.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // Omitted from the wire at its default, so optional in TypeScript. (A struct-level
+    // `ts(optional_fields)` would otherwise make it required; on a non-`Option` field
+    // `nullable` only adds the `?`.) Same for every `ts(optional = nullable)` below.
+    #[ts(optional = nullable)]
     pub ignore: Vec<String>,
     #[serde(default = "yes")]
     pub recursive: bool,
@@ -364,6 +368,7 @@ pub struct AgentConfig {
     /// Extra environment for runs. Trusted (it is config). Keys starting with `PULSE_` are
     /// reserved.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(optional = nullable)]
     pub env: BTreeMap<String, String>,
 }
 
@@ -419,11 +424,14 @@ pub struct ClaudeCodeSettings {
     pub permission_mode: Option<String>,
     /// Each passed as `--allowedTools=<rule>`, like `"Edit"` or `"Bash(git diff:*)"`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional = nullable)]
     pub allowed_tools: Vec<String>,
     /// Each passed as `--disallowedTools=<rule>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional = nullable)]
     pub disallowed_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional = nullable)]
     pub extra_args: Vec<String>,
 }
 
@@ -444,6 +452,7 @@ pub struct CodexSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional = nullable)]
     pub extra_args: Vec<String>,
 }
 
@@ -485,12 +494,14 @@ pub struct RuleConfig {
     /// Event type glob(s).
     pub on: TypeGlobs,
     #[serde(default, rename = "where", skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(optional = nullable)]
     pub where_: WhereClause,
     /// Trailing debounce: wait until matching events stop for this long, then fire once with
     /// the latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debounce: Option<Duration>,
     #[serde(default, skip_serializing_if = "DebounceBy::is_default")]
+    #[ts(optional = nullable)]
     pub debounce_by: DebounceBy,
     /// Minimum time between fires.
     #[serde(default, skip_serializing_if = "Option::is_none")]

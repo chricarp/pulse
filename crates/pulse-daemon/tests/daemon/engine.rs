@@ -43,7 +43,7 @@ async fn event_to_run_to_output_end_to_end() {
     within("the run to succeed", async {
         while succeeded.is_none() || events.len() < 2 {
             match notes.recv().await.unwrap() {
-                Notification::EventsBatch(b) => events.extend(b.events),
+                Notification::EventsBatch(b) => events.extend(b.batch.events),
                 Notification::RunsChanged(c) => {
                     succeeded = c.runs.into_iter().find(|r| r.status == RunStatus::Succeeded);
                 }
@@ -101,6 +101,19 @@ async fn event_to_run_to_output_end_to_end() {
     assert!(streamed.done);
     assert_eq!(streamed.chunks.len(), out.chunks.len());
 
+    // A subscription is answered before its first notification, even when stored output is
+    // ready at once.
+    let mut raw = raw_socket(t.port(), &t.token()).await;
+    let first = raw_call(
+        &mut raw,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"runs.subscribe_output","params":{{"id":"{}"}}}}"#,
+            run.id
+        ),
+    )
+    .await;
+    assert_eq!(first["id"], 7, "the response comes first: {first}");
+
     // The run saw the event file and its own id.
     let full = client.call::<method::RunsGet>(RunIdParams { id: run.id }).await.unwrap();
     let inv = full.invocation.unwrap();
@@ -144,7 +157,7 @@ run = { agent = "sh" }
     let err = client.call::<method::EventsIngest>(ingest("first")).await.unwrap_err();
     assert!(err.to_string().contains("injected"), "{err}");
     let page = client.call::<method::EventsQuery>(EventQuery::default()).await.unwrap();
-    assert!(page.events.is_empty(), "the event was rolled back with the run");
+    assert!(page.page.events.is_empty(), "the event was rolled back with the run");
     let history = client
         .call::<method::RulesHistory>(RuleHistoryParams {
             name: "every-ext".into(),
@@ -185,6 +198,9 @@ run = { agent = "sh" }
     .await;
     let mut watch = RunWatch::new(t.client().await).await;
     let client = t.client().await;
+    let live = t.client().await;
+    let mut notes = live.notifications().unwrap();
+    live.call::<method::EventsSubscribe>(EventsSubscribeParams::default()).await.unwrap();
     let event = |type_: &str, cause| IngestParams {
         source: "loop".into(),
         events: vec![IngestEvent {
@@ -218,6 +234,40 @@ run = { agent = "sh" }
     assert_eq!(outcome("other"), DeliveryOutcome::Fired);
     assert_eq!(detail.runs.len(), 1);
     assert_eq!(detail.runs[0].chain_depth, 2);
+    // A live view sees the block at a glance: the batch carries what each event caused.
+    let again = res.accepted[0];
+    let outcomes = within("the event's outcomes, live", async {
+        loop {
+            if let Notification::EventsBatch(b) = notes.recv().await.unwrap() {
+                if b.batch.events.iter().any(|e| e.id == again) {
+                    return b.outcomes.into_iter().filter(|o| o.event == again).collect::<Vec<_>>();
+                }
+            }
+        }
+    })
+    .await;
+    let summary = |list: &[EventOutcome]| {
+        let mut v: Vec<(String, DeliveryOutcome, bool)> =
+            list.iter().map(|o| (o.rule.clone(), o.outcome.clone(), o.run.is_some())).collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    };
+    let want = vec![
+        (
+            "echo".to_owned(),
+            DeliveryOutcome::Blocked { reason: BlockReason::LoopSelfTrigger { run: first.id } },
+            false,
+        ),
+        ("other".to_owned(), DeliveryOutcome::Fired, true),
+    ];
+    assert_eq!(summary(&outcomes), want);
+    // So does a page from the log.
+    let page = client.call::<method::EventsQuery>(EventQuery::default()).await.unwrap();
+    assert_eq!(page.page.events[0].id, again);
+    let from_log: Vec<EventOutcome> =
+        page.outcomes.into_iter().filter(|o| o.event == again).collect();
+    assert_eq!(summary(&from_log), want);
+
     // And the history of the rule shows it, for "why didn't it fire?".
     let blocked = client
         .call::<method::RulesHistory>(RuleHistoryParams {
@@ -252,6 +302,9 @@ run = { agent = "sh" }
     )
     .await;
     let mut watch = RunWatch::new(t.client().await).await;
+    let live = t.client().await;
+    let mut notes = live.notifications().unwrap();
+    live.call::<method::EventsSubscribe>(EventsSubscribeParams::default()).await.unwrap();
     for name in ["a", "b", "c"] {
         t.sources.push("fake", file_created("fake", &format!("/w/{name}"))).await;
     }
@@ -272,6 +325,20 @@ run = { agent = "sh" }
         .await
         .unwrap();
     assert_eq!(history.deliveries.len(), 3);
+    // The fire happened long after the event's batch went out; the live view still learns it.
+    let late = within("the late outcome", async {
+        loop {
+            if let Notification::EventsBatch(b) = notes.recv().await.unwrap() {
+                if let Some(o) =
+                    b.outcomes.into_iter().find(|o| o.outcome == DeliveryOutcome::Fired)
+                {
+                    return o;
+                }
+            }
+        }
+    })
+    .await;
+    assert_eq!((late.event, late.run), (run.event, Some(run.id)));
     t.stop().await;
 }
 
@@ -308,6 +375,7 @@ async fn a_burst_of_events_reaches_a_slow_client_summarized() {
     within("the burst to be accounted for", async {
         while seen + dropped < TOTAL {
             if let Notification::EventsBatch(b) = notes.recv().await.unwrap() {
+                let b = b.batch;
                 assert!(b.events.len() <= 200, "batches are bounded");
                 batches += 1;
                 seen += b.events.len() as u64;
@@ -327,7 +395,7 @@ async fn a_burst_of_events_reaches_a_slow_client_summarized() {
         .call::<method::EventsQuery>(EventQuery { limit: Some(1), ..Default::default() })
         .await
         .unwrap();
-    assert_eq!(all.events[0].subject.as_deref(), Some("4-999"), "the log has everything");
+    assert_eq!(all.page.events[0].subject.as_deref(), Some("4-999"), "the log has everything");
     t.stop().await;
 }
 
@@ -420,5 +488,43 @@ run = { agent = "sh", prompt = "Look at {{subject}}" }
         .await
         .unwrap_err();
     assert!(err.to_string().contains("nope"));
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn filters_expand_the_home_directory() {
+    let mut t = TestDaemon::start(&config("")).await;
+    let client = t.client().await;
+    let status = client.call::<method::SystemStatusGet>(Empty {}).await.unwrap();
+    assert_eq!(status.user_home, t.user_home.display().to_string());
+    let home = t.user_home.display().to_string();
+    t.sources.push("fake", file_created("fake", &format!("{home}/University/a.pdf"))).await;
+    t.sources.push("fake", file_created("fake", "/elsewhere/b.pdf")).await;
+    let all = within("both events", async {
+        loop {
+            let p = client.call::<method::EventsQuery>(EventQuery::default()).await.unwrap();
+            if p.page.events.len() == 2 {
+                return p;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert_eq!(all.page.events.len(), 2);
+    for filter in [
+        EventFilter { path: Some("~/University".into()), ..Default::default() },
+        EventFilter { subject: Some("~/University/*.pdf".into()), ..Default::default() },
+    ] {
+        let page = client
+            .call::<method::EventsQuery>(EventQuery {
+                filter: filter.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let subjects: Vec<_> =
+            page.page.events.iter().map(|e| e.subject.clone().unwrap()).collect();
+        assert_eq!(subjects, [format!("{home}/University/a.pdf")], "{filter:?}");
+    }
     t.stop().await;
 }

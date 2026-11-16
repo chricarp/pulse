@@ -12,10 +12,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use axum::Extension;
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
+use pulse_contracts::auth::WS_CLOSE_UNAUTHORIZED;
 use pulse_contracts::rpc::*;
 use pulse_contracts::status::{Project, SystemStatus};
 use pulse_contracts::{Run, RunSummary, SubscriptionId};
@@ -32,10 +34,26 @@ const MAX_IN_FLIGHT: usize = 16;
 const MAX_SUBSCRIPTIONS: usize = 64;
 const MAX_MESSAGE: usize = 4 * 1024 * 1024;
 
-pub(crate) async fn upgrade(State(app): State<App>, ws: WebSocketUpgrade) -> Response {
-    ws.protocols([WS_PROTOCOL])
-        .max_message_size(MAX_MESSAGE)
-        .on_upgrade(move |socket| serve(app.services, socket))
+/// Set by the guard on a browser upgrade without a valid token.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Unauthenticated;
+
+pub(crate) async fn upgrade(
+    State(app): State<App>,
+    unauthenticated: Option<Extension<Unauthenticated>>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let ws = ws.protocols([WS_PROTOCOL]).max_message_size(MAX_MESSAGE);
+    if unauthenticated.is_some() {
+        return ws.on_upgrade(|mut socket| async move {
+            let frame = CloseFrame {
+                code: WS_CLOSE_UNAUTHORIZED,
+                reason: "missing or wrong daemon token; open Pulse with `pulse open`".into(),
+            };
+            let _ = socket.send(Message::Close(Some(frame))).await;
+        });
+    }
+    ws.on_upgrade(move |socket| serve(app.services, socket))
 }
 
 /// One client connection: its outgoing queue and its subscriptions.
@@ -43,6 +61,9 @@ pub(crate) async fn upgrade(State(app): State<App>, ws: WebSocketUpgrade) -> Res
 pub(crate) struct Connection {
     out: mpsc::Sender<String>,
     subs: Mutex<HashMap<SubscriptionId, CancellationToken>>,
+    /// Subscriptions whose subscribe call has not been answered yet: they deliver nothing until
+    /// the response is queued, so the client knows the id before the first notification.
+    gates: Mutex<HashMap<SubscriptionId, CancellationToken>>,
     /// Cancelled when the connection ends (or the daemon shuts down).
     closed: CancellationToken,
     shutdown_after_reply: AtomicBool,
@@ -82,8 +103,18 @@ impl Connection {
         Ok(self.closed.child_token())
     }
 
-    fn register(&self, id: SubscriptionId, stop: CancellationToken) {
+    fn register(&self, id: SubscriptionId, stop: CancellationToken, ready: CancellationToken) {
         self.subs().insert(id, stop);
+        self.gates.lock().unwrap_or_else(|p| p.into_inner()).insert(id, ready);
+    }
+
+    /// The subscribe call's answer is queued; the subscription may deliver.
+    fn open_gate(&self, result: &serde_json::Value) {
+        let Some(id) = result.get("subscription") else { return };
+        let Ok(id) = serde_json::from_value::<SubscriptionId>(id.clone()) else { return };
+        if let Some(ready) = self.gates.lock().unwrap_or_else(|p| p.into_inner()).remove(&id) {
+            ready.cancel();
+        }
     }
 
     fn unsubscribe(&self, id: SubscriptionId) -> Result<Empty, RpcError> {
@@ -116,6 +147,7 @@ async fn serve(services: Services, socket: WebSocket) {
     let cx = Arc::new(Connection {
         out,
         subs: Mutex::new(HashMap::new()),
+        gates: Mutex::new(HashMap::new()),
         closed: closed.clone(),
         shutdown_after_reply: AtomicBool::new(false),
     });
@@ -207,12 +239,16 @@ async fn handle(server: &RpcServer, cx: &Arc<Connection>, text: &str) {
         Ok(request) => dispatch(server, cx, request).await,
         Err(e) => Err(e),
     };
+    let opened = result.as_ref().ok().cloned();
     if let Some(id) = req.id {
         let response = match result {
             Ok(v) => JsonRpcResponse::ok(Some(id), v),
             Err(e) => JsonRpcResponse::err(Some(id), e),
         };
         respond(cx, response).await;
+    }
+    if let Some(v) = opened {
+        cx.open_gate(&v);
     }
     if cx.shutdown_after_reply.load(Ordering::SeqCst) {
         server.services.shutdown();
@@ -236,8 +272,8 @@ fn map<T>(r: crate::error::ServiceResult<T>) -> R<T> {
 impl RpcHandler for RpcServer {
     type Context = Arc<Connection>;
 
-    async fn events_query(&self, _: &Self::Context, p: EventQuery) -> R<EventPage> {
-        map(self.services.events_query(p).await)
+    async fn events_query(&self, _: &Self::Context, p: EventQuery) -> R<EventPageWithOutcomes> {
+        map(self.services.events_query_with_outcomes(p).await)
     }
     async fn events_get(&self, _: &Self::Context, p: EventIdParams) -> R<EventDetail> {
         map(self.services.events_get(p.id).await)
@@ -248,15 +284,16 @@ impl RpcHandler for RpcServer {
         p: EventsSubscribeParams,
     ) -> R<Subscribed> {
         let stop = cx.reserve_subscription()?;
-        let deliver = cx.notifier::<EventsBatch>("events.batch");
-        let id = map(self.services.events_subscribe(
+        let ready = CancellationToken::new();
+        let deliver = cx.notifier::<EventsBatchWithOutcomes>("events.batch");
+        let id = map(self.services.events_subscribe_with_outcomes(
             p.filter,
-            None,
             deliver,
+            ready.clone(),
             stop.clone(),
             cx.closed.clone(),
         ))?;
-        cx.register(id, stop);
+        cx.register(id, stop, ready);
         Ok(Subscribed { subscription: id })
     }
     async fn events_unsubscribe(&self, cx: &Self::Context, p: Unsubscribe) -> R<Empty> {
@@ -343,9 +380,16 @@ impl RpcHandler for RpcServer {
     }
     async fn runs_subscribe(&self, cx: &Self::Context, p: RunsSubscribeParams) -> R<Subscribed> {
         let stop = cx.reserve_subscription()?;
+        let ready = CancellationToken::new();
         let deliver = cx.notifier::<RunsChanged>("runs.changed");
-        let id = self.services.runs_subscribe(p.filter, deliver, stop.clone(), cx.closed.clone());
-        cx.register(id, stop);
+        let id = self.services.runs_subscribe(
+            p.filter,
+            deliver,
+            ready.clone(),
+            stop.clone(),
+            cx.closed.clone(),
+        );
+        cx.register(id, stop, ready);
         Ok(Subscribed { subscription: id })
     }
     async fn runs_subscribe_output(
@@ -354,12 +398,20 @@ impl RpcHandler for RpcServer {
         p: RunOutputSubscribeParams,
     ) -> R<Subscribed> {
         let stop = cx.reserve_subscription()?;
+        let ready = CancellationToken::new();
         let deliver = cx.notifier::<RunsOutput>("runs.output");
         let id = map(self
             .services
-            .runs_subscribe_output(p.id, p.after, deliver, stop.clone(), cx.closed.clone())
+            .runs_subscribe_output(
+                p.id,
+                p.after,
+                deliver,
+                ready.clone(),
+                stop.clone(),
+                cx.closed.clone(),
+            )
             .await)?;
-        cx.register(id, stop);
+        cx.register(id, stop, ready);
         Ok(Subscribed { subscription: id })
     }
     async fn runs_unsubscribe(&self, cx: &Self::Context, p: Unsubscribe) -> R<Empty> {

@@ -8,12 +8,14 @@
 //! - [`pattern`] and [`template`]: glob and template *syntax* (matching and rendering live in
 //!   `pulse-core`).
 //! - [`run`]: runs, output, routing decisions ([`Outcome`], [`BlockReason`]) and deliveries.
+//! - [`auth`]: how clients authenticate (login codes, WebSocket subprotocols, close codes).
 //! - [`rpc`]: JSON-RPC framing, the v1 method table, notifications.
 //! - [`typescript`]: generation of `apps/web/src/contracts/index.ts`.
 //!
 //! Contract: serde types and validation only. No I/O, no clock, no environment: the home
 //! directory and the current time are always parameters.
 
+pub mod auth;
 pub mod catalog;
 pub mod config;
 pub mod event;

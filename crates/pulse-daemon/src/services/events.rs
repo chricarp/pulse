@@ -3,8 +3,9 @@
 use pulse_contracts::catalog::BuiltinEvent;
 use pulse_contracts::config::validate_name;
 use pulse_contracts::rpc::{
-    EventDetail, EventFilter, EventPage, EventQuery, EventsBatch, IngestParams, IngestResult,
-    ReplayParams, ReplayResult, ReportParams, ReportResult, ReportedEvent,
+    EventDetail, EventFilter, EventOutcome, EventPage, EventPageWithOutcomes, EventQuery,
+    EventsBatch, EventsBatchWithOutcomes, IngestParams, IngestResult, ReplayParams, ReplayResult,
+    ReportParams, ReportResult, ReportedEvent,
 };
 use pulse_contracts::{EventId, EventType, NewEvent, SourceKind, SourceRef, SubscriptionId};
 use pulse_core::filter::CompiledFilter;
@@ -14,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use super::Services;
 use crate::engine::Input;
 use crate::error::{ServiceError, ServiceResult};
-use crate::hub::{Permit, Sent};
+use crate::hub::{Live, Permit, Sent};
 
 /// Events per `events.ingest` call.
 pub const MAX_INGEST_EVENTS: usize = 1000;
@@ -22,8 +23,30 @@ pub const MAX_INGEST_EVENTS: usize = 1000;
 pub const REPORT_SOURCE: &str = "run";
 
 impl Services {
-    pub async fn events_query(&self, query: EventQuery) -> ServiceResult<EventPage> {
+    /// The log, as agents may see it (no outcomes): the MCP backend's query.
+    pub async fn events_query(&self, mut query: EventQuery) -> ServiceResult<EventPage> {
+        expand_home(&mut query.filter, &self.shared.user_home);
         Ok(self.shared.store.read(move |q| q.query().query_events(&query)).await?)
+    }
+
+    /// The log with what each event caused, for clients holding the daemon token.
+    pub async fn events_query_with_outcomes(
+        &self,
+        mut query: EventQuery,
+    ) -> ServiceResult<EventPageWithOutcomes> {
+        expand_home(&mut query.filter, &self.shared.user_home);
+        Ok(self
+            .shared
+            .store
+            .read(move |q| {
+                let q = q.query();
+                let page = q.query_events(&query)?;
+                let ids: Vec<EventId> = page.events.iter().map(|e| e.id).collect();
+                let outcomes =
+                    q.deliveries_for_events(&ids)?.iter().map(EventOutcome::from).collect();
+                Ok(EventPageWithOutcomes { page, outcomes })
+            })
+            .await?)
     }
 
     pub async fn events_get(&self, id: EventId) -> ServiceResult<EventDetail> {
@@ -46,24 +69,55 @@ impl Services {
     /// Live events matching `filter`, delivered in bounded, rate-limited batches (see
     /// [`crate::hub`]). With `agent`, only events that agent's scopes cover, checked against
     /// the configuration in effect at delivery time.
+    ///
+    /// Without outcomes: this is the MCP backend's subscription, and agents are not told what
+    /// other rules decided.
     pub(crate) fn events_subscribe(
         &self,
         filter: EventFilter,
         agent: Option<String>,
-        deliver: impl FnMut(&EventsBatch) -> Sent + Send + 'static,
+        mut deliver: impl FnMut(&EventsBatch) -> Sent + Send + 'static,
         stop: CancellationToken,
         client: CancellationToken,
     ) -> ServiceResult<SubscriptionId> {
-        let compiled = CompiledFilter::compile(&filter)
-            .map_err(|e| ServiceError::Invalid(format!("invalid filter: {e}")))?;
         let permit = agent.map(|agent| {
             let shared = self.shared.clone();
             Box::new(move |e: &pulse_contracts::Event| {
                 shared.snapshot().routing.agent_permits(&agent, e)
             }) as Permit
         });
+        let options = Live { permit, outcomes: false, ready: CancellationToken::new() };
+        options.ready.cancel();
+        self.subscribe_live(filter, options, move |b| deliver(&b.batch), stop, client)
+    }
+
+    /// Live events with what each one caused, for clients holding the daemon token. Nothing is
+    /// delivered before `ready` is cancelled (after the subscribe call has been answered).
+    pub(crate) fn events_subscribe_with_outcomes(
+        &self,
+        filter: EventFilter,
+        deliver: impl FnMut(&EventsBatchWithOutcomes) -> Sent + Send + 'static,
+        ready: CancellationToken,
+        stop: CancellationToken,
+        client: CancellationToken,
+    ) -> ServiceResult<SubscriptionId> {
+        let options = Live { permit: None, outcomes: true, ready };
+        self.subscribe_live(filter, options, deliver, stop, client)
+    }
+
+    fn subscribe_live(
+        &self,
+        mut filter: EventFilter,
+        options: Live,
+        deliver: impl FnMut(&EventsBatchWithOutcomes) -> Sent + Send + 'static,
+        stop: CancellationToken,
+        client: CancellationToken,
+    ) -> ServiceResult<SubscriptionId> {
+        expand_home(&mut filter, &self.shared.user_home);
+        let compiled = CompiledFilter::compile(&filter)
+            .map_err(|e| ServiceError::Invalid(format!("invalid filter: {e}")))?;
         let id = self.shared.ids.subscription();
-        self.shared.hub.spawn_event_subscription(id, compiled, permit, deliver, stop, client);
+        self.shared.hub.spawn_event_subscription(id, compiled, options, deliver, stop, client);
         Ok(id)
     }
 
@@ -161,4 +215,20 @@ impl Services {
         let ids = self.submit(vec![event]).await?;
         Ok(ReportResult { id: ids.into_iter().next().flatten() })
     }
+}
+
+/// `~` in a filter's `path` and `subject` means the user's home directory, as in config.
+fn expand_home(filter: &mut EventFilter, user_home: &std::path::Path) {
+    let home = user_home.display().to_string();
+    let expand = |v: &mut Option<String>| {
+        if let Some(s) = v.as_mut() {
+            if s == "~" {
+                *s = home.clone();
+            } else if let Some(rest) = s.strip_prefix("~/") {
+                *s = format!("{}/{rest}", home.trim_end_matches('/'));
+            }
+        }
+    };
+    expand(&mut filter.path);
+    expand(&mut filter.subject);
 }

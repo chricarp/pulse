@@ -44,34 +44,50 @@ impl Services {
         Ok(self.shared.store.read(move |q| q.query().run_output(id, after, limit)).await?)
     }
 
+    /// Run changes, from when `ready` is cancelled (after the subscribe call was answered).
     pub(crate) fn runs_subscribe(
         &self,
         filter: RunFilter,
         deliver: impl FnMut(&RunsChanged) -> Sent + Send + 'static,
+        ready: CancellationToken,
         stop: CancellationToken,
         client: CancellationToken,
     ) -> SubscriptionId {
         let id = self.shared.ids.subscription();
-        self.shared.hub.spawn_run_subscription(id, filter, deliver, stop, client);
+        self.shared.hub.spawn_run_subscription(id, filter, deliver, ready, stop, client);
         id
     }
 
     /// Streams a run's output: stored chunks after `after`, then live ones, then `done`. The
     /// subscription keeps a cursor into the store rather than a queue, so a slow client loses
-    /// nothing and costs nothing while it catches up.
+    /// nothing and costs nothing while it catches up. Nothing is sent before `ready`.
     pub(crate) async fn runs_subscribe_output(
         &self,
         run: RunId,
         after: Option<u64>,
         mut deliver: impl FnMut(&RunsOutput) -> Sent + Send + 'static,
+        ready: CancellationToken,
         stop: CancellationToken,
         client: CancellationToken,
     ) -> ServiceResult<SubscriptionId> {
-        let current = self.runs_get(run).await?;
+        // Watch first, then read the status: a run that ends in between closes the watch
+        // instead of leaving it open forever.
+        let mut watch = Some(self.shared.hub.output_watch(run));
+        let current = self.runs_get(run).await;
+        let terminal = current.as_ref().map_or(true, |r| r.status.is_terminal());
+        if terminal {
+            watch = None;
+            self.shared.hub.forget_output(run);
+        }
+        current?;
         let subscription = self.shared.ids.subscription();
         let shared = self.shared.clone();
-        let mut watch = (!current.status.is_terminal()).then(|| shared.hub.output_watch(run));
         tokio::spawn(async move {
+            tokio::select! {
+                _ = stop.cancelled() => return,
+                _ = client.cancelled() => return,
+                _ = ready.cancelled() => {}
+            }
             let mut cursor = after;
             loop {
                 let page = match shared
@@ -142,7 +158,7 @@ impl Services {
     async fn transition(&self, id: RunId, t: RunTransition) -> ServiceResult<Run> {
         let now = self.shared.clock.now();
         let run = self.shared.store.write(move |s| s.transition_run(id, t, now)).await?;
-        self.shared.hub.publish_runs(vec![run.summary()]);
+        self.shared.publish_runs(vec![run.summary()]);
         let _ = self.shared.engine.control(Control::RefreshBacklog).await;
         Ok(run)
     }
@@ -202,7 +218,7 @@ impl Services {
             ..Commit::default()
         };
         self.shared.store.write(move |s| s.commit(&commit)).await?;
-        self.shared.hub.publish_runs(vec![created.clone()]);
+        self.shared.publish_runs(vec![created.clone()]);
         let _ = self.shared.engine.control(Control::RefreshBacklog).await;
         self.shared.worker.wake();
         Ok(created)

@@ -29,6 +29,7 @@ impl Services {
             started_at: self.shared.started_at,
             paused: self.shared.paused(),
             pulse_home: self.shared.home.root().display().to_string(),
+            user_home: self.shared.user_home.display().to_string(),
             port: self.shared.port(),
             sources,
             runs,

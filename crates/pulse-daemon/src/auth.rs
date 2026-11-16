@@ -25,7 +25,8 @@ const AGENT_TOKEN_PREFIX: &str = "pa.";
 const AGENT_CONTEXT: &[u8] = b"pulse/agent-token/v1\0";
 const LOGIN_CONTEXT: &[u8] = b"pulse/ui-login/v1\0";
 /// How long a login code from `pulse open` stays valid.
-pub const LOGIN_CODE_TTL: Duration = Duration::from_secs(120);
+pub const LOGIN_CODE_TTL: Duration =
+    Duration::from_secs(pulse_contracts::auth::LOGIN_CODE_TTL_SECS);
 const MAX_USED_CODES: usize = 256;
 
 pub(crate) fn hex(bytes: &[u8]) -> String {

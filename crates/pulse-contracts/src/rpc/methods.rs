@@ -88,9 +88,10 @@ pub struct EventFilter {
     pub types: Vec<TypeGlob>,
     /// Source URIs (`pulse://fs/university`) or bare source names (`university`).
     pub sources: Vec<String>,
-    /// A glob over `subject`.
+    /// A glob over `subject`. A leading `~` is the user's home directory.
     pub subject: Option<String>,
     /// Events carrying a path equal to or under this absolute directory (or equal to this file).
+    /// A leading `~` is the user's home directory.
     pub path: Option<String>,
     /// Case-insensitive substring of the subject or the data.
     pub text: Option<String>,
@@ -117,6 +118,42 @@ pub struct EventPage {
     pub events: Vec<Event>,
     /// Pass as `cursor` to continue; `None` at the end.
     pub next_cursor: Option<EventId>,
+}
+
+/// What one matching rule decided for one event: the compact form of a [`Delivery`] that live
+/// views need to show outcomes at a glance (loop protection above all) without asking per event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(optional_fields = nullable)]
+pub struct EventOutcome {
+    pub event: EventId,
+    pub rule: String,
+    pub outcome: crate::run::DeliveryOutcome,
+    /// The run it created (fired, awaiting approval).
+    pub run: Option<RunId>,
+}
+
+impl From<&Delivery> for EventOutcome {
+    fn from(d: &Delivery) -> Self {
+        EventOutcome {
+            event: d.event,
+            rule: d.rule.clone(),
+            outcome: d.outcome.clone(),
+            run: d.run,
+        }
+    }
+}
+
+/// `events.query` for RPC clients: a page plus the outcomes of its events.
+///
+/// The base [`EventPage`] is what an agent sees over MCP: agents are not told what other rules
+/// decided, so outcomes exist only on the daemon-token surface.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct EventPageWithOutcomes {
+    #[serde(flatten)]
+    pub page: EventPage,
+    /// Every delivery recorded so far for the page's events, in the order they were recorded.
+    /// An event without entries matched no rule.
+    pub outcomes: Vec<EventOutcome>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -426,7 +463,6 @@ pub struct RunOutputParams {
     pub id: RunId,
     /// Chunks with `seq` greater than this. Default: from the start.
     #[serde(default)]
-    #[ts(type = "number")]
     pub after: Option<u64>,
     #[serde(default)]
     pub limit: Option<u32>,
@@ -450,13 +486,13 @@ pub struct RunsSubscribeParams {
     pub filter: RunFilter,
 }
 
-/// Streams a run's output: first stored chunks after `after`, then live ones.
+/// Streams a run's output: first stored chunks after `after`, then live ones, then `done` (see
+/// [`RunsOutput`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(optional_fields)]
 pub struct RunOutputSubscribeParams {
     pub id: RunId,
     #[serde(default)]
-    #[ts(type = "number")]
     pub after: Option<u64>,
 }
 
@@ -510,7 +546,7 @@ pub struct ConfigErrorList {
 pub enum Notification {
     /// New events for an `events.subscribe` subscription. Batched: at most a few per second.
     #[serde(rename = "events.batch")]
-    EventsBatch(EventsBatch),
+    EventsBatch(EventsBatchWithOutcomes),
     /// Run state changes for a `runs.subscribe` subscription.
     #[serde(rename = "runs.changed")]
     RunsChanged(RunsChanged),
@@ -533,6 +569,17 @@ impl Notification {
     }
 }
 
+/// Live events for one subscription.
+///
+/// - At most 200 events per batch and at most one batch per 250 ms per subscription; the first
+///   batch after a quiet period goes out at once.
+/// - `events` are the newest matching events since the previous batch, oldest first. Ids are
+///   ULIDs from one daemon, so they sort in log order.
+/// - `dropped` counts matching events left out because more arrived than one batch holds; they
+///   are older than every event in this batch and newer than every event in the previous one.
+///   When a subscriber falls behind the daemon's internal fan-out, whole internal batches are
+///   lost and each counts as 1, so `dropped > 0` means "the live view is incomplete; the log
+///   has everything", not an exact count.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct EventsBatch {
     pub subscription: SubscriptionId,
@@ -543,12 +590,37 @@ pub struct EventsBatch {
     pub dropped: u64,
 }
 
+/// `events.batch` as RPC clients receive it: the batch plus what its events caused. Agents
+/// subscribed over MCP receive the base [`EventsBatch`] (they are not told other rules'
+/// decisions).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct EventsBatchWithOutcomes {
+    #[serde(flatten)]
+    pub batch: EventsBatch,
+    /// The deliveries recorded with this batch's events, plus any recorded since the previous
+    /// batch for matching events delivered earlier (a debounce that elapsed fires on an event
+    /// that was sent when it arrived). Outcomes of dropped events are not sent; query the log.
+    pub outcomes: Vec<EventOutcome>,
+}
+
+/// Run state changes for one subscription, at most one notification per 250 ms. Only the
+/// **latest** state of each run in that window is sent: a run that went `queued → running →
+/// succeeded` within it is reported once, as `succeeded`. Views show state; the transitions are
+/// in the run itself. A run is reported only while it matches the filter: one that leaves the
+/// filter's statuses is not reported again, so subscribe with an empty `status` to follow runs
+/// to their end.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RunsChanged {
     pub subscription: SubscriptionId,
     pub runs: Vec<RunSummary>,
 }
 
+/// Output for one `runs.subscribe_output` subscription: first every stored chunk after `after`
+/// (in pages of up to 500), then new chunks as the run writes them (read from the store, at
+/// most every 100 ms), and finally a notification with `done: true` once the run is terminal
+/// and everything stored has been sent. A run that had already finished gets its stored chunks
+/// and `done` at once. A slow client is never sent a backlog: it reads bigger pages later, and
+/// nothing is lost.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct RunsOutput {
     pub subscription: SubscriptionId,
@@ -557,6 +629,9 @@ pub struct RunsOutput {
     pub done: bool,
 }
 
+/// Sent to every connection, coalesced over 100 ms, whenever any field of [`SystemStatus`]
+/// changes (run counts and source health included), with `topics` naming the lists to refetch.
+/// `topics` is empty when only the status changed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct StateChanged {
     pub status: SystemStatus,
@@ -649,11 +724,13 @@ macro_rules! rpc_methods {
 }
 
 rpc_methods! {
-    /// Query the log with filters and cursor pagination.
-    "events.query" => EventsQuery, events_query(EventQuery) -> EventPage;
+    /// Query the log with filters and cursor pagination. `cursor` is exclusive in the direction
+    /// of `order`: `newest_first` continues with ids below it.
+    "events.query" => EventsQuery, events_query(EventQuery) -> EventPageWithOutcomes;
     /// One event with its deliveries and runs.
     "events.get" => EventsGet, events_get(EventIdParams) -> EventDetail;
-    /// Live events matching a filter, as `events.batch` notifications.
+    /// Live events matching a filter, as `events.batch` notifications (see [`EventsBatch`]).
+    /// Every subscribe method is answered before its subscription's first notification.
     "events.subscribe" => EventsSubscribe, events_subscribe(EventsSubscribeParams) -> Subscribed;
     "events.unsubscribe" => EventsUnsubscribe, events_unsubscribe(Unsubscribe) -> Empty;
     "events.replay" => EventsReplay, events_replay(ReplayParams) -> ReplayResult;

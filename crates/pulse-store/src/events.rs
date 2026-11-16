@@ -256,6 +256,21 @@ impl Queries<'_> {
         rows.into_iter().map(to_delivery).collect()
     }
 
+    /// Every delivery of these events, in the order they were recorded.
+    pub fn deliveries_for_events(&self, ids: &[EventId]) -> Result<Vec<Delivery>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let marks = vec!["?"; ids.len()].join(",");
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {DELIVERY_COLUMNS} FROM deliveries WHERE event_id IN ({marks}) ORDER BY id"
+        ))?;
+        let rows = stmt
+            .query_map(params_from_iter(ids.iter().map(|i| i.to_string())), read_delivery)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter().map(to_delivery).collect()
+    }
+
     /// A rule's deliveries, newest first.
     pub fn rule_history(
         &self,
