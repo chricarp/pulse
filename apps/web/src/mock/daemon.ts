@@ -1548,11 +1548,12 @@ export class MockDaemon {
     let sent = 0;
     this.stormTimer = setInterval(() => {
       const now = this.now();
+      // External events (`pulse ingest`), which the daemon delivers one by one. A storm of
+      // files in a watched folder would not look like this: the real fs source folds more than
+      // `burst_threshold` (200) pending changes in one directory into a single `fs.burst`.
       for (let i = 0; i < per && sent < total; i++, sent++) {
-        const part = Math.floor(sent / 500);
-        const dir = `${fx.HOME}/Downloads/dataset-2026/part-${String(part).padStart(2, "0")}`;
-        const name = `${String(sent).padStart(5, "0")}.csv`;
-        this.emit({ type: "fs.file.created", source: "pulse://fs/downloads", subject: `${dir}/${name}`, data: { path: `${dir}/${name}`, dir, name, ext: "csv", size: 2048 + (sent % 4096) } }, now);
+        const name = `photos/IMG_${String(sent).padStart(5, "0")}.jpg`;
+        this.emit({ type: "ext.camera.upload.received", source: "pulse://ext/camera", subject: name, data: { size: 2048 + (sent % 4096) } }, now);
       }
       if (sent >= total && this.stormTimer) {
         clearInterval(this.stormTimer);
