@@ -81,12 +81,21 @@ pub fn login_code(secret: &str, now: Timestamp) -> String {
 
 /// Remembers redeemed login codes until they expire, so each works once. Bounded: past the
 /// bound, the oldest are forgotten (they expire within minutes anyway).
-#[derive(Debug, Default)]
+///
+/// The memory does not survive a restart, so codes minted before this daemon started are
+/// refused: otherwise a code that was already spent would work again for the rest of its two
+/// minutes after a restart.
+#[derive(Debug)]
 pub(crate) struct LoginCodes {
     used: Mutex<VecDeque<(i64, String)>>,
+    started_at: Timestamp,
 }
 
 impl LoginCodes {
+    pub(crate) fn new(started_at: Timestamp) -> Self {
+        LoginCodes { used: Mutex::new(VecDeque::new()), started_at }
+    }
+
     pub(crate) fn redeem(&self, secret: &str, code: &str, now: Timestamp) -> bool {
         let Some((expiry, tag)) = code.split_once('.') else { return false };
         let Ok(expiry_ms) = expiry.parse::<i64>() else { return false };
@@ -96,6 +105,9 @@ impl LoginCodes {
         }
         let ttl = i64::try_from(LOGIN_CODE_TTL.as_millis()).unwrap_or(i64::MAX);
         if expiry_ms <= now.as_millis() || expiry_ms > now.as_millis().saturating_add(ttl) {
+            return false;
+        }
+        if expiry_ms.saturating_sub(ttl) < self.started_at.as_millis() {
             return false;
         }
         let mut used = self.used.lock().unwrap_or_else(|p| p.into_inner());
@@ -127,8 +139,8 @@ mod tests {
 
     #[test]
     fn login_codes_expire_and_work_once() {
-        let codes = LoginCodes::default();
         let t0 = Timestamp::from_millis(1_000_000);
+        let codes = LoginCodes::new(t0);
         let code = login_code("s", t0);
         assert!(!codes.redeem("other", &code, t0));
         assert!(codes.redeem("s", &code, t0));
@@ -136,5 +148,15 @@ mod tests {
         let late = login_code("s", t0);
         assert!(!codes.redeem("s", &late, t0.saturating_add(LOGIN_CODE_TTL)));
         assert!(!codes.redeem("s", "garbage", t0));
+
+        // Which codes were spent is not kept across a restart, so a restarted daemon refuses
+        // every code minted before it started (`pulse open` again gives a new one).
+        let t1 = t0.saturating_add(Duration::from_secs(1));
+        let spent = login_code("s", t1);
+        assert!(codes.redeem("s", &spent, t1));
+        let restarted = LoginCodes::new(t0.saturating_add(Duration::from_secs(5)));
+        assert!(!restarted.redeem("s", &spent, t0.saturating_add(Duration::from_secs(10))));
+        let fresh = login_code("s", t0.saturating_add(Duration::from_secs(10)));
+        assert!(restarted.redeem("s", &fresh, t0.saturating_add(Duration::from_secs(10))));
     }
 }

@@ -112,7 +112,7 @@ impl Shared {
             store: p.store,
             hub: Hub::default(),
             secret: p.secret,
-            login_codes: LoginCodes::default(),
+            login_codes: LoginCodes::new(started_at),
             started_at,
             port: OnceLock::new(),
             shutdown: CancellationToken::new(),

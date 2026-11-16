@@ -9,7 +9,9 @@
 //! **The browser** cannot read the token file and cannot set headers on a WebSocket:
 //!
 //! 1. `pulse open` (or the desktop shell) mints a **login code** with the token and opens
-//!    `http://127.0.0.1:<port>/#login=<code>`. The code is single-use and valid for two minutes;
+//!    `http://127.0.0.1:<port>/#login=<code>`. The code is single-use and valid for two minutes
+//!    (and only for the daemon that was running when it was minted: a restarted daemon refuses
+//!    older codes, since it cannot know which were spent);
 //!    the token itself never appears in a process argument list or in browser history. The
 //!    fragment is never sent to a server.
 //! 2. The page removes the fragment from the address bar (`history.replaceState`), then posts
