@@ -163,11 +163,27 @@ impl Layout {
 /// The largest index we read. Larger ones are skipped (with a health message upstream).
 pub(crate) const MAX_INDEX: u64 = 256 << 20;
 
+/// Paths longer than this (Linux's `PATH_MAX`) make the index unreadable to us: no file system
+/// has them, and it bounds the work per entry.
+pub(crate) const MAX_PATH: usize = 4096;
+
 /// Conflicted paths (any stage above 0) in an index file, deduplicated, in index order, at most
 /// `max`. Supports index versions 2, 3 and 4.
 pub(crate) fn conflicted_paths(index: &[u8], hash_bytes: usize, max: usize) -> Option<Vec<String>> {
+    conflicted_paths_counted(index, hash_bytes, max, &mut 0)
+}
+
+/// [`conflicted_paths`], counting the bytes it copies or compares in `steps`: at most a small
+/// multiple of the index's size plus `max` paths. Version 4 prefix-compresses each path against
+/// the previous one; the path is edited in place, never copied per entry.
+pub(crate) fn conflicted_paths_counted(
+    index: &[u8],
+    hash_bytes: usize,
+    max: usize,
+    steps: &mut usize,
+) -> Option<Vec<String>> {
     let be32 = |b: &[u8], at: usize| -> Option<u32> {
-        Some(u32::from_be_bytes(b.get(at..at + 4)?.try_into().ok()?))
+        Some(u32::from_be_bytes(b.get(at..at.checked_add(4)?)?.try_into().ok()?))
     };
     if index.get(..4)? != b"DIRC" {
         return None;
@@ -177,47 +193,59 @@ pub(crate) fn conflicted_paths(index: &[u8], hash_bytes: usize, max: usize) -> O
         return None;
     }
     let count = be32(index, 8)? as usize;
-    let mut at = 12;
+    let mut at: usize = 12;
     let mut out: Vec<String> = Vec::new();
-    let mut prev: Vec<u8> = Vec::new();
+    let mut path: Vec<u8> = Vec::new();
+    // Whether the previous entry was a conflict stage of the same path (stages of one path are
+    // adjacent: the index is sorted by path, then stage).
+    let mut prev_conflicted = false;
     // ctime, mtime (8 each), dev, ino, mode, uid, gid, size (4 each), then the object id.
     let fixed = 40 + hash_bytes;
     for _ in 0..count {
         let start = at;
-        let flags =
-            u16::from_be_bytes(index.get(start + fixed..start + fixed + 2)?.try_into().ok()?);
-        at = start + fixed + 2;
+        let flags_at = start.checked_add(fixed)?;
+        let flags = u16::from_be_bytes(index.get(flags_at..flags_at + 2)?.try_into().ok()?);
+        at = flags_at + 2;
         if version >= 3 && flags & 0x4000 != 0 {
             at += 2;
         }
         let stage = (flags >> 12) & 0x3;
-        let path: Vec<u8> = if version == 4 {
-            // Prefix compression: a varint of bytes to drop from the previous path, then the
-            // NUL-terminated rest.
+        let same = if version == 4 {
+            // A varint of bytes to drop from the previous path, then the NUL-terminated rest.
             let (strip, n) = varint(index.get(at..)?)?;
             at += n;
             let end = at + index.get(at..)?.iter().position(|&b| b == 0)?;
-            let keep = prev.len().checked_sub(usize::try_from(strip).ok()?)?;
-            let mut p = prev[..keep].to_vec();
-            p.extend_from_slice(&index[at..end]);
+            let rest = &index[at..end];
+            let keep = path.len().checked_sub(usize::try_from(strip).ok()?)?;
+            *steps += path.len() - keep + rest.len();
+            let same = &path[keep..] == rest;
+            path.truncate(keep);
+            path.extend_from_slice(rest);
             at = end + 1;
-            p
+            same
         } else {
             let end = at + index.get(at..)?.iter().position(|&b| b == 0)?;
-            let p = index[at..end].to_vec();
+            let name = &index[at..end];
+            *steps += name.len() * 2;
+            let same = name == path.as_slice();
+            path.clear();
+            path.extend_from_slice(name);
             // Entries are padded with 1-8 NULs to a multiple of 8 bytes.
             let len = end - start;
             at = start + (len + 8) / 8 * 8;
-            p
+            same
         };
-        if stage > 0 {
+        if path.len() > MAX_PATH {
+            return None;
+        }
+        let conflicted = stage > 0;
+        if conflicted && !(same && prev_conflicted) && out.len() < max {
+            *steps += path.len();
             if let Ok(s) = std::str::from_utf8(&path) {
-                if out.last().map(String::as_str) != Some(s) && out.len() < max {
-                    out.push(s.to_owned());
-                }
+                out.push(s.to_owned());
             }
         }
-        prev = path;
+        prev_conflicted = conflicted;
     }
     Some(out)
 }
@@ -230,7 +258,7 @@ fn varint(b: &[u8]) -> Option<(u64, usize)> {
     while c & 0x80 != 0 {
         i += 1;
         c = *b.get(i)?;
-        v = v.checked_add(1)?.checked_mul(128)? + u64::from(c & 0x7f);
+        v = v.checked_add(1)?.checked_mul(128)?.checked_add(u64::from(c & 0x7f))?;
     }
     Some((v, i + 1))
 }
@@ -251,6 +279,44 @@ mod tests {
     fn bounded_cuts_on_char_boundaries() {
         assert_eq!(bounded("héllo", 2), "h");
         assert_eq!(bounded("abc", 10), "abc");
+    }
+
+    /// A version 4 index whose entries share a long prefix: each drops one byte of the previous
+    /// path and adds one.
+    fn v4_index(entries: usize, prefix: usize, stage: u16) -> Vec<u8> {
+        let mut b = b"DIRC\0\0\0\x04".to_vec();
+        b.extend_from_slice(&(entries as u32).to_be_bytes());
+        for i in 0..entries {
+            b.extend_from_slice(&[0; 40 + 20]);
+            b.extend_from_slice(&(stage << 12).to_be_bytes());
+            if i == 0 {
+                b.push(0);
+                b.extend(std::iter::repeat_n(b'p', prefix));
+            } else {
+                b.push(1);
+            }
+            b.push(b'a' + (i % 26) as u8);
+            b.push(0);
+        }
+        b
+    }
+
+    #[test]
+    fn index_v4_costs_steps_linear_in_its_size() {
+        for stage in [0, 1] {
+            let index = v4_index(20_000, 3_000, stage);
+            let mut steps = 0;
+            let paths = conflicted_paths_counted(&index, 20, 200, &mut steps).unwrap();
+            assert_eq!(paths.len(), if stage == 0 { 0 } else { 200 });
+            assert!(
+                steps <= 4 * index.len() + 200 * 3_001,
+                "{steps} steps for {} bytes",
+                index.len()
+            );
+        }
+        // A path longer than any file system allows is not an index we read.
+        assert_eq!(conflicted_paths(&v4_index(2, MAX_PATH, 1), 20, 10), None);
+        assert_eq!(varint(&[0xff; 12]), None, "overflow is not a number");
     }
 
     #[test]
