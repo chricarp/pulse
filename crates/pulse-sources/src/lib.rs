@@ -18,7 +18,8 @@
 //!   explicit timestamps and one timer, so it can be tested without sleeping.
 //!
 //! The process wrapper (`pulse run`) and ingest parsing are not `Source`s; they live in
-//! [`process`] and [`ingest`].
+//! [`process`] and [`ingest`]. Design decisions for every source are in
+//! `docs/internals/0005-sources.md`.
 
 pub mod calendar;
 pub mod clock;
@@ -61,6 +62,7 @@ pub enum SourceError {
     Platform(String),
     #[error("the engine stopped accepting events")]
     SinkClosed,
+    /// No built-in source returns this any more; kept so code matching on it still compiles.
     #[error("the {0} source is not implemented yet")]
     NotImplemented(&'static str),
 }
