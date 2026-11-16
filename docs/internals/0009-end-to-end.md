@@ -20,7 +20,7 @@ exercised as users run them.
 | `templates` | Both shipped templates as shipped (only durations shortened and `program` added): a PDF runs the study agent with output reaching a subscriber while the run is running; `pulse run -- <failing>` runs the diagnosis and a passing command does not |
 | `loops` | Self-trigger by inference (written at once, through a debounced rule, by a process that left the group and writes after the run ended), exact causation via `pulse run` and `pulse ingest`, the chain-depth limit with two rules that trigger each other, the circuit breaker when attribution fails, a replay |
 | `restart` | A crash with runs running and queued and limits in force; a graceful stop; an agent orphaned by a crash that writes after the restart |
-| `storm` | 10,000 files unzipped (events, runs, live batches, `system.status` latency during the storm); a real `git clone` and `git checkout` in a folder with an fs and a git source |
+| `storm` | 10,000 files unzipped (events, runs, live batches; `system.status` calls are answered while the storm is still being processed, checked by the order of observations; latency is printed, not asserted, because it measures the machine); a real `git clone` and `git checkout` in a folder with an fs and a git source |
 | `sources` | A git commit and branch switch, a schedule and a calendar event fire rules |
 | `hostile` | Instruction-like, option-like, control-character, non-UTF-8 and 255-byte names; a 1 MB commit message; a symlink out of scope; an external payload claiming a built-in type |
 | `cli` | Exit codes without a daemon, `pulse run` exit codes and signals, `init`, adding and removing definitions, the `--json` shapes |

@@ -633,9 +633,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_background_process_holding_the_output_does_not_hang_the_wrapper() {
-        let (d, _) = go("sleep 3 & echo started", 4096, PIPES).await;
+        // The background process holds the output until the test opens the FIFO for writing,
+        // which it only does once the wrapper has returned: returning at all is the proof.
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("release");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            0,
+        )
+        .unwrap();
+        let script = format!("read x < '{}' & echo started", fifo.display());
+        let (d, cap) = go(&script, 4096, PIPES).await;
         assert_eq!(d.exit_code, Some(0));
-        assert!(d.duration_ms < 10_000);
+        assert_eq!(cap.out, b"started\n");
+        // Let the background process end: it is waiting to open the FIFO for reading.
+        drop(std::fs::OpenOptions::new().write(true).open(&fifo).unwrap());
     }
 
     #[tokio::test]
