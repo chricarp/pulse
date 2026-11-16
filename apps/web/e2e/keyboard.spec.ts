@@ -9,6 +9,8 @@ test("navigate, pause and resume, and approve from the keyboard", async ({ page 
   await page.keyboard.press("g");
   await page.keyboard.press("r");
   await expect(page.getByRole("heading", { name: "Rules" })).toBeVisible();
+  // The heading renders before the list has loaded; `j` moves within the rows there are.
+  await expect(page.locator(".rule-row").first()).toBeVisible();
   await page.keyboard.press("j");
   await expect(page.locator(".rule-row.is-selected")).toHaveCount(1);
   await page.keyboard.press("Escape");
