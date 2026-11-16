@@ -40,14 +40,25 @@ impl StateFile {
 
     /// Writes atomically (temp file, then rename), so a crash leaves the old state or the new.
     pub(crate) fn store<T: Serialize>(&self, value: &T) -> std::io::Result<()> {
-        let dir = self.path.parent().unwrap_or(&self.path);
-        std::fs::create_dir_all(dir)?;
-        let tmp = self.path.with_extension("json.tmp");
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&serde_json::to_vec(value).map_err(std::io::Error::other)?)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, &self.path)
+        write_atomic(&self.path, &serde_json::to_vec(value).map_err(std::io::Error::other)?)
     }
+
+    /// Another file for the same source, such as a cached download.
+    pub(crate) fn sibling(&self, extension: &str) -> PathBuf {
+        self.path.with_extension(extension)
+    }
+}
+
+pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or(path);
+    std::fs::create_dir_all(dir)?;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]
