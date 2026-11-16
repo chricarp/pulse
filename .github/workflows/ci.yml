@@ -31,6 +31,21 @@ jobs:
         # Includes the check that apps/web/src/contracts/index.ts is current.
         run: cargo test --workspace
 
+  web:
+    name: Web UI typecheck, lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir apps/web typecheck
+      - run: pnpm --dir apps/web lint
+      - run: pnpm --dir apps/web test
+
   contracts-typescript:
     name: Generated TypeScript compiles
     runs-on: ubuntu-latest
