@@ -85,7 +85,7 @@ The run detail in the UI has the same, plus the prompt split into the rule's ins
 fenced event data, and a snapshot of the rule and agent as they were when it ran.
 
 If an event says it was caused by a run (`from run ~…` in the CLI), that run's activity is what
-triggered it. `~` means the cause was inferred from the run's working directory, not observed.
+triggered it. `~` means the cause was inferred, not observed (see [Loop protection](loop-protection.md#how-pulse-knows-who-caused-an-event)).
 
 ## Something keeps firing
 

@@ -187,10 +187,12 @@ run at a time, a short queue) bound how many runs a burst of files can cause.
 Requirements: Claude Code installed (`claude` on the daemon's `PATH`) and signed in. If it is not
 installed, `pulse status` warns that the agent's program cannot be found.
 
-**Known limitation in this version.** With `lecture-notes`, a second PDF you save while the first
-is being processed (or within 30 s after) is taken for the agent's own output and skipped. It is
-recorded: `pulse rules history lecture-notes` shows it as `blocked: loop protection` with the
-`pulse replay <event>` command that runs it. See [Loop protection](loop-protection.md).
+**Loop protection and your own files.** Pulse stops a rule from reacting to its own run's
+output, and part of how it decides who wrote a file is a guess. In this version, a PDF you save
+into `~/University` while a `lecture-notes` run is working there can be taken for the agent's
+output and skipped. It is never lost silently: `pulse rules history lecture-notes` shows it as
+`blocked: loop protection`, followed by the `pulse replay <event>` command that runs it. See
+[Loop protection](loop-protection.md).
 
 ## Stopping
 

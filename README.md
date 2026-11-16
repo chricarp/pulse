@@ -233,11 +233,12 @@ What is **not** a safety boundary:
   says so in its menus. The browser UI (`pulse open`) is the alternative.
 - **MCP events extension (SEP-3415)** is experimental, **off by default**, and tracks a draft
   that will change; no mainstream client uses it yet. The plain MCP tools are what works today.
-- **Loop protection guesses.** Files that appear in a run's working directory while it runs (and
-  30 s after) are attributed to it. That can block a file you saved yourself (recorded, and
-  `pulse replay` runs it), and it misses an agent that writes outside its working directory, which
-  only cooldowns, rate limits and the circuit breaker then stop (by default up to 20 runs in 10
-  minutes). Attribution is being improved; see [Loop protection](docs/user/loop-protection.md).
+- **Loop protection partly guesses.** Filesystems do not say which process wrote a file, so
+  deciding that a run caused an event is partly inference. It can block a change you made
+  yourself during a run (recorded, and `pulse replay` runs it), and it can miss an agent's own
+  writes, which then only cooldowns, rate limits and the circuit breaker stop (by default up to
+  20 runs in 10 minutes). How attribution works today is in
+  [Loop protection](docs/user/loop-protection.md#how-pulse-knows-who-caused-an-event).
 - **Runs.** A process that leaves its run's process group (`setsid`, daemons) is not killed with
   the run. A run that was running when the daemon stopped is recorded `interrupted`, not
   restarted. Debounces pending when the daemon stops are lost.
