@@ -245,7 +245,8 @@ fn commit_is_atomic() {
         }],
     };
     s.commit(&batch).unwrap();
-    // The same batch again fails on the duplicate event id, and leaves nothing behind.
+    // The same batch again fails (its first event is not after the stored one), and leaves
+    // nothing behind.
     let mut again = batch.clone();
     again.events.push(fs(2, "/b"));
     again.events.swap(0, 1);
@@ -256,6 +257,16 @@ fn commit_is_atomic() {
     assert_eq!(q.list_runs(&RunFilter::default(), None, None).unwrap().runs.len(), 1);
     assert_eq!(q.rule_states().unwrap()[0].last_fired_at, Some(t(10)));
     assert_eq!(s.claim_outbox(t(10), 10).unwrap().len(), 1);
+
+    // Events are appended in id order, within a batch and after what is stored: a cursor
+    // reader that has passed an id never looks below it again.
+    s.append_events(&[fs(3, "/c"), fs(5, "/e")]).unwrap();
+    assert_eq!(s.query().last_event_id().unwrap(), Some(eid(5)));
+    for bad in [vec![fs(4, "/d")], vec![fs(7, "/g"), fs(6, "/f")], vec![fs(5, "/e")]] {
+        let err = s.append_events(&bad).unwrap_err();
+        assert!(matches!(err, StoreError::OutOfOrder { .. }), "{bad:?}: {err}");
+    }
+    assert_eq!(s.query().last_event_id().unwrap(), Some(eid(5)), "refused batches left nothing");
 }
 
 #[test]

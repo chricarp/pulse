@@ -251,7 +251,6 @@ impl RpcHandler for RpcServer {
         let deliver = cx.notifier::<EventsBatch>("events.batch");
         let id = map(self.services.events_subscribe(
             p.filter,
-            None,
             deliver,
             stop.clone(),
             cx.closed.clone(),

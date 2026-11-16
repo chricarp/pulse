@@ -84,6 +84,45 @@ impl Target {
     }
 }
 
+/// Why [`check`] failed.
+#[derive(Debug, thiserror::Error)]
+pub enum CheckError {
+    #[error("cannot reach the Pulse daemon at {url}: {reason}")]
+    Unreachable { url: String, reason: String },
+    #[error("the Pulse daemon rejected this agent's token")]
+    Rejected,
+}
+
+/// Presents the token to the daemon once, before serving: is the daemon there, and does it
+/// accept this agent? Reads only the response status (no MCP session is started), so a
+/// launcher can fail with a clear message instead of answering every request with an error.
+pub async fn check(target: &Target) -> Result<(), CheckError> {
+    let unreachable = |e: &dyn std::fmt::Display| CheckError::Unreachable {
+        url: format!("http://{}{}", target.authority, target.path),
+        reason: e.to_string(),
+    };
+    let stream =
+        tokio::net::TcpStream::connect(&target.authority).await.map_err(|e| unreachable(&e))?;
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .map_err(|e| unreachable(&e))?;
+    let _connection = AbortOnDrop(tokio::spawn(connection).abort_handle());
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(&target.path)
+        .header(header::HOST, &target.authority)
+        .header(header::AUTHORIZATION, format!("Bearer {}", target.token))
+        .header(header::ACCEPT, "text/event-stream")
+        .body(Full::new(Bytes::new()))
+        .map_err(|e| unreachable(&e))?;
+    let response = sender.send_request(request).await.map_err(|e| unreachable(&e))?;
+    match response.status() {
+        StatusCode::UNAUTHORIZED => Err(CheckError::Rejected),
+        // Anything else got past authentication; what rmcp makes of a bare GET does not matter.
+        _ => Ok(()),
+    }
+}
+
 /// What the proxy learned from responses: the session id and protocol version a pre-2026
 /// client negotiated with `initialize`. 2026-07-28 clients carry the version in every request.
 #[derive(Default)]

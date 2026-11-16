@@ -14,6 +14,37 @@ pub fn matches(glob: &Glob, s: &str) -> bool {
     })
 }
 
+/// Whether some string that starts with `prefix` matches a text glob (for "can this type glob
+/// match anything in the `ext.` namespace?"). Path alternatives never do.
+pub fn may_match_prefix(glob: &Glob, prefix: &str) -> bool {
+    glob.alternatives.iter().any(|alt| match alt {
+        GlobAlternative::Text(tokens) => tokens_may_start(tokens, prefix),
+        GlobAlternative::Path(_) => false,
+    })
+}
+
+fn tokens_may_start(tokens: &[GlobToken], prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
+    match tokens.split_first() {
+        None => false,
+        Some((GlobToken::Star, _)) => true,
+        Some((GlobToken::Any, rest)) => {
+            let mut chars = prefix.chars();
+            chars.next();
+            tokens_may_start(rest, chars.as_str())
+        }
+        Some((GlobToken::Literal(lit), rest)) => {
+            if lit.starts_with(prefix) {
+                true
+            } else {
+                prefix.strip_prefix(lit.as_str()).is_some_and(|p| tokens_may_start(rest, p))
+            }
+        }
+    }
+}
+
 fn match_path(pattern: &[PathSegment], path: &str) -> bool {
     if !is_clean_absolute(path) {
         return false;

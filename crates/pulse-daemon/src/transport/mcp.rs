@@ -1,36 +1,33 @@
-//! The daemon's [`pulse_mcp::Backend`]: what the MCP server (mounted at `/mcp`) may ask. Every
-//! answer is scoped to the calling agent's `allow` list through `Routing::agent_permits`, with
-//! the configuration in effect at the time of the call. There is deliberately no way to approve
-//! runs or change rules through it.
+//! `/mcp`: the MCP server from `pulse-mcp`, mounted once, over the daemon's
+//! [`pulse_mcp::Backend`]. Every answer is the `mcp_*` service of the same name, scoped to the
+//! calling agent with the configuration in effect at the time of the call. There is
+//! deliberately no way to approve runs or change rules through it.
+//!
+//! **Who is calling** is decided in one place: the router's bearer layer calls
+//! [`Backend::resolve_agent`], which is `Services::mcp_agent`, on every request before rmcp
+//! sees it, and tools act only as the identity it stored. The daemon's own guard checks `Host`
+//! and refuses any `Origin` on `/mcp` (MCP clients are not browsers), and leaves the token to
+//! that layer, so the daemon token, a forged token or a removed agent's token is a 401 there.
 
+use std::sync::Arc;
+
+use axum::Router;
 use pulse_contracts::catalog::EventTypeInfo;
 use pulse_contracts::rpc::{EventFilter, EventPage, EventQuery};
-use pulse_mcp::{AgentIdentity, AgentSubscription, Backend, BackendError};
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
+use pulse_mcp::{AgentIdentity, AgentSubscription, Backend, BackendError, McpConfig};
 
-use crate::auth::verify_agent_token;
 use crate::error::ServiceError;
-use crate::hub::Sent;
 use crate::services::Services;
-
-/// Buffered batches per MCP subscription before delivery reports "full" (and batches are
-/// summarized into a dropped count).
-const SUBSCRIPTION_BUFFER: usize = 16;
 
 #[derive(Clone, Debug)]
 pub struct McpBackend {
     services: Services,
 }
 
-impl McpBackend {
-    pub(crate) fn new(services: Services) -> Self {
-        McpBackend { services }
-    }
-}
-
 fn backend_error(e: ServiceError) -> BackendError {
     match e {
+        // The agent was removed (or never existed) since its token was accepted.
+        ServiceError::NotFound { what: "agent", .. } => BackendError::Unauthorized,
         ServiceError::Invalid(m) => BackendError::Invalid(m),
         ServiceError::NotFound { .. } | ServiceError::ConfigInvalid(_) => {
             BackendError::Invalid(e.to_string())
@@ -41,14 +38,11 @@ fn backend_error(e: ServiceError) -> BackendError {
 
 impl Backend for McpBackend {
     async fn resolve_agent(&self, token: &str) -> Option<AgentIdentity> {
-        let shared = &self.services.shared;
-        let agent = verify_agent_token(&shared.secret, token)?;
-        shared.snapshot().config.agent(agent)?;
-        Some(AgentIdentity { name: agent.to_owned() })
+        self.services.mcp_agent(token).map(|name| AgentIdentity { name })
     }
 
-    fn event_types(&self, _agent: &AgentIdentity) -> Vec<EventTypeInfo> {
-        self.services.event_types()
+    fn event_types(&self, agent: &AgentIdentity) -> Vec<EventTypeInfo> {
+        self.services.mcp_event_types(&agent.name)
     }
 
     async fn query_events(
@@ -56,14 +50,7 @@ impl Backend for McpBackend {
         agent: &AgentIdentity,
         query: EventQuery,
     ) -> Result<EventPage, BackendError> {
-        let snapshot = self.services.shared.snapshot();
-        if snapshot.config.agent(&agent.name).is_none() {
-            return Err(BackendError::Unauthorized);
-        }
-        let mut page = self.services.events_query(query).await.map_err(backend_error)?;
-        // Filtered after paging, so a page may be short; `next_cursor` still continues it.
-        page.events.retain(|e| snapshot.routing.agent_permits(&agent.name, e));
-        Ok(page)
+        self.services.mcp_query_events(&agent.name, query).await.map_err(backend_error)
     }
 
     async fn subscribe(
@@ -71,34 +58,23 @@ impl Backend for McpBackend {
         agent: &AgentIdentity,
         filter: EventFilter,
     ) -> Result<AgentSubscription, BackendError> {
-        if self.services.shared.snapshot().config.agent(&agent.name).is_none() {
-            return Err(BackendError::Unauthorized);
-        }
-        let (tx, rx) = mpsc::channel(SUBSCRIPTION_BUFFER);
-        let stop = CancellationToken::new();
-        // Dropping the receiver ends the subscription even if no event ever arrives.
-        let closed = tx.clone();
-        let stop_on_drop = stop.clone();
-        tokio::spawn(async move {
-            closed.closed().await;
-            stop_on_drop.cancel();
-        });
-        let deliver =
-            move |batch: &pulse_contracts::rpc::EventsBatch| match tx.try_send(batch.clone()) {
-                Ok(()) => Sent::Ok,
-                Err(mpsc::error::TrySendError::Full(_)) => Sent::Full,
-                Err(mpsc::error::TrySendError::Closed(_)) => Sent::Closed,
-            };
-        let id = self
-            .services
-            .events_subscribe(
-                filter,
-                Some(agent.name.clone()),
-                deliver,
-                stop,
-                self.services.shared.shutdown.child_token(),
-            )
-            .map_err(backend_error)?;
-        Ok(AgentSubscription { id, events: rx })
+        let (id, wake) = self.services.mcp_wakeups(&agent.name, filter).map_err(backend_error)?;
+        Ok(AgentSubscription { id, wake })
     }
+}
+
+/// The MCP router for `/mcp`, built once: it owns the subscription registry. `allowed_hosts`
+/// is the list the daemon's guard accepts.
+pub(crate) fn router(services: Services, allowed_hosts: Vec<String>) -> Router {
+    let shared = &services.shared;
+    let clock = shared.clock;
+    let config = McpConfig {
+        events_extension: shared.snapshot().config.daemon.mcp_events_extension,
+        allowed_hosts,
+        allowed_origins: Vec::new(),
+        shutdown: shared.shutdown.clone(),
+        clock: pulse_mcp::Clock::new(move || clock.now()),
+        ..McpConfig::default()
+    };
+    pulse_mcp::router(Arc::new(McpBackend { services }), config)
 }

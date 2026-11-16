@@ -40,24 +40,34 @@ impl Clock {
 }
 
 /// Monotonic ULIDs: ids assigned in this process sort in assignment order, even within one
-/// millisecond.
+/// millisecond, when the clock goes back, and after the last event of a previous run of the
+/// daemon (the store refuses events that would sort below the log; see `pulse_store`).
 #[derive(Debug)]
 pub struct Ids {
     clock: Clock,
-    generator: Mutex<ulid::Generator>,
+    last: Mutex<Ulid>,
 }
 
 impl Ids {
-    pub fn new(clock: Clock) -> Self {
-        Ids { clock, generator: Mutex::new(ulid::Generator::new()) }
+    /// `after`: the newest id already in the log, if any.
+    pub fn new(clock: Clock, after: Option<Ulid>) -> Self {
+        Ids { clock, last: Mutex::new(after.unwrap_or(Ulid::nil())) }
     }
 
     fn next(&self) -> Ulid {
         let ms = u64::try_from(self.clock.now().as_millis()).unwrap_or(0);
-        let at = UNIX_EPOCH + std::time::Duration::from_millis(ms);
-        let mut g = self.generator.lock().unwrap_or_else(|p| p.into_inner());
-        // Overflow needs 2^80 ids in one millisecond; fall back to a random id rather than fail.
-        g.generate_from_datetime(at).unwrap_or_else(|_| Ulid::from_datetime(at))
+        let mut last = self.last.lock().unwrap_or_else(|p| p.into_inner());
+        let next = if ms <= last.timestamp_ms() {
+            // Same millisecond, or the clock is behind the last id: count up from it. On
+            // overflow of the random part this moves into the next millisecond, still above.
+            match last.increment() {
+                Ok(u) | Err(u) => u,
+            }
+        } else {
+            Ulid::from_datetime(UNIX_EPOCH + std::time::Duration::from_millis(ms))
+        };
+        *last = next;
+        next
     }
 
     pub fn event(&self) -> EventId {

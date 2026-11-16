@@ -91,6 +91,20 @@ impl ScopeSet {
     pub fn permits(&self, event: &pulse_contracts::Event) -> Result<(), Denied> {
         self.check(event.type_.as_str(), &event.paths())
     }
+
+    /// Whether any event of a catalog type could ever be in scope: a grant matches the type, and
+    /// either it has no path part or the type carries paths. A namespace written `prefix*` (the
+    /// catalog's `ext.*`) counts when a grant can match some type in it. This is what an agent
+    /// is shown as its catalog; it is not a permission check on an event.
+    pub fn may_permit(&self, catalog_type: &str, carries_paths: bool) -> bool {
+        self.grants.iter().any(|g| {
+            let typed = match catalog_type.strip_suffix('*') {
+                Some(prefix) => glob::may_match_prefix(&g.types, prefix),
+                None => glob::matches(&g.types, catalog_type),
+            };
+            typed && (g.path.is_none() || carries_paths)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +114,28 @@ mod tests {
     fn set(scopes: &[&str]) -> ScopeSet {
         let scopes: Vec<Scope> = scopes.iter().map(|s| s.parse().unwrap()).collect();
         ScopeSet::compile(&scopes, Path::new("/home/me")).unwrap()
+    }
+
+    #[test]
+    fn catalog_types_an_agent_may_receive() {
+        // (grants, catalog type, carries paths, shown)
+        let cases: &[(&[&str], &str, bool, bool)] = &[
+            (&["fs.*:/tmp/x/**"], "fs.file.created", true, true),
+            (&["*:/tmp/x/**"], "schedule.fired", false, false),
+            (&["fs.*:/tmp/x/**"], "git.commit.created", true, false),
+            (&["fs.*:/tmp/x/**"], "ext.*", false, false),
+            (&["*"], "schedule.fired", false, true),
+            (&["ext.ci.*"], "ext.*", false, true),
+            (&["e*"], "ext.*", false, true),
+            (&["{exit,ext}.ci.*"], "ext.*", false, true),
+            (&["exit.*"], "ext.*", false, false),
+            (&["*"], "ext.*", false, true),
+            (&["*"], "calendar.event.starting", false, true),
+            (&[], "fs.file.created", true, false),
+        ];
+        for (grants, ty, paths, want) in cases {
+            assert_eq!(set(grants).may_permit(ty, *paths), *want, "{grants:?} {ty}");
+        }
     }
 
     #[test]

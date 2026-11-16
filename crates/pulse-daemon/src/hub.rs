@@ -30,9 +30,6 @@ pub(crate) const MAX_BATCH: usize = 200;
 pub(crate) const FLUSH_EVERY: Duration = Duration::from_millis(250);
 pub(crate) const STUCK_LIMIT: Duration = Duration::from_secs(30);
 
-/// An extra check on each event (an MCP agent's scopes).
-pub(crate) type Permit = Box<dyn Fn(&Event) -> bool + Send>;
-
 /// What a delivery attempt did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sent {
@@ -109,18 +106,22 @@ impl Hub {
         self.outputs().remove(&run);
     }
 
-    /// Delivers events matching `filter` (and `permit`, for scoped subscribers).
+    /// Every committed batch, for subscribers that do their own filtering (MCP wakeups).
+    pub(crate) fn subscribe_events(&self) -> broadcast::Receiver<Arc<[Event]>> {
+        self.events.subscribe()
+    }
+
+    /// Delivers events matching `filter`.
     pub(crate) fn spawn_event_subscription(
         &self,
         id: SubscriptionId,
         filter: CompiledFilter,
-        permit: Option<Permit>,
         deliver: impl FnMut(&EventsBatch) -> Sent + Send + 'static,
         stop: CancellationToken,
         client: CancellationToken,
     ) {
         let rx = self.events.subscribe();
-        let buffer = EventBuffer { id, filter, permit, events: VecDeque::new(), dropped: 0 };
+        let buffer = EventBuffer { id, filter, events: VecDeque::new(), dropped: 0 };
         tokio::spawn(pump(rx, buffer, deliver, stop, client));
     }
 
@@ -154,7 +155,6 @@ trait Buffer: Send + 'static {
 struct EventBuffer {
     id: SubscriptionId,
     filter: CompiledFilter,
-    permit: Option<Permit>,
     events: VecDeque<Event>,
     dropped: u64,
 }
@@ -165,7 +165,7 @@ impl Buffer for EventBuffer {
 
     fn add(&mut self, items: &[Event]) {
         for e in items {
-            if self.filter.matches(e) && self.permit.as_ref().is_none_or(|p| p(e)) {
+            if self.filter.matches(e) {
                 if self.events.len() == MAX_BATCH {
                     self.events.pop_front();
                     self.dropped += 1;

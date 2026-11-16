@@ -12,4 +12,5 @@ mod support;
 mod auth;
 mod config;
 mod engine;
+mod mcp;
 mod runs;
