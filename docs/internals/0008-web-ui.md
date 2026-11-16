@@ -166,8 +166,8 @@ Against the real daemon (debug build, same machine), feed open, from `e2e-real/s
 
 | Case | What the daemon sent | Frames | Long tasks | Key press to detail |
 |---|---|---|---|---|
-| 10,000 files written into a watched folder | one `fs.burst` (the fs source folds the storm) | p50 16.7 ms, p95 16.7 ms, max 16.8 ms | none | after: under 1 s |
-| 10,000 events through `pulse ingest` | batches of at most 200, the rest counted as summarized | p50 16.7 ms, p95 16.8 ms, max 16.8 ms | none | during: 27 ms |
+| 10,000 files written into a watched folder | one `fs.burst` (the fs source folds the storm) | p50 16.7 ms, p95 16.7 ms, max 16.8 ms | none | after: 23 ms |
+| 10,000 events through `pulse ingest` | batches of at most 200, the rest counted as summarized | p50 16.7 ms, p95 16.8 ms, max 16.8 ms | none | during: 27–44 ms |
 
 The earlier version of this table also reported a 30,000-event ingest (34 batches, no long tasks). It was measured by hand once and no test produces it, so it is not repeated here; the mock storm of 30,000 events below is the tested larger case.
 
