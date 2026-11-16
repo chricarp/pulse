@@ -303,6 +303,7 @@ impl Queries<'_> {
                         DeliveryKind::Fired => "fired",
                         DeliveryKind::AwaitingApproval => "awaiting_approval",
                         DeliveryKind::Debounced => "debounced",
+                        DeliveryKind::Waiting => "waiting",
                         DeliveryKind::Blocked => "blocked",
                     }
                     .to_owned(),

@@ -226,6 +226,8 @@ export class MockDaemon {
   private readonly ruleState: Record<string, RuleRuntimeStatus>;
   private readonly fires = new Map<string, number[]>();
   private readonly debounces = new Map<string, { timer: ReturnType<typeof setTimeout>; event: Event }>();
+  /** Elapsed debounces that found their agent full, oldest first (simpler than the daemon: never replaced by a newer event). */
+  private readonly waiting: { rule: string; agent: string; event: Event }[] = [];
   private paused = false;
   private readonly conns = new Set<Conn>();
   private readonly closers = new Map<number, () => void>();
@@ -681,7 +683,10 @@ export class MockDaemon {
       }
       const backlog = [...this.runs.values()].filter((r) => r.agent === agentName && (r.status === "queued" || r.status === "running")).length;
       if (backlog >= agent.max_concurrent + agent.max_queued) {
-        return blocked({ kind: "blocked", reason: { reason: "agent_busy", backlog, max: agent.max_concurrent + agent.max_queued } });
+        const reason: Extract<Outcome, { kind: "blocked" }>["reason"] = { reason: "agent_busy", backlog, max: agent.max_concurrent + agent.max_queued };
+        // Like the daemon: an elapsed debounce waits for a run of the agent to end.
+        if (opts.debounceElapsed) return { rule: rule.name, agent: agentName, outcome: { kind: "waiting", reason }, chain_depth };
+        return blocked({ kind: "blocked", reason });
       }
     }
     const problems = rule.run.prompt ? templateProblems(rule.run.prompt).problems : [];
@@ -742,6 +747,10 @@ export class MockDaemon {
         }
         break;
       }
+      case "waiting":
+        outcome = { kind: "waiting", reason: d.outcome.reason };
+        this.waiting.push({ rule: d.rule, agent: d.agent, event: e });
+        break;
       case "blocked":
         outcome = { kind: "blocked", reason: d.outcome.reason };
         if (d.outcome.reason.reason === "circuit_open" && !this.ruleState[d.rule]?.circuit_open_until) {
@@ -959,8 +968,18 @@ export class MockDaemon {
   }
 
   private lastCounts = "";
+  /** A run of `agent` ended: route its longest-waiting debounce again. */
+  private releaseWaiting(agent: string): void {
+    const i = this.waiting.findIndex((w) => w.agent === agent);
+    const w = i < 0 ? undefined : this.waiting.splice(i, 1)[0];
+    if (!w) return;
+    const later = this.route(w.event, this.now(), null, w.rule);
+    this.fanOutEvent(w.event, later.map(outcomeOf), false);
+  }
+
   private runChanged(run: Run): void {
     if (this.seeding) return;
+    if (terminal(run.status)) this.releaseWaiting(run.agent);
     const s = this.summary(run);
     for (const conn of this.conns) {
       for (const [id, sub] of conn.subs) {

@@ -496,7 +496,9 @@ impl Engine {
             let created = match &d.outcome {
                 Outcome::Fire { prompt } => Some((RunStatus::Queued, prompt)),
                 Outcome::AwaitApproval { prompt } => Some((RunStatus::PendingApproval, prompt)),
-                Outcome::Debounced { .. } | Outcome::Blocked { .. } => None,
+                Outcome::Debounced { .. } | Outcome::Waiting { .. } | Outcome::Blocked { .. } => {
+                    None
+                }
             };
             let run = created.map(|(status, prompt)| {
                 let id = self.shared.ids.run();

@@ -53,7 +53,7 @@ Only in your own `pulse.toml`. Bounds for the engine and for loop protection.
 | `causation_grace` | `"30s"` | | How long after a run ends files in its working directory are still attributed to it. See [loop protection](loop-protection.md). |
 | `dedupe_ttl` | `"10m"` | > 0 | How long an event's dedupe key suppresses repeats (external events). |
 | `dedupe_capacity` | `10000` | 1–1000000 | Dedupe keys remembered at once; oldest forgotten first. |
-| `debounce_capacity` | `10000` | 1–1000000 | Pending debounce timers at once. Past it, new events skip the debounce but still pass cooldown and rate limits. Read at start. |
+| `debounce_capacity` | `10000` | 1–1000000 | Pending debounce timers at once, including debounces waiting for a full agent. Past it, new events skip the debounce but still pass cooldown and rate limits. Read at start. |
 | `run_output_max_bytes` | `4194304` (4 MiB) | 4096–2³² | Output kept per run. Past it the first half and the most recent output are kept, with a marker saying how much was dropped. |
 
 `[limits.circuit_breaker]`: a rule that fires more than `max_fires` times within `window` is held
@@ -143,7 +143,7 @@ Keys every agent has:
 | `cwd` | a new directory per run, `$PULSE_HOME/runs/<run id>/` | Working directory for runs. |
 | `timeout` | `"15m"` | A run still going after this is terminated and recorded `timed_out`. |
 | `max_concurrent` | `1` | Runs of this agent executing at once (1–64). |
-| `max_queued` | `8` | Runs waiting for a slot (0–10000). Past this, new fires are blocked as `agent_busy`. |
+| `max_queued` | `8` | Runs waiting for a slot (0–10000). Past this, new fires are blocked as `agent_busy`; a debounced rule's fire waits for a run to end instead. |
 | `env` | `{}` | Extra environment variables for runs, e.g. `env = { RUST_LOG = "info" }`. Names starting with `PULSE_` are reserved. |
 
 `adapter = "claude-code"`:

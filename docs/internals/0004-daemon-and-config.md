@@ -12,7 +12,7 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 - **Dedupe keys are per source** (`<source uri>\0<key>`): two sources may use the same key for different things.
 - **Exact causation outlives the run.** `PULSE_RUN_ID` on a reported event is resolved from memory, else from the store, so `pulse run` inside a run that has just ended still attributes exactly. Reported and inferred causation only use runs that are active or within `causation_grace`.
 - **What survives a restart** (added with the end-to-end tests, 0009). The dedupe table is refilled from the log (keys accepted within `dedupe_ttl`), so an external source retrying after an outage does not fire twice. The runs inference needs are reloaded (ended within `causation_grace`), as opaque: their output is no longer read, so their writes are inferred, not reported; a run that was still `running` when the daemon died counts as active until its timeout would have ended it, because its agent is in its own process group, survived the crash, and nothing enforces the timeout any more. Without this, an orphaned agent's writes after a crash re-fired its own rule.
-- **Backlogs** (`queued + running` per agent) are recounted from the store whenever run states change outside routing (approve, cancel, end, rerun). Routing increments them itself for the fires it makes.
+- **Backlogs** (`queued + running` per agent) are recounted from the store whenever run states change outside routing (approve, cancel, end, rerun). Routing increments them itself for the fires it makes. A recount is also what releases debounces waiting for a full agent: the engine's loop re-reads `next_deadline()` after every control message, and a waiter whose agent now has room is due at once (0002, "The routing function").
 
 ## Effect worker
 
@@ -92,5 +92,5 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 ## Known limits
 
 - `[daemon] mcp_events_extension` is read at start, like the port.
-- Pending debounces are not persisted (0002, unchanged).
+- Pending debounces, and debounces waiting for a full agent, are not persisted (0002, unchanged).
 - Live `dropped` counts are a summary, not an exact count, when a subscriber lags the broadcast (see Fan-out).

@@ -62,11 +62,12 @@ Work down this list.
    | `loop protection: a chain of N runs exceeds max_chain_depth M` | runs triggering runs; raise `[limits] max_chain_depth` only if the chain is intended |
    | `the circuit breaker holds the rule until … (it fired too often)` | find out why it fires so often, then `pulse rules unsnooze <rule>` |
    | `cooling down until …` / `rate limited until …` | the rule's `cooldown` / `rate_limit` |
-   | `the agent's queue is full (N of M)` | the agent's `max_concurrent` + `max_queued` runs are taken |
+   | `the agent's queue is full (N of M)` | the agent's `max_concurrent` + `max_queued` runs are taken; a rule with a `debounce` waits instead (below) |
    | `the prompt could not be rendered: …` | fix the template |
 4. **`debounced until …`** means it is waiting for matching events to stop. A later delivery for
-   the same event says `fired` when the debounce ends. Debounces pending when the daemon stops
-   are lost.
+   the same event says `fired` when the debounce ends. **`waiting: the agent's queue is full`**
+   means the debounce ended while the agent had no room; it fires when one of the agent's runs
+   ends. Debounces pending or waiting when the daemon stops are lost.
 5. **`awaiting approval`**: the rule is supervised. `pulse runs list --status pending_approval`.
 6. **It fired, but the run failed.** `pulse runs show <id>` shows the error and exactly what was
    run; `pulse runs logs <id>` shows the output. Typical: the program is not on the daemon's

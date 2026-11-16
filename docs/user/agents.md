@@ -118,7 +118,9 @@ States: `pending_approval` → `queued` → `running` → `succeeded`, `failed`,
 crashed while it ran (it is not restarted). A queued or waiting run whose agent or rule changed
 before it started is `cancelled` with the reason and never runs; see
 [Rules](rules.md#when-a-definition-changes). `max_concurrent` runs execute at once per agent;
-up to `max_queued` more wait. Output is kept up to 4 MiB per run (first half and latest output).
+up to `max_queued` more wait. Past that a rule's match is blocked as `agent_busy`, unless the
+rule has a `debounce`: then it waits until one of the agent's runs ends (see
+[Rules](rules.md#limits-debounce-cooldown-rate-limit)). Output is kept up to 4 MiB per run (first half and latest output).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/run-output-dark.png">

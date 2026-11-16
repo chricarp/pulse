@@ -388,6 +388,7 @@ pub enum DeliveryKind {
     Fired,
     AwaitingApproval,
     Debounced,
+    Waiting,
     Blocked,
 }
 

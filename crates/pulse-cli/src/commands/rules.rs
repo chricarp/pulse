@@ -64,6 +64,7 @@ pub async fn rules(ctx: &Ctx, cmd: RulesCmd) -> Res {
                     OutcomeArg::Fired => DeliveryKind::Fired,
                     OutcomeArg::AwaitingApproval => DeliveryKind::AwaitingApproval,
                     OutcomeArg::Debounced => DeliveryKind::Debounced,
+                    OutcomeArg::Waiting => DeliveryKind::Waiting,
                     OutcomeArg::Blocked => DeliveryKind::Blocked,
                 })
                 .collect();

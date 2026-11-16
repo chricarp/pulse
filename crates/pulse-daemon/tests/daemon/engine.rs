@@ -402,6 +402,62 @@ run = { agent = "sh" }
     t.stop().await;
 }
 
+/// A burst of debounced files larger than the agent's queue: the ones that find it full wait,
+/// and each run that ends lets the next one fire. Nothing is dropped, and each event's history
+/// says so.
+#[tokio::test(start_paused = true)]
+async fn a_debounced_burst_waits_for_room_in_the_agents_queue() {
+    let (tx, mut spawned) = tokio::sync::mpsc::unbounded_channel();
+    let agent = COMMAND_AGENT.replace("max_concurrent = 1", "max_concurrent = 1\nmax_queued = 1");
+    let rules = r#"
+[[rule]]
+name = "each"
+on = "fs.file.created"
+debounce = "10s"
+debounce_by = "subject"
+run = { agent = "sh" }
+"#;
+    let mut t = TestDaemon::start_with(
+        &format!("{FAKE_SOURCE}{agent}{rules}"),
+        Setup {
+            supervisor: Arc::new(SpawnGate(tx)),
+            clock: Clock::tokio(1_700_000_000_000),
+            watch_config: false,
+        },
+    )
+    .await;
+    let mut watch = RunWatch::new(t.client().await).await;
+    let client = t.client().await;
+    for n in 1..=4 {
+        t.sources.push("fake", file_created("fake", &format!("/w/{n}.pdf"))).await;
+    }
+    // One run at a time, one queued; the third and fourth wait. Each cancelled run makes room.
+    let mut ran = Vec::new();
+    for _ in 0..4 {
+        let id = spawned.recv().await.unwrap();
+        ran.push(client.call::<method::RunsGet>(RunIdParams { id }).await.unwrap().event);
+        client.call::<method::RunsCancel>(RunIdParams { id }).await.unwrap();
+        watch.until(Some(id), RunStatus::Cancelled).await;
+    }
+    let mut subjects = Vec::new();
+    for id in &ran {
+        let detail = client.call::<method::EventsGet>(EventIdParams { id: *id }).await.unwrap();
+        let kinds: Vec<&str> = detail.deliveries.iter().map(|d| d.outcome.kind_str()).collect();
+        subjects.push((detail.event.subject.unwrap(), kinds));
+    }
+    let waited = vec!["debounced", "waiting", "fired"];
+    assert_eq!(
+        subjects,
+        [
+            ("/w/1.pdf".to_owned(), vec!["debounced", "fired"]),
+            ("/w/2.pdf".to_owned(), vec!["debounced", "fired"]),
+            ("/w/3.pdf".to_owned(), waited.clone()),
+            ("/w/4.pdf".to_owned(), waited),
+        ]
+    );
+    t.stop().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_debounce_fires_once_after_the_quiet_period() {
     let rules = r#"

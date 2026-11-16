@@ -138,6 +138,7 @@ enum Outcome {
     Fire { prompt: Option<RenderedPrompt> },          // None: a command agent without a prompt
     AwaitApproval { prompt: Option<RenderedPrompt> },
     Debounced { until: Timestamp },
+    Waiting { reason: BlockReason },                  // an elapsed debounce held for its agent
     Blocked { reason: BlockReason },
 }
 enum BlockReason {
@@ -150,7 +151,7 @@ enum BlockReason {
 
 "Test this rule against a past event" calls the same function on a copy of the state (or a fresh one, to ignore history) and returns the decision and the rendered prompt, with no side effects. That is the payoff of keeping it pure. For a debounced rule, a second call with `DebounceElapsed` on the same copy shows what would fire.
 
-A debounce is trailing: the rule fires once with the latest event when matching events stop for `debounce`. The daemon arms one timer for `RouterState::next_deadline()` and routes each `take_due()` entry with `DebounceElapsed`. If cooldown or the rate limit blocks an elapsed debounce, it is re-armed until the limit lifts instead of being dropped. `debounce_by = "subject"` keeps one timer per subject instead of per rule.
+A debounce is trailing: the rule fires once with the latest event when matching events stop for `debounce`. The daemon arms one timer for `RouterState::next_deadline()` and routes each `take_due()` entry with `DebounceElapsed`. If cooldown or the rate limit blocks an elapsed debounce, it is re-armed until the limit lifts instead of being dropped. If the agent's backlog is full, it **waits** (`Outcome::Waiting { reason: AgentBusy }`, delivery `waiting`): it has no deadline, so it arms no timer; when a run ends the daemon lowers the agent's backlog (`set_agent_backlog`), which makes as many waiters due as there is room, at once, longest-waiting first. A newer event for the same key replaces a waiter as it replaces a pending debounce; pending and waiting together are bounded by `debounce_capacity`. A rule without a debounce that finds its agent full is blocked: nothing holds that event, and `max_queued` is the user's bound on what may wait. `debounce_by = "subject"` keeps one timer per subject instead of per rule.
 
 ## Rules, agents, sources: the config file is the truth
 
@@ -355,3 +356,4 @@ An independent review reproduced these; each is fixed with a test that failed fo
 ### 2026-11-16, review of routing and write-back
 
 - **Closing the circuit breaker starts its count afresh.** `unsnooze` cleared the breaker, but the fires that tripped it were still inside `window`, so the next match tripped it again at once (reproduced with `max_fires = 2`): a way out that did not work. The same happened when a hold shorter than the window ran out. Now the breaker counts only fires after it last closed. `rule_state.circuit_open_until` already holds when the last hold ends; an unsnooze sets it to the moment of the unsnooze instead of clearing it, so the reset is durable without a migration, and clients are shown it only while it is in the future. Cooldown and rate limit are the user's stated limits and still count every fire.
+- **An elapsed debounce waits for a full agent instead of being dropped.** Cooldown and rate limit re-armed an elapsed debounce, but `agent_busy` dropped it: a dozen PDFs saved at once against a small queue lost most of them. A run ending is what makes room, and the daemon already tells the router (backlogs are recounted at every run end), so a waiting debounce has no timer and is due exactly when the recount shows room: no polling. It is recorded as a new outcome, `waiting`, not as `debounced until` (there is no deadline to show) and not as `blocked` (it is not lost); the delivery that follows when it is routed again says what happened. Rules without a debounce stay `agent_busy`: holding their events would be a second, hidden queue behind the one `max_queued` bounds.
