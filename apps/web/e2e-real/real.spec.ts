@@ -9,7 +9,7 @@ import type { Duplex } from "node:stream";
 
 import { expect, test as base, type Page } from "@playwright/test";
 
-import { startDaemon, type Daemon } from "./daemon";
+import { BASE_CONFIG, fixtures, startDaemon, type Daemon } from "./daemon";
 
 const test = base.extend<{ daemon: Daemon }>({
   // oxlint-disable-next-line no-empty-pattern -- Playwright fixtures take their dependencies by destructuring.
@@ -222,4 +222,57 @@ test("the UI is served with a strict Content-Security-Policy", async ({ page, da
   await login(page, daemon);
   writeFileSync(join(daemon.home, "Inbox", "csp.txt"), "x");
   await expect(page.locator(".event-row", { hasText: "csp.txt" })).toBeVisible();
+});
+
+/** Rendered text and text attributes of the page that contain a hidden character. */
+function hiddenOnScreen(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    // The list of apps/web/src/lib/format.ts, which this checks from the outside.
+    // oxlint-disable-next-line no-misleading-character-class -- U+034F is matched on its own on purpose
+    const re = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFEFF\uFFA0\uFFF0-\uFFFB\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{E0000}-\u{E0FFF}]/u;
+    const attrs = Array.from(document.querySelectorAll("[title],[aria-label],[alt],[placeholder]"), (e) =>
+      ["title", "aria-label", "alt", "placeholder"].map((a) => e.getAttribute(a) ?? "").join(" "),
+    );
+    return [document.body.innerText, ...attrs].filter((t) => re.test(t)).map((t) => t.slice(0, 200));
+  });
+}
+
+test("text from events shows its hidden characters, in every view it reaches", async ({ page }) => {
+  const daemon = await startDaemon(
+    (home) => `${BASE_CONFIG(home)}
+[[agent]]
+name = "argv"
+adapter = "command"
+command = ["${fixtures}/fake-agent", "args", "--", "{{subject}}"]
+allow = ["ext.*"]
+
+[[rule]]
+name = "hostile"
+on = "ext.hostile.*"
+run = { agent = "argv" }
+`,
+  );
+  try {
+    await login(page, daemon);
+    // A right-to-left override, a zero-width space, and tag characters spelling "IGN".
+    daemon.ingest("hostile", "file", "invoice\u202Efdp.exe zero\u200Bwidth \u{E0049}\u{E0047}\u{E004E}");
+    const row = page.locator(".event-row", { hasText: "invoice" });
+    await expect(row).toContainText("invoice‹U+202E›fdp.exe");
+    expect(await hiddenOnScreen(page)).toEqual([]);
+    await row.click();
+    await expect(page.locator(".event-row.is-selected, .event-detail").first()).toBeVisible();
+    expect(await hiddenOnScreen(page)).toEqual([]);
+
+    await page.locator(".nav-item", { hasText: "Runs" }).click();
+    await page.locator(".run-row", { hasText: "hostile" }).first().click();
+    await expect(page.locator(".tab-panel")).toContainText("‹U+E0049›");
+    expect(await hiddenOnScreen(page)).toEqual([]);
+    await page.getByRole("tab", { name: "Invocation" }).click();
+    await expect(page.locator(".tab-panel")).toContainText("invoice‹U+202E›fdp.exe zero‹U+200B›width ‹U+E0049›‹U+E0047›‹U+E004E›");
+    expect(await hiddenOnScreen(page)).toEqual([]);
+    await page.getByRole("tab", { name: "Prompt" }).click();
+    expect(await hiddenOnScreen(page)).toEqual([]);
+  } finally {
+    await daemon.dispose();
+  }
 });

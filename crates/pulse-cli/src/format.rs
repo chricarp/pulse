@@ -6,9 +6,9 @@ use pulse_contracts::{
 };
 
 /// Event content shown on a terminal: escape sequences could recolour or retitle the terminal,
-/// write the clipboard (OSC 52) or hide text, and bidi overrides make `txt.exe` read as
-/// `exe.txt`. Control and invisible formatting characters are shown escaped (`\u{1b}`);
-/// newlines and tabs are kept.
+/// write the clipboard (OSC 52) or hide text, bidi overrides make `txt.exe` read as `exe.txt`,
+/// and tag characters carry text nobody sees. Control and invisible formatting characters are
+/// shown escaped (`\u{1b}`); newlines and tabs are kept.
 pub fn terminal_safe(s: &str) -> std::borrow::Cow<'_, str> {
     if !s.chars().any(unsafe_char) {
         return std::borrow::Cow::Borrowed(s);
@@ -24,9 +24,10 @@ pub fn terminal_safe(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
+/// Controls, and the invisible formatting characters prompt rendering removes (one list, in
+/// `pulse_core::prompt::is_invisible`; the web UI and the desktop shell keep their own copies).
 fn unsafe_char(c: char) -> bool {
-    (c.is_control() && c != '\n' && c != '\t')
-        || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+    (c.is_control() && c != '\n' && c != '\t') || pulse_core::prompt::is_invisible(c)
 }
 
 /// One line of event content: also keeps a newline in a file name from starting a new line.
@@ -178,5 +179,26 @@ mod tests {
             assert_eq!(terminal_safe(raw), shown, "{raw:?}");
         }
         assert_eq!(one_line("new\nline.txt"), "new\\nline.txt");
+    }
+
+    /// The cases of `pulse-core/src/prompt/tests.rs`, `apps/web/src/lib/format.test.ts` and
+    /// `apps/desktop/src/policy.test.ts`; the lists must agree.
+    #[test]
+    fn hidden_characters_are_shown_escaped() {
+        const HIDDEN: &[u32] = &[
+            0x00AD, 0x034F, 0x061C, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180E, 0x200B, 0x200C, 0x200D,
+            0x200E, 0x200F, 0x2028, 0x2029, 0x202A, 0x202E, 0x2060, 0x2064, 0x2065, 0x2066, 0x2069,
+            0x206A, 0x206F, 0x3164, 0xFEFF, 0xFFA0, 0xFFF0, 0xFFF9, 0xFFFB, 0x1BCA0, 0x1BCA3,
+            0x1D173, 0x1D17A, 0xE0000, 0xE0001, 0xE0041, 0xE007F, 0xE0100, 0xE01EF, 0xE0FFF,
+        ];
+        const KEPT: &[u32] = &[0x0041, 0x00E9, 0x0301, 0x2764, 0xFE0F, 0x1F600, 0x4E2D];
+        for &cp in HIDDEN {
+            let c = char::from_u32(cp).unwrap();
+            assert_eq!(terminal_safe(&format!("a{c}b")), format!("a\\u{{{cp:x}}}b"), "U+{cp:04X}");
+        }
+        for &cp in KEPT {
+            let s = format!("a{}b", char::from_u32(cp).unwrap());
+            assert_eq!(terminal_safe(&s), s, "U+{cp:04X}");
+        }
     }
 }

@@ -238,3 +238,53 @@ fn environment() {
     assert_eq!(get("PULSE_EVENT_DATA"), Some(r#"{"k":"v"}"#));
     assert_eq!(get("PULSE_EVENT_ID"), Some(ev.id.to_string().as_str()));
 }
+
+/// The same cases are in `pulse-cli/src/format.rs`, `apps/web/src/lib/format.test.ts` and
+/// `apps/desktop/src/policy.test.ts`; the four lists must agree.
+pub(crate) const HIDDEN: &[u32] = &[
+    0x00AD, 0x034F, 0x061C, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180E, 0x200B, 0x200C, 0x200D, 0x200E,
+    0x200F, 0x2028, 0x2029, 0x202A, 0x202E, 0x2060, 0x2064, 0x2065, 0x2066, 0x2069, 0x206A, 0x206F,
+    0x3164, 0xFEFF, 0xFFA0, 0xFFF0, 0xFFF9, 0xFFFB, 0x1BCA0, 0x1BCA3, 0x1D173, 0x1D17A, 0xE0000,
+    0xE0001, 0xE0041, 0xE007F, 0xE0100, 0xE01EF, 0xE0FFF,
+];
+pub(crate) const KEPT: &[u32] = &[0x0041, 0x00E9, 0x0301, 0x2764, 0xFE0F, 0x1F600, 0x4E2D];
+
+#[test]
+fn hidden_characters_are_removed_from_inline_values() {
+    for &cp in HIDDEN {
+        let c = char::from_u32(cp).unwrap();
+        assert!(is_invisible(c) || c.is_whitespace(), "U+{cp:04X} is not treated as hidden");
+        let (clean, _) = sanitize_inline(&format!("a{c}b"), 100);
+        assert!(clean == "ab" || clean == "a b", "U+{cp:04X}: {clean:?}");
+    }
+    for &cp in KEPT {
+        let c = char::from_u32(cp).unwrap();
+        assert!(!is_invisible(c), "U+{cp:04X}");
+        assert_eq!(sanitize_inline(&format!("a{c}b"), 100).0, format!("a{c}b"));
+    }
+}
+
+/// The data block keeps event content exact, but a character that does not show is written as
+/// a JSON escape: someone reading the stored prompt sees it, and tag characters (text a model
+/// reads but a person does not see) no longer arrive as hidden text.
+#[test]
+fn hidden_characters_in_the_data_block_are_escaped() {
+    let hidden = "a\u{202E}b\u{E0041}\u{E0042}c\u{200B}d\u{9B}e\u{2028}f";
+    let ev = event(hidden, json!({ "msg": hidden, "fine": "é ❤\u{FE0F}" }));
+    let p = render("Look at the file in the data block.", &ev, &mut Fixed(vec![nonce(1)])).unwrap();
+    let block = p.text.split(&format!("\n{}\n", p.delimiter)).nth(1).unwrap();
+    for &cp in HIDDEN {
+        assert!(!block.contains(char::from_u32(cp).unwrap()), "U+{cp:04X} in the block");
+    }
+    assert!(!block.contains('\u{9B}'));
+    assert!(block.contains(r"a\u202eb\udb40\udc41\udb40\udc42c\u200bd\u009be\u2028f"), "{block}");
+    assert!(block.contains("é ❤\u{FE0F}"), "visible text is left alone: {block}");
+    // Decoded, it is the event as it was.
+    let value = data_block(&p);
+    assert_eq!(value["subject"], hidden);
+    assert_eq!(value["data"]["msg"], hidden);
+    // So is the bounded JSON a command agent gets in PULSE_EVENT_DATA.
+    let (data, _) = bounded_data_json(&ev.data, &PromptLimits::default());
+    assert!(!data.contains('\u{E0041}'), "{data}");
+    assert_eq!(serde_json::from_str::<Value>(&data).unwrap()["msg"], hidden);
+}

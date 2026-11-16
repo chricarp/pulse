@@ -3,10 +3,20 @@
 
 // C0 and C1 controls, including newlines and tabs: everything becomes one line.
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]+/g;
-// Invisible formatting: soft hyphen, bidi marks and overrides, zero-width characters, word
-// joiners, BOM, interlinear annotations. A bidi override in a file name can make a notification
-// read differently from what the file is called.
-const INVISIBLE = /[­؜᠎​-‏‪-‮⁠-⁤⁦-⁯﻿￹-￻]/g;
+// Invisible formatting: bidi controls, zero-width and other default-ignorable characters,
+// invisible fillers, line and paragraph separators, interlinear annotation, and the tag
+// characters (U+E0000 to U+E007F, invisible but read by models) with the rest of that block. A
+// bidi override in a file name can make a notification read differently from what the file is
+// called. Not U+FE00 to U+FE0F, which emoji need. The same list is in
+// `pulse-core/src/prompt.rs` (`is_invisible`) and `apps/web/src/lib/format.ts`; their tests run
+// over the same cases.
+const INVISIBLE =
+  /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFEFF\uFFA0\uFFF0-\uFFFB\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{E0000}-\u{E0FFF}]/gu;
+
+/** `input` without invisible formatting characters; lines and length are kept. */
+export function withoutInvisible(input: string): string {
+  return input.replace(INVISIBLE, "");
+}
 
 /** One line of plain text, at most `max` characters (code points), with an ellipsis if cut. */
 export function plainText(input: unknown, max: number): string {

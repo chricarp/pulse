@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
@@ -7,7 +9,11 @@ import { defineConfig } from "vitest/config";
 const daemon = process.env.PULSE_DAEMON ?? "http://127.0.0.1:7477";
 
 export default defineConfig({
-  plugins: [react()],
+  // The app's JSX goes through `src/jsx`, which makes untrusted text visible (see clean.ts).
+  plugins: [react({ jsxImportSource: "@pulse/jsx" })],
+  resolve: {
+    alias: [{ find: /^@pulse\/jsx\/(.*)$/, replacement: fileURLToPath(new URL("./src/jsx/$1", import.meta.url)) }],
+  },
   // The daemon proves itself for its own port (`rpc/proof.ts`); through the proxy that is not
   // the page's port.
   define: { __PULSE_DEV_DAEMON_PORT__: JSON.stringify(Number(new URL(daemon).port)) },
