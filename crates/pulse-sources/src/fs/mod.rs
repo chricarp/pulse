@@ -379,7 +379,9 @@ impl<W: Watcher> Fs<'_, W> {
         }
         self.last_raw = std::time::SystemTime::now();
         let now = self.clock.now();
+        let unusable = self.normalizer.unusable_paths;
         let raws = self.normalizer.normalize(&ev, &self.watched);
+        self.report_unusable(unusable);
         for raw in raws {
             match raw {
                 Raw::Signal(s) => self.coalescer.push(s, now),
@@ -426,6 +428,18 @@ impl<W: Watcher> Fs<'_, W> {
         // A held rename half is the earliest a new deadline can be.
         let soon = self.clock.now().saturating_add(Duration::from_millis(100));
         self.next_poll = Some(self.next_poll.map_or(soon, |n| n.min(soon)));
+    }
+
+    /// A file whose name is not UTF-8 cannot be an event (paths in events and scopes are
+    /// text). Say so in the source's health instead of dropping it silently.
+    fn report_unusable(&mut self, before: u64) {
+        let n = self.normalizer.unusable_paths;
+        if n > before {
+            let last = self.normalizer.last_unusable.as_deref().unwrap_or("?");
+            self.cx.health.error(format!(
+                "ignored {last:?}: its name is not valid UTF-8, so Pulse cannot report it ({n} such paths so far)"
+            ));
+        }
     }
 
     fn forget_watches(&mut self, dir: &str) {
@@ -486,7 +500,11 @@ impl<W: Watcher> Fs<'_, W> {
         let now = self.clock.now();
         for entry in entries.flatten() {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                let unusable = self.normalizer.unusable_paths;
                 self.normalizer.unusable_paths += 1;
+                self.normalizer.last_unusable =
+                    Some(format!("{}/{}", job.dir, entry.file_name().to_string_lossy()));
+                self.report_unusable(unusable);
                 continue;
             };
             let path =

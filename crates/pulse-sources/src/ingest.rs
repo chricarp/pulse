@@ -280,7 +280,10 @@ fn optional_string(
     }
 }
 
-fn check_type(t: &str) -> Result<(), String> {
+/// Checks an external event's `type` as a sender wrote it: syntax, size, and that it is not in
+/// a built-in namespace. `POST /ingest` and `events.ingest` both use it, so a type is refused
+/// the same way on either path instead of being renamed on one of them.
+pub fn check_type(t: &str) -> Result<(), String> {
     if t.len() > MAX_TYPE_BYTES {
         return Err(format!("is {} bytes; the limit is {MAX_TYPE_BYTES}", t.len()));
     }

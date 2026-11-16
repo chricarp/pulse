@@ -76,6 +76,8 @@ pub(crate) struct Normalizer {
     last_renamed: Option<String>,
     /// Paths dropped because they are not UTF-8 or not clean.
     pub(crate) unusable_paths: u64,
+    /// The last of them, lossily decoded, for the health report.
+    pub(crate) last_unusable: Option<String>,
 }
 
 impl Normalizer {
@@ -87,6 +89,7 @@ impl Normalizer {
             canonical_root,
             last_renamed: None,
             unusable_paths: 0,
+            last_unusable: None,
         }
     }
 
@@ -108,6 +111,7 @@ impl Normalizer {
     fn path(&mut self, p: &std::path::Path) -> Option<String> {
         let Some(s) = p.to_str() else {
             self.unusable_paths += 1;
+            self.last_unusable = Some(p.to_string_lossy().into_owned());
             return None;
         };
         let mapped;

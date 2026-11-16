@@ -118,21 +118,25 @@ fn main() -> ExitCode {
     }
 }
 
-/// Writes a line to stdout, ignoring a closed pipe (`pulse events | head`).
+/// Writes a line to stdout, ignoring a closed pipe (`pulse events | head`). Text output
+/// carries event content (file names, commit messages, agent output), so terminal control is
+/// escaped: see [`format::terminal_safe`].
 pub fn print_line(s: &str) {
     use std::io::Write;
-    let _ = writeln!(std::io::stdout().lock(), "{s}");
+    let _ = writeln!(std::io::stdout().lock(), "{}", format::terminal_safe(s));
 }
 
 pub fn eprint_line(s: &str) {
     use std::io::Write;
-    let _ = writeln!(std::io::stderr().lock(), "{s}");
+    let _ = writeln!(std::io::stderr().lock(), "{}", format::terminal_safe(s));
 }
 
-/// Prints a value as pretty JSON (for `--json`).
+/// Prints a value as pretty JSON (for `--json`). JSON escapes control characters itself, and
+/// its readers are programs, so it is written as is.
 pub fn print_json<T: serde::Serialize>(value: &T) {
+    use std::io::Write;
     match serde_json::to_string_pretty(value) {
-        Ok(s) => print_line(&s),
+        Ok(s) => drop(writeln!(std::io::stdout().lock(), "{s}")),
         Err(e) => eprint_line(&format!("error: {e}")),
     }
 }

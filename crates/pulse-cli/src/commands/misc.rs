@@ -150,6 +150,9 @@ pub async fn sources(ctx: &Ctx, args: SourcesArgs) -> Res {
             line.push_str(&format!("  ({m})"));
         }
         print_line(&line);
+        if let Some(e) = h.last_error.as_ref().filter(|e| h.message.as_ref() != Some(&e.message)) {
+            print_line(&format!("    last problem {}: {}", e.at, e.message));
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

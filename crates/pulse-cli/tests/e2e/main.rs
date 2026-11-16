@@ -12,6 +12,7 @@
 mod support;
 
 mod cli;
+mod hostile;
 mod loops;
 mod restart;
 mod sources;
