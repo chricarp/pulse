@@ -159,14 +159,15 @@ async fn ingest(
         Ok(events) => events,
         Err(e) => {
             let err = match e {
-                IngestError::NotImplemented => ServiceError::NotImplemented(e.to_string()),
                 IngestError::ContentType(_) => {
                     return deny(StatusCode::UNSUPPORTED_MEDIA_TYPE, &e.to_string());
                 }
-                IngestError::TooLarge { .. } => {
+                IngestError::TooLarge { .. } | IngestError::TooMany { .. } => {
                     return deny(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string());
                 }
-                IngestError::Parse { .. } => ServiceError::Invalid(e.to_string()),
+                IngestError::Parse { .. } | IngestError::Empty | IngestError::Invalid(_) => {
+                    ServiceError::Invalid(e.to_string())
+                }
             };
             return err.into_response();
         }

@@ -18,14 +18,17 @@
 //!   explicit timestamps and one timer, so it can be tested without sleeping.
 //!
 //! The process wrapper (`pulse run`) and ingest parsing are not `Source`s; they live in
-//! [`process`] and [`ingest`].
+//! [`process`] and [`ingest`]. Design decisions for every source are in
+//! `docs/internals/0005-sources.md`.
 
 pub mod calendar;
+pub mod clock;
 pub mod fs;
 pub mod git;
 pub mod ingest;
 pub mod process;
 pub mod schedule;
+mod state;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -59,6 +62,7 @@ pub enum SourceError {
     Platform(String),
     #[error("the engine stopped accepting events")]
     SinkClosed,
+    /// No built-in source returns this any more; kept so code matching on it still compiles.
     #[error("the {0} source is not implemented yet")]
     NotImplemented(&'static str),
 }
@@ -124,6 +128,14 @@ impl EventSink {
         Ok(())
     }
 
+    /// Waits for room in the channel without giving up an event. Use this in a `select!` next to
+    /// other work: unlike `send`, dropping the future loses nothing, so a source can keep
+    /// coalescing while the engine is behind and send once there is room.
+    pub async fn reserve(&self) -> Result<SinkPermit<'_>, SourceError> {
+        let permit = self.tx.reserve().await.map_err(|_| SourceError::SinkClosed)?;
+        Ok(SinkPermit { permit, health: &self.health })
+    }
+
     /// Sends without waiting. `Err` gives the event back when the channel is full, so the
     /// caller can keep it in its (bounded) coalescing state.
     pub fn try_send(&self, event: NewEvent) -> Result<(), TrySendError> {
@@ -136,6 +148,21 @@ impl EventSink {
             Err(mpsc::error::TrySendError::Full(e)) => Err(TrySendError::Full(Box::new(e))),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(TrySendError::Closed),
         }
+    }
+}
+
+/// Room for one event, from [`EventSink::reserve`].
+#[derive(Debug)]
+pub struct SinkPermit<'a> {
+    permit: mpsc::Permit<'a, NewEvent>,
+    health: &'a HealthReporter,
+}
+
+impl SinkPermit<'_> {
+    pub fn send(self, event: NewEvent) {
+        let at = event.time;
+        self.permit.send(event);
+        self.health.record_event(at);
     }
 }
 
