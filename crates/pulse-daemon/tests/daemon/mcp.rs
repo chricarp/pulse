@@ -87,7 +87,7 @@ async fn push_all(t: &TestDaemon, events: Vec<NewEvent>) -> Vec<Event> {
     within("the events to be committed", async {
         while got.len() < n {
             if let Notification::EventsBatch(b) = notes.recv().await.unwrap() {
-                got.extend(b.events);
+                got.extend(b.batch.events);
             }
         }
     })
@@ -349,8 +349,8 @@ async fn event_ids_increase_in_commit_order_across_paths_and_restarts() {
     within("every event live", async {
         while live.len() < total {
             if let Notification::EventsBatch(b) = notes.recv().await.unwrap() {
-                assert_eq!(b.dropped, 0, "the live view summarized; lower the counts");
-                live.extend(b.events.into_iter().map(|e| e.id));
+                assert_eq!(b.batch.dropped, 0, "the live view summarized; lower the counts");
+                live.extend(b.batch.events.into_iter().map(|e| e.id));
             }
         }
     })

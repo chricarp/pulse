@@ -1,6 +1,6 @@
 //! `projects.*`: trusting a repository's `pulse.toml`, bound to its content hash.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use pulse_contracts::status::Project;
 
@@ -14,12 +14,15 @@ impl Services {
     }
 
     /// Trusts `dir/pulse.toml` exactly as it is now. Any later change makes it inert again.
-    pub async fn projects_trust(&self, dir: &Path, name: Option<&str>) -> ServiceResult<Project> {
-        self.change_trust(|loader, now| loader.trust(dir, name, now)).await
+    /// `dir` may start with `~`, like paths in config.
+    pub async fn projects_trust(&self, dir: &str, name: Option<&str>) -> ServiceResult<Project> {
+        let dir = PathBuf::from(super::expand_tilde(dir, &self.shared.user_home));
+        self.change_trust(|loader, now| loader.trust(&dir, name, now)).await
     }
 
-    pub async fn projects_untrust(&self, dir: &Path) -> ServiceResult<Project> {
-        self.change_trust(|loader, _| loader.untrust(dir)).await
+    pub async fn projects_untrust(&self, dir: &str) -> ServiceResult<Project> {
+        let dir = PathBuf::from(super::expand_tilde(dir, &self.shared.user_home));
+        self.change_trust(|loader, _| loader.untrust(&dir)).await
     }
 
     async fn change_trust(

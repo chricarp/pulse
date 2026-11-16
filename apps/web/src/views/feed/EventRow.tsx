@@ -1,7 +1,7 @@
-import { memo, useEffect, useSyncExternalStore } from "react";
+import { memo, useSyncExternalStore } from "react";
 
 import { useApp } from "../../app/context";
-import type { Event, EventDetail } from "../../contracts";
+import type { Event, EventOutcome } from "../../contracts";
 import { deliveryLabel, deliveryTone } from "../../lib/explain";
 import { clockTime, count, sourceName } from "../../lib/format";
 import { Icon } from "../../ui/icons";
@@ -12,37 +12,32 @@ export function typeFamily(type: string): string {
   return ["fs", "git", "process", "schedule", "calendar", "ext"].includes(head) ? head : "ext";
 }
 
-/** Deliveries for an event, fetched lazily while its row is on screen. */
-export function useEventDetail(event: Event): EventDetail | undefined {
-  const { deliveries } = useApp();
-  const detail = useSyncExternalStore(
-    (l) => deliveries.subscribe(event.id, l),
-    () => deliveries.get(event.id),
+/** What an event caused, as the daemon sent it with the event (no request per row). */
+export function useOutcomes(event: Event): readonly EventOutcome[] | undefined {
+  const { outcomes } = useApp();
+  return useSyncExternalStore(
+    (l) => outcomes.subscribe(event.id, l),
+    () => outcomes.get(event.id),
   );
-  useEffect(() => {
-    deliveries.want(event.id, event.type);
-    return () => deliveries.unwant(event.id);
-  }, [deliveries, event.id, event.type]);
-  return detail;
 }
 
 function Markers({ event }: { event: Event }) {
-  const detail = useEventDetail(event);
-  if (!detail || detail.deliveries.length === 0) return null;
+  const list = useOutcomes(event);
+  if (!list || list.length === 0) return null;
   // The most important outcome first: loop protection, then approvals, fires, the rest.
-  const rank = (d: EventDetail["deliveries"][number]) => {
+  const rank = (d: EventOutcome) => {
     const t = deliveryTone(d.outcome);
     return t === "loop" ? 0 : t === "attention" ? 1 : t === "ok" ? 2 : t === "waiting" ? 3 : 4;
   };
-  const sorted = [...detail.deliveries].sort((a, b) => rank(a) - rank(b));
+  const sorted = [...list].sort((a, b) => rank(a) - rank(b));
   const shown = sorted.slice(0, 2);
   const rest = sorted.length - shown.length;
   return (
     <span className="markers">
-      {shown.map((d) => {
+      {shown.map((d, i) => {
         const tone = deliveryTone(d.outcome);
         return (
-          <span key={d.id} className={cx("marker", `tone-${tone}`)} title={`${d.rule}: ${deliveryLabel(d.outcome)}`}>
+          <span key={`${d.rule}-${i}`} className={cx("marker", `tone-${tone}`)} title={`${d.rule}: ${deliveryLabel(d.outcome)}`}>
             {tone === "loop" && <Icon name="loop" size={11} />}
             <span className="marker-rule">{d.rule}</span>
             <span className="marker-outcome">{deliveryLabel(d.outcome)}</span>
@@ -93,7 +88,7 @@ export const EventRow = memo(function EventRow({ event, selected, onSelect }: { 
           </span>
         )}
         {event.pulsecoalesced && event.pulsecoalesced > 1 && (
-          <span className="flag num" title={`Folded from ${event.pulsecoalesced} raw signals`}>
+          <span className="flag num" title={`Folded from ${event.pulsecoalesced} raw signals by the source (only the count is recorded)`}>
             ×{count(event.pulsecoalesced)}
           </span>
         )}

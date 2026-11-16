@@ -7,7 +7,7 @@ test("the feed stays virtualized and responsive through a storm of 10,000 events
   await expect(page.locator(".event-row").first()).toBeVisible();
   await startPerf(page);
   await mock(page).storm(10_000, 3);
-  // The daemon summarizes: batches of at most 100 plus a count of what was left out.
+  // The daemon summarizes: batches of at most 200 plus a count of what was left out.
   await expect(page.getByText(/summarized/)).toBeVisible();
   // Wait until every storm event is accounted for (shown or summarized).
   await expect
@@ -25,7 +25,7 @@ test("the feed stays virtualized and responsive through a storm of 10,000 events
   // Virtualized: only the visible rows exist in the DOM.
   expect(await page.locator(".event-row").count()).toBeLessThan(80);
   // Below the newest batch, a gap row says what was left out of the live view.
-  await page.locator(".feed-list").evaluate((el) => el.scrollTo(0, 100 * 30));
+  await page.locator(".feed-list").evaluate((el) => el.scrollTo(0, 200 * 30));
   await expect(page.locator(".gap-row").first()).toContainText("not shown live");
   await page.locator(".feed-list").evaluate((el) => el.scrollTo(0, 0));
   // Still responsive: keyboard selection opens the detail.
@@ -41,7 +41,7 @@ test("a gap row opens the summarized range from the log", async ({ page }) => {
   await expect(page.locator(".event-row").first()).toBeVisible();
   await mock(page).storm(3000, 1);
   await expect(page.getByText(/summarized/)).toBeVisible();
-  await page.locator(".feed-list").evaluate((el) => el.scrollTo(0, 100 * 30));
+  await page.locator(".feed-list").evaluate((el) => el.scrollTo(0, 200 * 30));
   const gap = page.locator(".gap-row").first();
   await expect(gap).toBeVisible();
   await gap.getByRole("button", { name: "Show from the log" }).click();

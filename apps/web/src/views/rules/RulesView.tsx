@@ -2,6 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
+import { useTildify } from "../../app/home";
 import { useBindings } from "../../app/keys";
 import { href, navigate, useLocation } from "../../app/router";
 import { attempt } from "../../app/toasts";
@@ -54,15 +55,16 @@ function MissingRule({ name, loaded }: { name: string; loaded: boolean }) {
 }
 
 export function ConfigErrors({ errors }: { errors: ConfigError[] }) {
+  const tildify = useTildify();
   if (errors.length === 0) return null;
   return (
     <Notice tone="error" title={`${plural(errors.length, "problem")} in config files`}>
-      <p>Definitions from a file with errors are not loaded until it is fixed. Edit the file; Pulse reloads it on save.</p>
+      <p>Until it is fixed, Pulse keeps using the last version of the file that worked (a project's file with errors is inactive instead). Edit the file; Pulse reloads it on save.</p>
       <ul className="config-errors">
         {errors.map((e, i) => (
           <li key={i}>
-            <span className="mono">
-              {e.file ?? "config"}
+            <span className="mono" title={e.file ?? undefined}>
+              {e.file ? tildify(e.file) : "config"}
               {e.line ? `:${e.line}` : ""}
               {e.column ? `:${e.column}` : ""}
             </span>{" "}

@@ -63,6 +63,7 @@ pub async fn tail(ctx: &Ctx, args: TailArgs) -> Res {
         }
         match note {
             Notification::EventsBatch(b) => {
+                let b = b.batch;
                 for e in &b.events {
                     print_line(&format::event_line(e));
                 }
@@ -119,10 +120,10 @@ pub async fn events(ctx: &Ctx, args: EventsArgs) -> Res {
         print_json(&page);
         return Ok(ExitCode::SUCCESS);
     }
-    for e in &page.events {
+    for e in &page.page.events {
         print_line(&format::event_line(e));
     }
-    if let Some(next) = page.next_cursor {
+    if let Some(next) = page.page.next_cursor {
         eprint_line(&format!("More: pulse events --cursor {next}"));
     }
     Ok(ExitCode::SUCCESS)

@@ -6,13 +6,15 @@
   "scripts": {
     "dev": "vite",
     "dev:mock": "vite --mode mock",
+    "dev:real": "node scripts/dev-real.mjs",
     "build": "vite build",
     "build:mock": "vite build --mode mock --outDir dist-mock",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "oxlint --deny-warnings src e2e",
+    "lint": "oxlint --deny-warnings src e2e e2e-real scripts",
     "test": "vitest run",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:real": "playwright test -c playwright.real.config.ts"
   },
   "dependencies": {
     "@tanstack/react-virtual": "3.14.26",

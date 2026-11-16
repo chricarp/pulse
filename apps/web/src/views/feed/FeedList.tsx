@@ -1,7 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useRef } from "react";
 
-import { useApp } from "../../app/context";
+import { useApp, useDaemon } from "../../app/context";
 import { OLDER_MAX, type FeedState } from "../../app/feed";
 import { useBindings } from "../../app/keys";
 import { isEmptyFilter, type FeedFilter } from "../../lib/filter";
@@ -28,6 +28,7 @@ export function FeedList({
   onFilter: (f: FeedFilter) => void;
 }) {
   const { feed } = useApp();
+  const sourceCount = useDaemon((s) => s.sources?.length ?? 0);
   const parent = useRef<HTMLDivElement>(null);
   const { rows, older } = state;
   const total = rows.length + older.length + 1;
@@ -120,7 +121,11 @@ export function FeedList({
         {nothing && !state.olderLoading && state.connection !== "subscribing" ? (
           <Empty title={isEmptyFilter(state.filter) ? "No events yet" : "No events match this filter"}>
             {isEmptyFilter(state.filter) ? (
-              <p>Pulse shows what its sources see as it happens. Add a source to watch a folder, a repository, a schedule or a calendar.</p>
+              <p>
+                {sourceCount > 0
+                  ? `Pulse shows what its ${sourceCount === 1 ? "source sees" : `${sourceCount} sources see`} as it happens. Nothing has happened yet.`
+                  : "Pulse shows what its sources see as it happens. Add a source to watch a folder, a repository, a schedule or a calendar."}
+              </p>
             ) : (
               <p>New matching events will appear here as they happen.</p>
             )}

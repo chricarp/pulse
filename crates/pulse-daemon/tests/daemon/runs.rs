@@ -50,6 +50,7 @@ run = {{ agent = "sh" }}
     .await;
     let mut watch = RunWatch::new(t.client().await).await;
     let client = t.client().await;
+    let mut notes = client.notifications().unwrap();
     client.call::<method::EventsIngest>(ext("one")).await.unwrap();
     client.call::<method::EventsIngest>(ext("two")).await.unwrap();
     let a = watch.until(None, RunStatus::PendingApproval).await;
@@ -62,6 +63,18 @@ run = {{ agent = "sh" }}
     };
     let status = client.call::<method::SystemStatusGet>(Empty {}).await.unwrap();
     assert_eq!(status.runs.pending_approval, 2);
+    // Every connection is told when run counts change, so a client that shows "2 waiting for
+    // approval" (the desktop shell's badge) needs no run subscription.
+    within("state.changed with the new counts", async {
+        loop {
+            if let Notification::StateChanged(c) = notes.recv().await.unwrap() {
+                if c.status.runs.pending_approval == 2 {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
     assert_eq!(status.runs.running, 0, "nothing runs before approval");
 
     let approved = client.call::<method::RunsApprove>(RunIdParams { id: a.id }).await.unwrap();

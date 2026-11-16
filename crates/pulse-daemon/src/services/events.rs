@@ -3,8 +3,9 @@
 use pulse_contracts::catalog::BuiltinEvent;
 use pulse_contracts::config::validate_name;
 use pulse_contracts::rpc::{
-    EventDetail, EventFilter, EventPage, EventQuery, EventsBatch, IngestParams, IngestResult,
-    ReplayParams, ReplayResult, ReportParams, ReportResult, ReportedEvent,
+    EventDetail, EventFilter, EventOutcome, EventPageWithOutcomes, EventQuery,
+    EventsBatchWithOutcomes, IngestParams, IngestResult, ReplayParams, ReplayResult, ReportParams,
+    ReportResult, ReportedEvent,
 };
 use pulse_contracts::{EventId, EventType, NewEvent, SourceKind, SourceRef, SubscriptionId};
 use pulse_core::filter::CompiledFilter;
@@ -22,8 +23,25 @@ pub const MAX_INGEST_EVENTS: usize = 1000;
 pub const REPORT_SOURCE: &str = "run";
 
 impl Services {
-    pub async fn events_query(&self, query: EventQuery) -> ServiceResult<EventPage> {
-        Ok(self.shared.store.read(move |q| q.query().query_events(&query)).await?)
+    /// The log with what each event caused, for clients holding the daemon token. (MCP agents
+    /// query through `mcp_query_events`, scoped and without outcomes.)
+    pub async fn events_query(
+        &self,
+        mut query: EventQuery,
+    ) -> ServiceResult<EventPageWithOutcomes> {
+        expand_home(&mut query.filter, &self.shared.user_home);
+        Ok(self
+            .shared
+            .store
+            .read(move |q| {
+                let q = q.query();
+                let page = q.query_events(&query)?;
+                let ids: Vec<EventId> = page.events.iter().map(|e| e.id).collect();
+                let outcomes =
+                    q.deliveries_for_events(&ids)?.iter().map(EventOutcome::from).collect();
+                Ok(EventPageWithOutcomes { page, outcomes })
+            })
+            .await?)
     }
 
     pub async fn events_get(&self, id: EventId) -> ServiceResult<EventDetail> {
@@ -44,19 +62,23 @@ impl Services {
     }
 
     /// Live events matching `filter`, delivered in bounded, rate-limited batches (see
-    /// [`crate::hub`]). For RPC clients (the daemon token sees everything); MCP agents get
-    /// scoped wakeups instead (`mcp_wakeups`).
+    /// [`crate::hub`]), with what each one caused. For RPC clients (the daemon token sees
+    /// everything); MCP agents get scoped wakeups instead (`mcp_wakeups`) and are never told
+    /// outcomes. Nothing is delivered before `ready` is cancelled (after the subscribe call has
+    /// been answered).
     pub(crate) fn events_subscribe(
         &self,
-        filter: EventFilter,
-        deliver: impl FnMut(&EventsBatch) -> Sent + Send + 'static,
+        mut filter: EventFilter,
+        deliver: impl FnMut(&EventsBatchWithOutcomes) -> Sent + Send + 'static,
+        ready: CancellationToken,
         stop: CancellationToken,
         client: CancellationToken,
     ) -> ServiceResult<SubscriptionId> {
+        expand_home(&mut filter, &self.shared.user_home);
         let compiled = CompiledFilter::compile(&filter)
             .map_err(|e| ServiceError::Invalid(format!("invalid filter: {e}")))?;
         let id = self.shared.ids.subscription();
-        self.shared.hub.spawn_event_subscription(id, compiled, deliver, stop, client);
+        self.shared.hub.spawn_event_subscription(id, compiled, deliver, ready, stop, client);
         Ok(id)
     }
 
@@ -153,5 +175,12 @@ impl Services {
         event.causation_run = params.causation_run;
         let ids = self.submit(vec![event]).await?;
         Ok(ReportResult { id: ids.into_iter().next().flatten() })
+    }
+}
+
+/// `~` in a filter's `path` and `subject` means the user's home directory, as in config.
+fn expand_home(filter: &mut EventFilter, user_home: &std::path::Path) {
+    for v in [&mut filter.path, &mut filter.subject].into_iter().flatten() {
+        *v = super::expand_tilde(v, user_home);
     }
 }

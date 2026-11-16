@@ -13,7 +13,7 @@ import { Ago, Button, CopyButton, Dl, IconButton, Modal, Notice, Pill, Section, 
 import { typeFamily } from "./EventRow";
 
 export function EventDetailPane({ id, onClose, onFilter }: { id: string; onClose: () => void; onFilter: (f: FeedFilter) => void }) {
-  const { client, daemon, deliveries } = useApp();
+  const { client, daemon, outcomes } = useApp();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
@@ -27,7 +27,7 @@ export function EventDetailPane({ id, onClose, onFilter }: { id: string; onClose
       .then((d) => {
         if (!live) return;
         setDetail(d);
-        deliveries.put(d);
+        outcomes.put(d);
       })
       .catch((err: unknown) => {
         if (!live) return;
@@ -36,7 +36,7 @@ export function EventDetailPane({ id, onClose, onFilter }: { id: string; onClose
     return () => {
       live = false;
     };
-  }, [client, deliveries, id, version]);
+  }, [client, outcomes, id, version]);
 
   // Runs this event caused change state: refresh.
   useEffect(() => daemon.onRunsChanged((runs) => {
@@ -111,7 +111,7 @@ export function EventDetailPane({ id, onClose, onFilter }: { id: string; onClose
             ],
             ["Id", <span key="id" className="mono">{e.id} <CopyButton value={e.id} /></span>],
             ...(e.pulsecoalesced && e.pulsecoalesced > 1
-              ? ([["Coalesced", <span key="c">Folded from <span className="num">{count(e.pulsecoalesced)}</span> raw signals by the source.</span>]] as [string, ReactNode][])
+              ? ([["Coalesced", <span key="c">Folded from <span className="num">{count(e.pulsecoalesced)}</span> raw signals by the source. Pulse records how many, not which ones.</span>]] as [string, ReactNode][])
               : []),
             ...(e.pulsereplayof
               ? ([["Replay of", <a key="r" className="mono" href={href({ view: "feed", eventId: e.pulsereplayof })} onClick={(ev) => { ev.preventDefault(); navigate({ view: "feed", eventId: e.pulsereplayof ?? "" }, { keepSearch: true }); }}>{shortId(e.pulsereplayof)}</a>]] as [string, ReactNode][])

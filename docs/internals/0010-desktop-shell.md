@@ -103,4 +103,15 @@ CI (`.github/workflows/desktop.yml`) runs the shell's typecheck and unit tests, 
 - On Ubuntu 23.10 and later (AppArmor user-namespace restriction) the AppImage runs without Chromium's OS-level sandbox, and says so (see Packaging). A `.deb` with an AppArmor profile would fix it.
 - No Windows build (Pulse does not support Windows in v1).
 - Loop-guard blocks of single deliveries are not notified (see Notifications).
-- The tray's look and behaviour on real desktops, real notification delivery, and everything on macOS were not verified by running them. What was verified, on a headless Linux arm64 machine under Xvfb, is driven by `apps/desktop/e2e/harness.ts` (`e2e/run.sh`): lifecycle (start, adopt, stale `daemon.json`, older daemon, daemon stopped from outside, restart), the login code in the window URL and its exchange from the page, pause and resume through the menu, notifications and their throttle, the navigation and permission policy, close-to-tray and the tray-less quit, a second instance, and the quit policy.
+- The tray's look and behaviour on real desktops, real notification delivery, and everything on macOS were not verified by running them. What was verified, on a headless Linux arm64 machine under Xvfb, is driven by `apps/desktop/e2e/harness.ts` (`e2e/run.sh`): lifecycle (start, adopt, stale `daemon.json`, older daemon, daemon stopped from outside, restart), the window signing in by itself with the login code (the page exchanges it, removes it from the address bar, and stays signed in across a reload), pause and resume through the menu, notifications and their throttle, the navigation and permission policy, close-to-tray and the tray-less quit, a second instance, and the quit policy.
+
+### Running the end-to-end scenarios on a machine without GTK
+
+Electron's binary is not unpacked by `pnpm install` here (only esbuild's install script is allowed); `node apps/desktop/node_modules/electron/install.js` unpacks it from `~/.cache/electron`. On a headless Ubuntu 24.04 arm64 machine without GTK, twelve packages unpacked without root are enough (`apt-get download` each, then `dpkg -x` into one directory): `libgtk-3-0t64 libcairo-gobject2 libepoxy0 libgdk-pixbuf-2.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 libwayland-client0 libwayland-cursor0 libwayland-egl1 libxcursor1 libxinerama1 libjpeg-turbo8`. Then:
+
+```sh
+E2E_LD_LIBRARY_PATH=<dir>/usr/lib/aarch64-linux-gnu E2E_ELECTRON_FLAGS=--no-sandbox \
+  PULSE_BIN=target/debug/pulse apps/desktop/e2e/run.sh <out-dir>
+```
+
+`PULSE_E2E=showcase` (not in `run.sh`'s list) adopts a daemon already running on a Pulse home with activity and captures the feed; it made `docs/images/desktop-*.png`.

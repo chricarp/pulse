@@ -87,13 +87,16 @@ pub struct SystemStatus {
     /// Global pause: rules are evaluated and recorded but nothing fires.
     pub paused: bool,
     pub pulse_home: String,
+    /// The user's home directory, which `~` stands for in config and in event filters. Event
+    /// paths are absolute; clients use this to show them as `~/…`.
+    pub user_home: String,
     pub port: u16,
     pub sources: SourceCounts,
     pub runs: RunCounts,
     pub rules: u32,
     pub agents: u32,
-    /// Problems in config files; see `system.config_errors`. Definitions from a file with errors
-    /// are not loaded.
+    /// Problems in config files; see `system.config_errors`. While the user's file has errors,
+    /// its last good version stays in effect; a project file with errors is inactive.
     pub config_errors: u32,
 }
 
@@ -123,8 +126,8 @@ pub struct DaemonInfo {
 }
 
 /// `POST /auth/login`: exchanges a short-lived, single-use login code (from `pulse open`, in the
-/// URL fragment `#login=<code>`) for the daemon token. Codes keep the token itself out of
-/// process arguments and browser history.
+/// URL fragment `#login=<code>`) for the daemon token. The whole browser handshake is described
+/// in [`crate::auth`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct UiLoginRequest {
     pub code: String,
@@ -133,6 +136,6 @@ pub struct UiLoginRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct UiLoginResponse {
     /// The daemon token. Send it as `Authorization: Bearer <token>`, or for a browser WebSocket
-    /// as the subprotocols `["pulse", "pulse.token.<token>"]`.
+    /// as the subprotocols `["pulse", "pulse.token.<token>"]` (see [`crate::auth`]).
     pub token: String,
 }

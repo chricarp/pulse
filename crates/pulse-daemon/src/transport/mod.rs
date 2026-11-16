@@ -8,7 +8,10 @@
 //!   `Origin` is accepted at all (MCP clients are not browsers; the UI never calls `/mcp`);
 //! - `/ws` and `/ingest` need the daemon token (`Authorization: Bearer`, or for a browser
 //!   WebSocket the subprotocol `pulse.token.<token>`); the static UI and the login exchange need
-//!   none. An agent token is not the daemon token, so it is refused on all of them.
+//!   none. An agent token is not the daemon token, so it is refused on all of them. A
+//!   browser-style upgrade (offering the `pulse` subprotocol) with a missing or wrong token is
+//!   not refused with a 401, which a browser cannot read, but upgraded and closed at once with
+//!   4401 (see [`pulse_contracts::auth`]).
 //! - `/mcp` needs an agent token, checked by the MCP router's own bearer layer through
 //!   `Services::mcp_agent` before any MCP handling (see [`mcp`]); the daemon token is not an
 //!   agent token and is refused there.
@@ -36,9 +39,7 @@ use crate::auth::constant_time_eq;
 use crate::error::ServiceError;
 use crate::services::Services;
 
-/// The WebSocket subprotocol a browser offers alongside `pulse.token.<token>`.
-pub const WS_PROTOCOL: &str = "pulse";
-pub const WS_TOKEN_PROTOCOL_PREFIX: &str = "pulse.token.";
+pub use pulse_contracts::auth::{WS_PROTOCOL, WS_TOKEN_PROTOCOL_PREFIX};
 
 #[derive(Clone, Debug)]
 pub(crate) struct App {
@@ -78,21 +79,24 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ").map(str::trim)
 }
 
-fn ws_protocol_token(headers: &HeaderMap) -> Option<&str> {
+fn ws_protocols(headers: &HeaderMap) -> impl Iterator<Item = &str> {
     headers
-        .get(header::SEC_WEBSOCKET_PROTOCOL)?
-        .to_str()
-        .ok()?
-        .split(',')
+        .get_all(header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
         .map(str::trim)
-        .find_map(|p| p.strip_prefix(WS_TOKEN_PROTOCOL_PREFIX))
+}
+
+fn ws_protocol_token(headers: &HeaderMap) -> Option<&str> {
+    ws_protocols(headers).find_map(|p| p.strip_prefix(WS_TOKEN_PROTOCOL_PREFIX))
 }
 
 fn deny(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": { "message": message } }))).into_response()
 }
 
-async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
+async fn guard(State(app): State<App>, mut req: Request, next: Next) -> Response {
     let shared = &app.services.shared;
     let port = shared.port();
     let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok());
@@ -112,7 +116,12 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     if path == "/ws" || path == "/ingest" {
         let token = bearer(req.headers()).or_else(|| ws_protocol_token(req.headers()));
         if !token.is_some_and(|t| constant_time_eq(t.as_bytes(), shared.secret.as_bytes())) {
-            return deny(StatusCode::UNAUTHORIZED, "missing or wrong daemon token");
+            let browser = path == "/ws" && ws_protocols(req.headers()).any(|p| p == WS_PROTOCOL);
+            if !browser {
+                return deny(StatusCode::UNAUTHORIZED, "missing or wrong daemon token");
+            }
+            // The upgrade handler closes it with 4401 before reading anything.
+            req.extensions_mut().insert(rpc::Unauthenticated);
         }
     }
     next.run(req).await

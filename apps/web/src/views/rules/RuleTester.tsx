@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 import { useApp } from "../../app/context";
 import { useBindings } from "../../app/keys";
-import type { ConfigError, Event, RuleConfig, RuleRef, RuleTestResult } from "../../contracts";
+import type { ConfigError, Event, RuleRef, RuleTestResult } from "../../contracts";
 import { deliveryLabel, deliveryTone, outcomeSentence } from "../../lib/explain";
 import { clockTime, dayAndTime, shortId, sourceName } from "../../lib/format";
 import { typeGlobMatches } from "../../lib/syntax";
@@ -16,8 +16,6 @@ import { PromptView } from "../common/PromptView";
 
 interface Outcome {
   result: RuleTestResult;
-  /** For a debounced decision: what fires when the debounce elapses. */
-  afterDebounce: RuleTestResult | null;
   event: Event;
 }
 
@@ -96,22 +94,10 @@ export function RuleTester({
     setBusy(true);
     setError(null);
     try {
+      // For a debounced rule the daemon also says what fires once the debounce elapses
+      // (`after_debounce`), with the prompt it would send.
       const result = await client.call("rules.test", { rule: ref, event: selected.id, ignore_runtime_state: ignoreState });
-      let afterDebounce: RuleTestResult | null = null;
-      // The daemon answers "debounced" for a rule with a debounce. To show what would fire
-      // when it elapses, test the same rule without its debounce.
-      if (result.decision?.outcome.kind === "debounced") {
-        const draft = await draftOf(ref);
-        if (draft) {
-          const { debounce: _debounce, ...rest } = draft.rule;
-          afterDebounce = await client.call("rules.test", {
-            rule: { kind: "draft", rule: rest as RuleConfig, ...(draft.project ? { project: draft.project } : {}) },
-            event: selected.id,
-            ignore_runtime_state: ignoreState,
-          });
-        }
-      }
-      setOutcome({ result, afterDebounce, event: selected });
+      setOutcome({ result, event: selected });
       onConfigErrors?.([]);
     } catch (err) {
       if (err instanceof RpcCallError && err.code === ErrorCodes.ConfigInvalid) {
@@ -126,14 +112,7 @@ export function RuleTester({
     setBusy(false);
   };
 
-  /** The saved rule as a draft (for the debounce follow-up). */
-  const draftOf = async (ref: RuleRef): Promise<{ rule: RuleConfig; project?: string } | null> => {
-    if (ref.kind === "draft") return ref.project ? { rule: ref.rule, project: ref.project } : { rule: ref.rule };
-    const info = await client.call("rules.get", { name: ref.name });
-    const project = info.origin.kind === "project" ? info.origin.name : undefined;
-    const bare = project ? info.config.name.slice(project.length + 1) : info.config.name;
-    return project ? { rule: { ...info.config, name: bare }, project } : { rule: { ...info.config, name: bare } };
-  };
+
 
   useBindings([{ keys: "mod+enter", label: "Test against the selected event", group: "Rules", run: () => void run() }]);
 
@@ -188,7 +167,8 @@ export function RuleTester({
 }
 
 function TestResult({ outcome, on }: { outcome: Outcome; on: string[] }) {
-  const { result, afterDebounce, event } = outcome;
+  const { result, event } = outcome;
+  const afterDebounce = result.after_debounce ? { decision: result.after_debounce } : null;
   const when = (iso: string) => dayAndTime(iso, Date.now());
   const head = (
     <p className="faint test-against">

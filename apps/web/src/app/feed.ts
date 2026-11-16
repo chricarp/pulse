@@ -5,6 +5,7 @@
 // buffer keeps up regardless.
 
 import type { Event } from "../contracts";
+import type { OutcomeStore } from "./outcomes";
 import { isLiveCapable, toEventFilter, toLiveFilter, EMPTY_FILTER, sameFilter, type FeedFilter } from "../lib/filter";
 import { RpcCallError, type RpcClient, type Subscription } from "../rpc/client";
 import { FeedBuffer, type FeedRow, type FeedStats } from "../store/feedBuffer";
@@ -42,7 +43,10 @@ export class FeedController {
   private generation = 0;
   private frame: number | null = null;
 
-  constructor(private readonly client: RpcClient) {
+  constructor(
+    private readonly client: RpcClient,
+    private readonly outcomes: OutcomeStore,
+  ) {
     this.store = createStore<FeedState>({
       filter: EMPTY_FILTER,
       mode: "live",
@@ -132,6 +136,7 @@ export class FeedController {
       () => ({ filter: toLiveFilter(filter) }),
       (batch) => {
         if (gen !== this.generation) return;
+        this.outcomes.add(batch.outcomes);
         this.buffer.applyBatch(batch.events, batch.dropped);
         if (this.frozen) {
           this.store.set((st) => ({ ...st, arrivedWhileFrozen: st.arrivedWhileFrozen + batch.events.length + batch.dropped }));
@@ -147,6 +152,7 @@ export class FeedController {
             .call("events.query", { filter: toEventFilter(filter, Date.now()), order: "newest_first", limit: PAGE })
             .then((page) => {
               if (gen !== this.generation) return;
+              this.outcomes.add(page.outcomes);
               this.buffer.mergeHistory(page.events);
               if (!page.next_cursor) this.store.set((st) => ({ ...st, olderDone: true }));
               this.olderCursor = page.next_cursor ?? null;
@@ -188,6 +194,7 @@ export class FeedController {
         ...(cursor ? { cursor } : {}),
       });
       if (gen !== this.generation) return;
+      this.outcomes.add(page.outcomes);
       const fresh = page.events.filter((e) => !this.buffer.has(e.id));
       this.store.set((st) => ({
         ...st,

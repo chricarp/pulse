@@ -170,7 +170,7 @@ async fn project_trust_is_bound_to_content() {
     let mut t = TestDaemon::start(BASE).await;
     let client = t.client().await;
     let mut notes = client.notifications().unwrap();
-    let project = t.dir.path().join("repo");
+    let project = t.user_home.join("repo");
     std::fs::create_dir_all(&project).unwrap();
     let file = project.join("pulse.toml");
     let text = "[[rule]]\nname = \"build\"\non = \"ext.ci.*\"\nrun = { agent = \"sh\" }\n";
@@ -194,8 +194,9 @@ async fn project_trust_is_bound_to_content() {
     .await;
     assert_eq!(rule_names(&client).await, ["ci"]);
 
+    // `~` is the user's home, as everywhere else (the UI suggests `~/code/my-repo`).
     client
-        .call::<method::ProjectsTrust>(ProjectTrustParams { dir: dir.clone(), name: None })
+        .call::<method::ProjectsTrust>(ProjectTrustParams { dir: "~/repo".into(), name: None })
         .await
         .unwrap();
     assert_eq!(rule_names(&client).await, ["ci", "repo/build"]);

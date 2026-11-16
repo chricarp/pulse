@@ -85,7 +85,8 @@ pub fn typescript_bindings() -> String {
         out.push_str(&format!("  \"{name}\",\n"));
     }
     out.push_str("] as const satisfies readonly RpcMethodName[];\n\n");
-    out.push_str("export type NotificationMethod = Notification[\"method\"];\n");
+    out.push_str(&crate::auth::typescript_constants());
+    out.push_str("\nexport type NotificationMethod = Notification[\"method\"];\n");
     out.push_str(
         "export type NotificationParams<M extends NotificationMethod> = Extract<Notification, { method: M }>[\"params\"];\n",
     );

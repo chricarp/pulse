@@ -311,6 +311,32 @@ kind = "schedule"
 every = "1h"
 "#;
 
+pub type RawSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// A WebSocket without the typed client, to observe frame order.
+pub async fn raw_socket(port: u16, token: &str) -> RawSocket {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://127.0.0.1:{port}/ws").into_client_request().unwrap();
+    req.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+    tokio_tungstenite::connect_async(req).await.unwrap().0
+}
+
+/// Sends one frame and returns the first text frame that comes back.
+pub async fn raw_call(ws: &mut RawSocket, frame: &str) -> serde_json::Value {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    ws.send(Message::Text(frame.to_owned().into())).await.unwrap();
+    within("a frame", async {
+        loop {
+            if let Message::Text(t) = ws.next().await.unwrap().unwrap() {
+                return serde_json::from_str(t.as_str()).unwrap();
+            }
+        }
+    })
+    .await
+}
+
 /// The fake agents (`fake-agent`, `fake-claude`, `fake-codex`) and recorded streams.
 pub fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../pulse-agents/tests/fixtures")

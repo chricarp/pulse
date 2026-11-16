@@ -132,6 +132,8 @@ pub(crate) struct Engine {
 #[derive(Default)]
 struct Pending {
     commit: Commit,
+    /// Events from earlier commits that get deliveries in this one (debounces that elapsed).
+    earlier: Vec<Event>,
     rules_touched: BTreeSet<String>,
     runs: Vec<RunSummary>,
     replies: Vec<Reply>,
@@ -480,6 +482,7 @@ impl Engine {
                 None => None,
             };
             self.route(&event, RouteMode::DebounceElapsed(&d.rule), cause, now, &mut p);
+            p.earlier.push(event);
         }
         self.commit(p).await;
     }
@@ -495,11 +498,12 @@ impl Engine {
         let wake_worker = !p.commit.outbox.is_empty();
         let commit = std::mem::take(&mut p.commit);
         let events = commit.events.clone();
+        let deliveries = commit.deliveries.clone();
         match self.shared.store.write(move |s| s.commit(&commit)).await {
             Ok(()) => {
                 answer(p.replies);
-                self.shared.hub.publish_events(events);
-                self.shared.hub.publish_runs(p.runs);
+                self.shared.hub.publish_events(events, &deliveries, p.earlier);
+                self.shared.publish_runs(p.runs);
                 if p.breaker_tripped {
                     self.shared.notify_state(&[StateTopic::Rules]);
                 }

@@ -11,6 +11,14 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     proxy: {
+      // The login exchange (`pulse open` codes); the daemon checks `Origin` here too.
+      "/auth": {
+        target: daemon,
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on("proxyReq", (req) => req.setHeader("origin", daemon));
+        },
+      },
       "/ws": {
         target: daemon,
         ws: true,

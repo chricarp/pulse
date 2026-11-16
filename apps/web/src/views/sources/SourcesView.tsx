@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
+import { useTildifyText } from "../../app/home";
 import { useBindings } from "../../app/keys";
 import { href, navigate } from "../../app/router";
 import { attempt, toast } from "../../app/toasts";
@@ -47,6 +48,7 @@ export function SourcesView({ name, mode }: { name: string | null; mode: "show" 
 }
 
 function SourceList({ list, selected, loaded }: { list: SourceInfo[]; selected: string | null; loaded: boolean }) {
+  const shortText = useTildifyText();
   const move = (d: number) => {
     const i = list.findIndex((s) => s.config.name === selected);
     const next = list[Math.max(0, Math.min(list.length - 1, i < 0 ? 0 : i + d))];
@@ -99,7 +101,7 @@ function SourceList({ list, selected, loaded }: { list: SourceInfo[]; selected: 
                       <Pill tone={tone}>{s.health.state}</Pill>
                       <span className="faint num source-last">{s.health.last_event_at ? <Ago iso={s.health.last_event_at} /> : "no events yet"}</span>
                     </span>
-                    {s.health.message && (s.health.state === "failed" || s.health.state === "degraded") && <span className={cx("source-msg", `tone-${tone}`)}>{s.health.message}</span>}
+                    {s.health.message && (s.health.state === "failed" || s.health.state === "degraded") && <span className={cx("source-msg", `tone-${tone}`)}>{shortText(s.health.message)}</span>}
                   </a>
                 </li>
               );
@@ -116,6 +118,7 @@ function SourceDetail({ info }: { info: SourceInfo }) {
   const [confirm, setConfirm] = useState(false);
   const c = info.config;
   const h = info.health;
+  const shortText = useTildifyText();
   const tone = sourceTone(h.state);
   const project = info.origin.kind === "project" ? info.origin.name : undefined;
   const bare = project ? c.name.slice(project.length + 1) : c.name;
@@ -154,12 +157,12 @@ function SourceDetail({ info }: { info: SourceInfo }) {
       </header>
       <div className="detail-body">
         <Notice tone={tone} title={<>{h.state[0]?.toUpperCase()}{h.state.slice(1)} <span className="faint num">since {dayAndTime(h.since, Date.now())}</span></>}>
-          {h.message ?? (h.state === "healthy" ? "Watching. Changes become events after the source's quiet period." : h.state === "disabled" ? "Not watching. Enable it to start again." : "")}
+          {(h.message && shortText(h.message)) ?? (h.state === "healthy" ? "Watching. Changes become events after the source's quiet period." : h.state === "disabled" ? "Not watching. Enable it to start again." : "")}
         </Notice>
         {h.last_error && (
           <Section title="Last error">
             <p className="num faint">{dayAndTime(h.last_error.at, Date.now())}</p>
-            <pre className="code">{h.last_error.message}</pre>
+            <pre className="code">{shortText(h.last_error.message)}</pre>
           </Section>
         )}
         <Dl

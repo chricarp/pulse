@@ -109,3 +109,16 @@ pub(crate) fn as_written<T: Clone>(
 ) -> Option<T> {
     files.iter().find(|f| f.origin == *origin).and_then(|f| pick(&f.config).cloned())
 }
+
+/// A leading `~` (alone or before `/`) as the user's home directory, the way config paths are
+/// read. Clients send what the user typed.
+pub(crate) fn expand_tilde(s: &str, user_home: &std::path::Path) -> String {
+    let home = user_home.display().to_string();
+    if s == "~" {
+        home
+    } else if let Some(rest) = s.strip_prefix("~/") {
+        format!("{}/{rest}", home.trim_end_matches('/'))
+    } else {
+        s.to_owned()
+    }
+}

@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
 import { href, navigate } from "../../app/router";
-import { attempt } from "../../app/toasts";
+import { attempt, toast } from "../../app/toasts";
 import type { Project } from "../../contracts";
 import { TRUST_LABEL, trustTone } from "../../lib/explain";
 import { dayAndTime, plural } from "../../lib/format";
@@ -153,6 +153,7 @@ function TrustDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
   const { client } = useApp();
   const [dir, setDir] = useState("");
   const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
   return (
     <Modal
       open={open}
@@ -165,12 +166,18 @@ function TrustDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
             variant="primary"
             disabled={!dir.trim()}
             onClick={async () => {
-              const ok = await attempt("Trust", () => client.call("projects.trust", { dir: dir.trim(), ...(name.trim() ? { name: name.trim() } : {}) }), "Trusted");
-              if (ok) {
-                setDir("");
-                setName("");
-                onClose();
+              // A refusal (no pulse.toml there, a name in use) is shown in the dialog, not behind it.
+              setError(null);
+              try {
+                await client.call("projects.trust", { dir: dir.trim(), ...(name.trim() ? { name: name.trim() } : {}) });
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+                return;
               }
+              toast("Trusted", "ok");
+              setDir("");
+              setName("");
+              onClose();
             }}
           >
             Trust
@@ -179,7 +186,7 @@ function TrustDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
       }
     >
       <p>Point at a directory that contains a <code>pulse.toml</code>. Read the file first: trusting it lets its rules wake agents and run its commands.</p>
-      <Field label="Directory">
+      <Field label="Directory" error={error}>
         <Input mono autoFocus value={dir} onChange={(e) => setDir(e.target.value)} placeholder="~/code/my-repo" />
       </Field>
       <Field label="Name" hint="The prefix for its definitions (name/rule). Default: the directory's name.">

@@ -125,7 +125,9 @@ impl Services {
                         let wake = match batch {
                             Ok(batch) => {
                                 let snapshot = shared.snapshot();
-                                batch.iter().any(|e| {
+                                // New events only: an outcome recorded later for an earlier
+                                // event is not shown to agents and adds nothing to their log.
+                                batch.iter().filter_map(|l| l.new_event()).any(|e| {
                                     compiled.matches(e) && snapshot.routing.agent_permits(&agent, e)
                                 })
                             }

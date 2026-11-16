@@ -11,6 +11,7 @@ const status = (over: Partial<SystemStatus> = {}): SystemStatus => ({
   started_at: "2026-11-16T09:00:00Z",
   paused: false,
   pulse_home: "/tmp/h",
+  user_home: "/tmp",
   port: 7477,
   sources: { healthy: 1, degraded: 0, failed: 0, other: 0 },
   runs: { running: 0, queued: 0, pending_approval: 0 },

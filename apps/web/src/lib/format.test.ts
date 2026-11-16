@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { splitPrompt } from "../views/common/PromptView";
-import { relative, span, splitForMiddle, visible } from "./format";
+import { relative, span, splitForMiddle, tildify, tildifyText, visible } from "./format";
 
 describe("untrusted text", () => {
   it("shows bidi overrides, zero-width and control characters instead of obeying them", () => {
@@ -46,5 +46,16 @@ describe("rendered prompts", () => {
     // Without being told the delimiter, the fence shape is recognized.
     expect(splitPrompt(text).data).toBe('{"a": 1}');
     expect(splitPrompt("no fence").data).toBeNull();
+  });
+});
+
+describe("tildify", () => {
+  it("shortens paths under the home directory only", () => {
+    expect(tildify("/home/ada/University/a.pdf", "/home/ada")).toBe("~/University/a.pdf");
+    expect(tildify("/home/ada", "/home/ada/")).toBe("~");
+    expect(tildify("/home/adam/x", "/home/ada")).toBe("/home/adam/x");
+    expect(tildify("make test", "/home/ada")).toBe("make test");
+    expect(tildify("/home/ada/x", null)).toBe("/home/ada/x");
+    expect(tildifyText("/home/ada/Archive does not exist; /home/ada/b too", "/home/ada")).toBe("~/Archive does not exist; ~/b too");
   });
 });

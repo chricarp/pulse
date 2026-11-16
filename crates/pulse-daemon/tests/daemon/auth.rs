@@ -31,6 +31,35 @@ async fn http(port: u16, head: &str, body: &str) -> (u16, String) {
     (status, body)
 }
 
+/// Opens a WebSocket the way the web UI does and returns the close code the daemon sends first.
+async fn browser_close_code(port: u16, protocols: &str) -> Option<u16> {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let mut req = format!("ws://127.0.0.1:{port}/ws").into_client_request().unwrap();
+    let h = req.headers_mut();
+    h.insert("origin", format!("http://127.0.0.1:{port}").parse().unwrap());
+    h.insert("sec-websocket-protocol", protocols.parse().unwrap());
+    let (mut ws, resp) = tokio_tungstenite::connect_async(req).await.unwrap();
+    assert_eq!(
+        resp.headers().get("sec-websocket-protocol").and_then(|v| v.to_str().ok()),
+        Some(pulse_contracts::auth::WS_PROTOCOL),
+        "the daemon selects the app protocol and never echoes the token"
+    );
+    within("a close frame", async {
+        while let Some(msg) = ws.next().await {
+            match msg {
+                Ok(Message::Close(frame)) => return frame.map(|f| u16::from(f.code)),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    })
+    .await
+}
+
 const UPGRADE: &str = "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -167,6 +196,19 @@ async fn tokens_hosts_and_origins() {
     assert_eq!(status, 200);
     assert!(got.contains(&token));
     assert_eq!(http(port, &login, &body).await.0, 401, "single use");
+
+    // A browser cannot read the status of a refused upgrade (it sees 1006, like a daemon that
+    // is down), so a browser-style upgrade with a wrong token is accepted and closed with 4401.
+    for offered in ["pulse, pulse.token.nope", "pulse"] {
+        let (status, _) = http(
+            port,
+            &format!("GET /ws HTTP/1.1\r\n{host}\r\nOrigin: http://127.0.0.1:{port}\r\nSec-WebSocket-Protocol: {offered}\r\n{UPGRADE}"),
+            "",
+        )
+        .await;
+        assert_eq!(status, 101, "{offered}");
+        assert_eq!(browser_close_code(port, offered).await, Some(4401), "{offered}");
+    }
 
     // The typed client authenticates with the token file.
     let client = Client::connect(&t.home).await.unwrap();

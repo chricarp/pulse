@@ -12,6 +12,7 @@ import type {
   ConfigOrigin,
   Decision,
   Delivery,
+  EventOutcome,
   DeliveryOutcome,
   Event,
   EventFilter,
@@ -51,6 +52,8 @@ import * as fx from "./fixtures";
 import { bigOutput, scriptFor, type Script } from "./scripts";
 import { UlidGenerator } from "./ulid";
 
+const outcomeOf = (d: Delivery): EventOutcome => ({ event: d.event, rule: d.rule, outcome: d.outcome, run: d.run ?? null });
+
 type Handlers = {
   [M in RpcMethodName]: (
     params: RpcMethods[M]["params"],
@@ -72,8 +75,8 @@ const conflict = (msg: string) => new MockRpcError(-32003, msg);
 const configInvalid = (errors: ConfigError[]) =>
   new MockRpcError(-32004, errors.map((e) => e.message).join("; "), { errors });
 
-/** Live batches: at most this many events each, the rest counted as dropped. */
-const BATCH_MAX = 100;
+/** Live batches: at most this many events each, the rest counted as dropped (as the daemon). */
+const BATCH_MAX = 200;
 const BATCH_INTERVAL_MS = 250;
 const RUNS_INTERVAL_MS = 100;
 const OUTPUT_PAGE = 500;
@@ -88,7 +91,15 @@ export interface Conn {
 }
 
 type Sub =
-  | { kind: "events"; filter: EventFilter; pending: Event[]; dropped: number; timer: ReturnType<typeof setTimeout> | null }
+  | {
+      kind: "events";
+      filter: EventFilter;
+      pending: { event: Event; outcomes: EventOutcome[] }[];
+      /** Outcomes recorded later for events sent earlier (a debounce elapsed). */
+      late: EventOutcome[];
+      dropped: number;
+      timer: ReturnType<typeof setTimeout> | null;
+    }
   | { kind: "runs"; filter: RunFilter; pending: Map<string, RunSummary>; timer: ReturnType<typeof setTimeout> | null }
   | { kind: "output"; run: string; ready: boolean };
 
@@ -288,6 +299,7 @@ export class MockDaemon {
       started_at: iso(this.startedAt),
       paused: this.paused,
       pulse_home: fx.PULSE_HOME,
+      user_home: fx.HOME,
       port: 7477,
       sources: counts,
       runs,
@@ -407,28 +419,36 @@ export class MockDaemon {
       src.health.last_event_at = event.time;
     }
     const deliveries = this.route(event, at, spec.only ?? null);
-    this.fanOutEvent(event);
+    this.fanOutEvent(event, deliveries.map(outcomeOf), true);
     return { event, deliveries };
   }
 
-  private fanOutEvent(event: Event): void {
+  /** Like the daemon: outcomes travel with their event; later ones (`fresh` false) alone. */
+  private fanOutEvent(event: Event, outcomes: EventOutcome[], fresh: boolean): void {
     if (this.seeding) return;
     for (const conn of this.conns) {
       for (const [id, sub] of conn.subs) {
         if (sub.kind !== "events" || !this.matchesFilter(event, sub.filter)) continue;
-        sub.pending.push(event);
-        if (sub.pending.length > BATCH_MAX) {
-          sub.pending.shift();
-          sub.dropped += 1;
+        if (fresh) {
+          sub.pending.push({ event, outcomes });
+          if (sub.pending.length > BATCH_MAX) {
+            sub.pending.shift();
+            sub.dropped += 1;
+          }
+        } else {
+          sub.late.push(...outcomes);
+          sub.late.splice(0, Math.max(0, sub.late.length - BATCH_MAX));
         }
         if (!sub.timer) {
           sub.timer = setTimeout(() => {
             sub.timer = null;
-            const events = sub.pending;
+            const events = sub.pending.map((p) => p.event);
+            const all = [...sub.pending.flatMap((p) => p.outcomes), ...sub.late];
             const dropped = sub.dropped;
             sub.pending = [];
+            sub.late = [];
             sub.dropped = 0;
-            conn.send({ jsonrpc: "2.0", method: "events.batch", params: { subscription: id, events, dropped } });
+            conn.send({ jsonrpc: "2.0", method: "events.batch", params: { subscription: id, events, dropped, outcomes: all } });
           }, BATCH_INTERVAL_MS);
         }
       }
@@ -658,7 +678,8 @@ export class MockDaemon {
           const wait = Date.parse(d.outcome.until) - at;
           const timer = setTimeout(() => {
             this.debounces.delete(key);
-            this.route(e, this.now(), null, d.rule);
+            const later = this.route(e, this.now(), null, d.rule);
+            this.fanOutEvent(e, later.map(outcomeOf), false);
           }, wait);
           this.debounces.set(key, { timer, event: e });
         } else {
@@ -857,15 +878,14 @@ export class MockDaemon {
     for (const conn of this.conns) {
       for (const [id, sub] of conn.subs) {
         if (sub.kind !== "runs") continue;
-        // A run that leaves the filter is still reported once, so lists can drop it.
+        // Like the daemon: only the latest state per window, and only while it matches the
+        // filter (a run that leaves the filter's statuses is not reported again).
+        if (!this.runMatches(run, sub.filter)) continue;
         sub.pending.set(run.id, s);
         if (!sub.timer) {
           sub.timer = setTimeout(() => {
             sub.timer = null;
-            const runs = [...sub.pending.values()].filter((x) => {
-              const full = this.runs.get(x.id);
-              return full ? this.runMatches(full, { ...sub.filter, status: [] }) : false;
-            });
+            const runs = [...sub.pending.values()];
             sub.pending.clear();
             if (runs.length) conn.send({ jsonrpc: "2.0", method: "runs.changed", params: { subscription: id, runs } });
           }, RUNS_INTERVAL_MS);
@@ -1011,7 +1031,8 @@ export class MockDaemon {
           out.push(e);
         }
       }
-      return { events: out, next_cursor: more ? (out.at(-1)?.id ?? null) : null };
+      const outcomes = out.flatMap((e) => (this.deliveriesByEvent.get(e.id) ?? []).map(outcomeOf));
+      return { events: out, next_cursor: more ? (out.at(-1)?.id ?? null) : null, outcomes };
     },
     "events.get": ({ id }) => {
       const event = this.eventById.get(id);
@@ -1022,7 +1043,7 @@ export class MockDaemon {
     },
     "events.subscribe": ({ filter }, conn) => {
       const id = `S${this.nextSub++}`;
-      conn.subs.set(id, { kind: "events", filter: filter ?? { types: [], sources: [] }, pending: [], dropped: 0, timer: null });
+      conn.subs.set(id, { kind: "events", filter: filter ?? { types: [], sources: [] }, pending: [], late: [], dropped: 0, timer: null });
       return { subscription: id };
     },
     "events.unsubscribe": ({ subscription }, conn) => {
@@ -1118,8 +1139,11 @@ export class MockDaemon {
         const full = rule.project ? `${rule.project}/${rule.rule.name}` : rule.rule.name;
         def = { config: { ...ruleDefaults(rule.rule), name: full, archived: false }, origin };
       }
-      const decision = this.decide(def, e, this.now(), { ignoreState: ignore_runtime_state });
-      return { matched: decision !== null, decision };
+      const now = this.now();
+      const decision = this.decide(def, e, now, { ignoreState: ignore_runtime_state });
+      // Like the daemon: a debounced decision comes with what fires once it elapses.
+      const after_debounce = decision?.outcome.kind === "debounced" ? this.decide(def, e, now, { ignoreState: ignore_runtime_state, debounceElapsed: true }) : null;
+      return { matched: decision !== null, decision, after_debounce };
     },
     "rules.history": ({ name, outcomes, cursor, limit }) => {
       const lim = Math.min(Math.max(limit ?? 100, 1), 500);
@@ -1524,11 +1548,12 @@ export class MockDaemon {
     let sent = 0;
     this.stormTimer = setInterval(() => {
       const now = this.now();
+      // External events (`pulse ingest`), which the daemon delivers one by one. A storm of
+      // files in a watched folder would not look like this: the real fs source folds more than
+      // `burst_threshold` (200) pending changes in one directory into a single `fs.burst`.
       for (let i = 0; i < per && sent < total; i++, sent++) {
-        const part = Math.floor(sent / 500);
-        const dir = `${fx.HOME}/Downloads/dataset-2026/part-${String(part).padStart(2, "0")}`;
-        const name = `${String(sent).padStart(5, "0")}.csv`;
-        this.emit({ type: "fs.file.created", source: "pulse://fs/downloads", subject: `${dir}/${name}`, data: { path: `${dir}/${name}`, dir, name, ext: "csv", size: 2048 + (sent % 4096) } }, now);
+        const name = `photos/IMG_${String(sent).padStart(5, "0")}.jpg`;
+        this.emit({ type: "ext.camera.upload.received", source: "pulse://ext/camera", subject: name, data: { size: 2048 + (sent % 4096) } }, now);
       }
       if (sent >= total && this.stormTimer) {
         clearInterval(this.stormTimer);

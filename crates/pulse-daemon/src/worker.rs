@@ -350,7 +350,7 @@ impl RunTask {
         let id = self.run.id;
         let now = self.shared.clock.now();
         let run = self.shared.store.write(move |s| s.transition_run(id, t, now)).await?;
-        self.shared.hub.publish_runs(vec![run.summary()]);
+        self.shared.publish_runs(vec![run.summary()]);
         Ok(run)
     }
 

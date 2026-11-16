@@ -128,3 +128,18 @@ export function sourceKind(uri: string): string {
 export function shortId(id: string): string {
   return id.length > 10 ? id.slice(-8) : id;
 }
+
+/** Every path under the home directory inside a message, as `~/…` (a source's error text). */
+export function tildifyText(text: string, home: string | null | undefined): string {
+  if (!home || home === "/") return text;
+  const h = home.replace(/\/+$/, "");
+  return text.split(`${h}/`).join("~/");
+}
+
+/** `/home/ada/University/x.pdf` as `~/University/x.pdf`, given the daemon's `user_home`. */
+export function tildify(path: string, home: string | null | undefined): string {
+  if (!home || home === "/") return path;
+  const h = home.replace(/\/+$/, "");
+  if (path === h) return "~";
+  return path.startsWith(`${h}/`) ? `~${path.slice(h.length)}` : path;
+}

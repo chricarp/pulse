@@ -55,6 +55,8 @@ pub(crate) struct Shared {
     running: Mutex<HashMap<String, u32>>,
 
     pending_topics: Mutex<BTreeSet<StateTopicKey>>,
+    /// The status may have changed without a topic (run counts).
+    status_dirty: AtomicBool,
     state_notify: Notify,
     /// Bumped whenever a new configuration takes effect.
     config_version: watch::Sender<u64>,
@@ -114,7 +116,7 @@ impl Shared {
             store: p.store,
             hub: Hub::default(),
             secret: p.secret,
-            login_codes: LoginCodes::default(),
+            login_codes: LoginCodes::new(started_at),
             started_at,
             port: OnceLock::new(),
             shutdown: CancellationToken::new(),
@@ -129,6 +131,7 @@ impl Shared {
             paused: AtomicBool::new(p.paused),
             running: Mutex::new(HashMap::new()),
             pending_topics: Mutex::new(BTreeSet::new()),
+            status_dirty: AtomicBool::new(false),
             state_notify: Notify::new(),
             config_version: watch::channel(0).0,
             source_builder: p.wiring.sources,
@@ -174,6 +177,16 @@ impl Shared {
         self.running.lock().unwrap_or_else(|p| p.into_inner()).get(agent).copied().unwrap_or(0)
     }
 
+    /// Tells run subscribers, and every connection's status if the counts changed.
+    pub(crate) fn publish_runs(&self, runs: Vec<pulse_contracts::RunSummary>) {
+        if runs.is_empty() {
+            return;
+        }
+        self.hub.publish_runs(runs);
+        self.status_dirty.store(true, Ordering::SeqCst);
+        self.state_notify.notify_one();
+    }
+
     /// Queues a `state.changed` for every connection. Bursts are coalesced.
     pub(crate) fn notify_state(&self, topics: &[StateTopic]) {
         let mut pending = self.pending_topics.lock().unwrap_or_else(|p| p.into_inner());
@@ -187,8 +200,10 @@ impl Shared {
         self.pending_topics.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 
-    /// Sends coalesced `state.changed` notifications until shutdown.
+    /// Sends coalesced `state.changed` notifications until shutdown: for every topic change,
+    /// and for a status change without one (run counts) when the status really differs.
     pub(crate) async fn run_state_notifier(self: Arc<Self>, services: crate::Services) {
+        let mut last: Option<pulse_contracts::status::SystemStatus> = None;
         loop {
             tokio::select! {
                 _ = self.shutdown.cancelled() => return,
@@ -197,12 +212,17 @@ impl Shared {
             tokio::time::sleep(STATE_COALESCE).await;
             let keys =
                 std::mem::take(&mut *self.pending_topics.lock().unwrap_or_else(|p| p.into_inner()));
-            if keys.is_empty() {
+            let dirty = self.status_dirty.swap(false, Ordering::SeqCst);
+            if keys.is_empty() && !dirty {
                 continue;
             }
-            let topics = keys.iter().map(|k| TOPICS[k.0 as usize]).collect();
+            let topics: Vec<StateTopic> = keys.iter().map(|k| TOPICS[k.0 as usize]).collect();
             match services.status().await {
-                Ok(status) => self.hub.publish_state(StateChanged { status, topics }),
+                Ok(status) if topics.is_empty() && last.as_ref() == Some(&status) => {}
+                Ok(status) => {
+                    last = Some(status.clone());
+                    self.hub.publish_state(StateChanged { status, topics });
+                }
                 Err(e) => tracing::warn!("could not compute status: {e}"),
             }
         }

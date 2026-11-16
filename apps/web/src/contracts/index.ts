@@ -22,7 +22,7 @@ max_queued: number,
  * Extra environment for runs. Trusted (it is config). Keys starting with `PULSE_` are
  * reserved.
  */
-env: { [key in string]: string }, } & ({ "adapter": "claude-code" } & ClaudeCodeSettings | { "adapter": "codex" } & CodexSettings | { "adapter": "command" } & CommandSettings | { "adapter": "mcp" } & McpSettings);
+env?: { [key in string]: string }, } & ({ "adapter": "claude-code" } & ClaudeCodeSettings | { "adapter": "codex" } & CodexSettings | { "adapter": "command" } & CommandSettings | { "adapter": "mcp" } & McpSettings);
 
 export type AgentInfo = { config: AgentConfig, origin: ConfigOrigin, running: number, queued: number, };
 
@@ -71,11 +71,11 @@ permission_mode?: string,
 /**
  * Each passed as `--allowedTools=<rule>`, like `"Edit"` or `"Bash(git diff:*)"`.
  */
-allowed_tools: Array<string>, 
+allowed_tools?: Array<string>, 
 /**
  * Each passed as `--disallowedTools=<rule>`.
  */
-disallowed_tools: Array<string>, extra_args: Array<string>, };
+disallowed_tools?: Array<string>, extra_args?: Array<string>, };
 
 export type CodexSettings = { 
 /**
@@ -90,7 +90,7 @@ sandbox?: string,
  * Passed as `approval_policy` (`-c`). Default `never`: nothing waits for an approval nobody
  * can give; a command that needs one fails and the model is told.
  */
-approval_policy?: string, extra_args: Array<string>, };
+approval_policy?: string, extra_args?: Array<string>, };
 
 export type CommandSettings = { 
 /**
@@ -187,11 +187,12 @@ export type EventFilter = { types: Array<TypeGlob>,
  */
 sources: Array<string>, 
 /**
- * A glob over `subject`.
+ * A glob over `subject`. A leading `~` is the user's home directory.
  */
 subject?: string, 
 /**
  * Events carrying a path equal to or under this absolute directory (or equal to this file).
+ * A leading `~` is the user's home directory.
  */
 path?: string, 
 /**
@@ -207,7 +208,18 @@ export type EventId = string;
 
 export type EventIdParams = { id: EventId, };
 
-export type EventPage = { events: Array<Event>, 
+export type EventOutcome = { event: EventId, rule: string, outcome: DeliveryOutcome, 
+/**
+ * The run it created (fired, awaiting approval).
+ */
+run?: RunId | null, };
+
+export type EventPageWithOutcomes = { 
+/**
+ * Every delivery recorded so far for the page's events, in the order they were recorded.
+ * An event without entries matched no rule.
+ */
+outcomes: Array<EventOutcome>, events: Array<Event>, 
 /**
  * Pass as `cursor` to continue; `None` at the end.
  */
@@ -237,7 +249,13 @@ path_fields: Array<string>, example: unknown, };
 
 export type EventTypeList = { types: Array<EventTypeInfo>, };
 
-export type EventsBatch = { subscription: SubscriptionId, 
+export type EventsBatchWithOutcomes = { 
+/**
+ * The deliveries recorded with this batch's events, plus any recorded since the previous
+ * batch for matching events delivered earlier (a debounce that elapsed fires on an event
+ * that was sent when it arrived). Outcomes of dropped events are not sent; query the log.
+ */
+outcomes: Array<EventOutcome>, subscription: SubscriptionId, 
 /**
  * A bounded number of the newest matching events, oldest first.
  */
@@ -271,7 +289,7 @@ path: string,
 /**
  * Globs relative to `path` (or absolute) added to the built-in ignores.
  */
-ignore: Array<string>, recursive: boolean, 
+ignore?: Array<string>, recursive: boolean, 
 /**
  * Per-path quiet period before a change is emitted. Default 2s.
  */
@@ -332,7 +350,7 @@ duplicates: number, };
 
 export type InvocationSummary = { program: string, args: Array<string>, cwd: string, };
 
-export type JsonRpcNotification = { jsonrpc: JsonRpcVersion, } & ({ "method": "events.batch", "params": EventsBatch } | { "method": "runs.changed", "params": RunsChanged } | { "method": "runs.output", "params": RunsOutput } | { "method": "state.changed", "params": StateChanged });
+export type JsonRpcNotification = { jsonrpc: JsonRpcVersion, } & ({ "method": "events.batch", "params": EventsBatchWithOutcomes } | { "method": "runs.changed", "params": RunsChanged } | { "method": "runs.output", "params": RunsOutput } | { "method": "state.changed", "params": StateChanged });
 
 export type JsonRpcRequest = { jsonrpc: JsonRpcVersion, id?: RequestId, method: string, params?: unknown, };
 
@@ -350,7 +368,7 @@ export type McpSettings = Record<symbol, never>;
 
 export type NameParams = { name: string, };
 
-export type Notification = { "method": "events.batch", "params": EventsBatch } | { "method": "runs.changed", "params": RunsChanged } | { "method": "runs.output", "params": RunsOutput } | { "method": "state.changed", "params": StateChanged };
+export type Notification = { "method": "events.batch", "params": EventsBatchWithOutcomes } | { "method": "runs.changed", "params": RunsChanged } | { "method": "runs.output", "params": RunsOutput } | { "method": "state.changed", "params": StateChanged };
 
 export type Order = "newest_first" | "oldest_first";
 
@@ -390,7 +408,7 @@ export type ProjectList = { projects: Array<Project>, };
 
 export type ProjectTrustParams = { 
 /**
- * The directory containing `pulse.toml`.
+ * The directory containing `pulse.toml`. Absolute, or starting with `~`.
  */
 dir: string, 
 /**
@@ -446,12 +464,12 @@ export type RuleConfig = { name: string, description?: string,
 /**
  * Event type glob(s).
  */
-on: TypeGlobs, where: { [key in string]: WhereCondition }, 
+on: TypeGlobs, where?: { [key in string]: WhereCondition }, 
 /**
  * Trailing debounce: wait until matching events stop for this long, then fire once with
  * the latest.
  */
-debounce?: Duration, debounce_by: DebounceBy, 
+debounce?: Duration, debounce_by?: DebounceBy, 
 /**
  * Minimum time between fires.
  */
@@ -568,9 +586,9 @@ export type RunOutputParams = { id: RunId,
 /**
  * Chunks with `seq` greater than this. Default: from the start.
  */
-after: number, limit?: number, };
+after?: number, limit?: number, };
 
-export type RunOutputSubscribeParams = { id: RunId, after: number, };
+export type RunOutputSubscribeParams = { id: RunId, after?: number, };
 
 export type RunPage = { 
 /**
@@ -661,10 +679,15 @@ export type SystemStatus = { version: string, started_at: Timestamp,
 /**
  * Global pause: rules are evaluated and recorded but nothing fires.
  */
-paused: boolean, pulse_home: string, port: number, sources: SourceCounts, runs: RunCounts, rules: number, agents: number, 
+paused: boolean, pulse_home: string, 
 /**
- * Problems in config files; see `system.config_errors`. Definitions from a file with errors
- * are not loaded.
+ * The user's home directory, which `~` stands for in config and in event filters. Event
+ * paths are absolute; clients use this to show them as `~/…`.
+ */
+user_home: string, port: number, sources: SourceCounts, runs: RunCounts, rules: number, agents: number, 
+/**
+ * Problems in config files; see `system.config_errors`. While the user's file has errors,
+ * its last good version stays in effect; a project file with errors is inactive.
  */
 config_errors: number, };
 
@@ -681,7 +704,7 @@ export type UiLoginRequest = { code: string, };
 export type UiLoginResponse = { 
 /**
  * The daemon token. Send it as `Authorization: Bearer <token>`, or for a browser WebSocket
- * as the subprotocols `["pulse", "pulse.token.<token>"]`.
+ * as the subprotocols `["pulse", "pulse.token.<token>"]` (see [`crate::auth`]).
  */
 token: string, };
 
@@ -707,7 +730,7 @@ export type WhereScalar = boolean | number | number | string;
 
 /** Every RPC method with its params and result types. */
 export type RpcMethods = {
-  "events.query": { params: EventQuery; result: EventPage };
+  "events.query": { params: EventQuery; result: EventPageWithOutcomes };
   "events.get": { params: EventIdParams; result: EventDetail };
   "events.subscribe": { params: EventsSubscribeParams; result: Subscribed };
   "events.unsubscribe": { params: Unsubscribe; result: Empty };
@@ -803,6 +826,16 @@ export const RPC_METHOD_NAMES = [
   "system.event_types",
   "system.config_errors",
 ] as const satisfies readonly RpcMethodName[];
+
+/** How the web UI authenticates; see `pulse_contracts::auth`. */
+export const LOGIN_FRAGMENT_PARAM = "login";
+export const LOGIN_PATH = "/auth/login";
+export const LOGIN_CODE_TTL_SECS = 120;
+export const WS_PATH = "/ws";
+export const WS_PROTOCOL = "pulse";
+export const WS_TOKEN_PROTOCOL_PREFIX = "pulse.token.";
+export const WS_CLOSE_UNAUTHORIZED = 4401;
+export const TOKEN_STORAGE_KEY = "pulse.token";
 
 export type NotificationMethod = Notification["method"];
 export type NotificationParams<M extends NotificationMethod> = Extract<Notification, { method: M }>["params"];
