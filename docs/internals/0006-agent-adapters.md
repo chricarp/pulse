@@ -94,8 +94,10 @@ writes through) the canonical path, which is why the daemon also matches canonic
 
 Spawn directly (no shell) with `process_group(0)`, stdout and stderr piped, stdin from
 `Invocation::stdin` or null. Inherited `PULSE_*` variables are removed first, so a run never
-sees a stale `PULSE_EVENT_SUBJECT` or another run's id. `Started { pid }` is sent before any
-output; the pid is also the group id.
+sees a stale `PULSE_EVENT_SUBJECT` or another run's id. With `SuperviseOptions::open_files`,
+the child's soft descriptor limit is set between fork and exec (the daemon raised its own; see
+[0007](0007-mcp-and-sep-3415.md), "Descriptors"). `Started { pid }` is sent before any output;
+the pid is also the group id.
 
 The run ends when the leader exits, the timeout elapses, or the cancellation token fires (the
 daemon cancels all runs on shutdown). In every case the group gets SIGTERM, then SIGKILL after

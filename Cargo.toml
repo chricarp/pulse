@@ -31,7 +31,9 @@ tokio-util = { version = "0.7.20", default-features = false }
 tempfile = "3.27.0"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny`, not `forbid`: one `#[allow]` sets a child's descriptor limit between fork and exec
+# (`pulse_agents::supervisor::set_child_open_files`). Any other needs the same justification.
+unsafe_code = "deny"
 missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]

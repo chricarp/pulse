@@ -551,6 +551,7 @@ impl RunTask {
         }
         let options = SuperviseOptions {
             timeout: self.run.snapshot.agent.timeout.to_std(),
+            open_files: crate::transport::agent_open_files(),
             ..SuperviseOptions::default()
         };
         let (tx, mut rx) = mpsc::channel(OUTPUT_CHANNEL);

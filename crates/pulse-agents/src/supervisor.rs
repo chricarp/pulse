@@ -84,6 +84,10 @@ pub struct SuperviseOptions {
     /// Longer lines are cut: the parser sees the first `max_line_bytes`, then a `marker` output
     /// says how much was dropped.
     pub max_line_bytes: usize,
+    /// The child's soft limit on open descriptors (`RLIMIT_NOFILE`), set between fork and exec.
+    /// The daemon raises its own limit and passes the one it started with: programs that use
+    /// `select()` misbehave with descriptors above 1024. `None` inherits this process's limit.
+    pub open_files: Option<u64>,
 }
 
 impl Default for SuperviseOptions {
@@ -93,6 +97,7 @@ impl Default for SuperviseOptions {
             grace: Duration::from_secs(5),
             // Claude Code puts a whole tool result (a file it read) on one stream-json line.
             max_line_bytes: 1024 * 1024,
+            open_files: None,
         }
     }
 }
@@ -158,6 +163,9 @@ pub async fn supervise(
         }
     }
     command.envs(invocation.env.iter().map(|(k, v)| (k, v)));
+    if let Some(soft) = options.open_files {
+        set_child_open_files(&mut command, soft);
+    }
     let mut child = command
         .spawn()
         .map_err(|source| SuperviseError::Spawn { program: invocation.program.clone(), source })?;
@@ -351,6 +359,29 @@ fn handle(
             ));
             dropped
         }
+    }
+}
+
+/// Sets the child's soft descriptor limit before it execs. The only `unsafe` in Pulse: a
+/// `pre_exec` hook is the one way to change the child, and only the child, before the program
+/// runs. Setting it in the parent around the spawn would starve the daemon's other threads of
+/// descriptors meanwhile; setting it on the child after the spawn (`prlimit`) races the
+/// program's start.
+#[allow(unsafe_code)]
+fn set_child_open_files(command: &mut std::process::Command, soft: u64) {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let hard = getrlimit(Resource::Nofile).maximum;
+    let limit = Rlimit { current: Some(hard.map_or(soft, |h| h.min(soft))), maximum: hard };
+    // SAFETY: the hook runs in the forked child before exec, where only async-signal-safe
+    // operations are allowed. It makes one system call (`setrlimit`, a direct syscall in
+    // rustix) with a `Copy` value computed before the fork: no allocation, no locks. Lowering
+    // the soft limit cannot fail; if it did, the agent would merely keep the daemon's limit, so
+    // the error is ignored rather than failing the spawn.
+    unsafe {
+        command.pre_exec(move || {
+            let _ = setrlimit(Resource::Nofile, limit);
+            Ok(())
+        });
     }
 }
 

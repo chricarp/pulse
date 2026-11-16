@@ -29,6 +29,7 @@ const OPTIONS: SuperviseOptions = SuperviseOptions {
     timeout: Duration::from_secs(60),
     grace: Duration::from_secs(5),
     max_line_bytes: 64 * 1024,
+    open_files: None,
 };
 
 fn fake(args: &[&str]) -> Invocation {
@@ -214,6 +215,27 @@ async fn stdin_and_environment() {
         ["PULSE_RUN_ID=r2"],
         "only the run's own PULSE_ variables"
     );
+
+    // The daemon raises its own descriptor limit; an agent gets the one it started with.
+    let soft = rustix::process::getrlimit(rustix::process::Resource::Nofile).current.unwrap();
+    let ulimit = |open_files| async move {
+        let inv = Invocation {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "ulimit -Sn".into()],
+            ..fake(&[])
+        };
+        let (tx, events) = mpsc::channel(4);
+        let options = SuperviseOptions { open_files, ..OPTIONS };
+        let cancel = CancellationToken::new();
+        let handle =
+            tokio::spawn(supervise(inv, Box::new(LineParser), tx, options, cancel.clone()));
+        let mut run = Run { events, cancel, handle, pid: 0, seen: Vec::new() };
+        run.events.recv().await;
+        let (out, _) = run.finish().await;
+        texts(&out, OutputKind::Stdout).concat()
+    };
+    assert_eq!(ulimit(None).await, soft.to_string(), "inherited by default");
+    assert_eq!(ulimit(Some(soft - 1)).await, (soft - 1).to_string());
 
     // A child that never reads a large stdin must not stall the run.
     let mut inv = fake(&["exit", "0"]);
