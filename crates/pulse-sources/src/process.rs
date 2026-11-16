@@ -625,32 +625,62 @@ mod tests {
     /// which may already name another process.
     #[tokio::test]
     async fn signals_are_never_sent_to_a_reaped_command() {
-        let dir = std::env::temp_dir();
         for mode in [PIPES, Mode::Pipes { own_group: false }, Mode::Pty { raw_stdin: false }] {
+            let dir = tempfile::tempdir().unwrap();
+            let holder = Holder::new(dir.path());
             let mut storm = Storm::default();
             let mut out = Started(storm.started.clone());
-            // The background sleep ignores the hangup a pty sends when its leader exits, and
-            // holds the output after the command is gone.
-            let script = sh("trap '' HUP; sleep 2 & echo started; exec sleep 30");
-            let data = run(&script, &dir, 4096, mode, &mut out, &mut storm).await.unwrap();
+            // The holder ignores the hangup a pty sends when its leader exits, and holds the
+            // output after the command is gone.
+            let script =
+                sh(&format!("trap '' HUP; {} & echo started; exec sleep 30", holder.script));
+            let data = run(&script, dir.path(), 4096, mode, &mut out, &mut storm).await.unwrap();
+            holder.release();
             let stale = storm.stale.len();
             assert_eq!(stale, 0, "{mode:?}: {stale} signals for the command after its reap");
             assert_eq!(data.signal, Some(15), "{mode:?}: the running command got the signal");
         }
     }
 
+    /// A process a command leaves behind holding its output (a shell's `cmd &`), which the test
+    /// ends rather than leaving it running: it waits on the `go` fifo, and holds the `done` fifo
+    /// open for writing while it lives, so its reader sees end of file once it has exited.
+    struct Holder {
+        script: String,
+        go: std::path::PathBuf,
+        exited: std::thread::JoinHandle<()>,
+    }
+
+    impl Holder {
+        fn new(dir: &Path) -> Holder {
+            let (go, done) = (make_fifo(dir, "go"), make_fifo(dir, "done"));
+            let script = format!("( exec 3> '{}'; read x < '{}' )", done.display(), go.display());
+            // Blocking opens and reads on a plain thread, not the runtime's.
+            let exited = std::thread::spawn(move || {
+                use std::io::Read;
+                let mut done = std::fs::File::open(done).unwrap();
+                let _ = done.read_to_end(&mut Vec::new());
+            });
+            Holder { script, go, exited }
+        }
+
+        /// Lets it exit, and returns once it has.
+        fn release(self) {
+            drop(std::fs::OpenOptions::new().write(true).open(&self.go).unwrap());
+            self.exited.join().unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn a_background_process_holding_the_output_does_not_hang_the_wrapper() {
-        // The background process holds the output until the test opens the FIFO for writing,
-        // which it only does once the wrapper has returned: returning at all is the proof.
+        // The background process holds the output until the test releases it, which it only
+        // does once the wrapper has returned: returning at all is the proof.
         let dir = tempfile::tempdir().unwrap();
-        let fifo = make_fifo(dir.path(), "release");
-        let script = format!("read x < '{}' & echo started", fifo.display());
-        let (d, cap) = go(&script, 4096, PIPES).await;
+        let holder = Holder::new(dir.path());
+        let (d, cap) = go(&format!("{} & echo started", holder.script), 4096, PIPES).await;
+        holder.release();
         assert_eq!(d.exit_code, Some(0));
         assert_eq!(cap.out, b"started\n");
-        // Let the background process end: it is waiting to open the FIFO for reading.
-        drop(std::fs::OpenOptions::new().write(true).open(&fifo).unwrap());
     }
 
     #[tokio::test]
