@@ -11,14 +11,16 @@ use pulse_contracts::status::SourceState;
 
 use crate::support::*;
 
-fn config(extra_sources: &str, extra_rules: &str) -> String {
+/// `quiet` is the fs source's quiet period: storms fold when enough changes are pending at once,
+/// so a short one splits a slow storm (a clone on a busy machine) into single files.
+fn config(quiet: &str, extra_sources: &str, extra_rules: &str) -> String {
     format!(
         r#"
 [[source]]
 name = "watched"
 kind = "fs"
 path = "~/watched"
-quiet = "200ms"
+quiet = "{quiet}"
 {extra_sources}
 
 [[agent]]
@@ -96,7 +98,7 @@ async fn unzipping_ten_thousand_files_is_a_few_events_and_the_daemon_stays_respo
          \x20           z.writestr(f'dataset/part{d:02}/{f:04}.csv', 'a,b\\n1,2\\n')\n",
         &[&zip],
     );
-    env.write_config(&config("", ""));
+    env.write_config(&config("200ms", "", ""));
     let daemon = env.start().await;
     let mut watch = daemon.watch().await;
     watch.sources(SourceState::Healthy).await;
@@ -157,7 +159,9 @@ async fn unzipping_ten_thousand_files_is_a_few_events_and_the_daemon_stays_respo
 async fn a_clone_and_a_checkout_in_a_watched_folder_stay_bounded() {
     let env = Env::new();
     let watched = env.mkdir("watched");
+    // The default quiet period, as a user has it.
     env.write_config(&config(
+        "2s",
         "\n[[source]]\nname = \"repo\"\nkind = \"git\"\npath = \"~/watched/repo\"\n",
         "\n[[rule]]\nname = \"switched\"\non = \"git.branch.switched\"\nrun = { agent = \"quick\" }\n",
     ));
@@ -209,14 +213,20 @@ async fn a_clone_and_a_checkout_in_a_watched_folder_stay_bounded() {
         git_events.len(),
         runs.len()
     );
+    for r in &runs {
+        let e = watch.detail(r.event).await.event;
+        println!("  run {:?} for {} {:?}", r.rule, e.type_, e.subject);
+    }
     assert_eq!(git_events.len(), 1, "{git_events:#?}");
-    // This repository has fewer files than the burst threshold (200), so unless the clone and
-    // the checkout overlap in one quiet period they are reported file by file: at most one
-    // event per file and step. Runs are bounded by the agent's backlog (1 running + 8 queued)
-    // while the burst lasts, and by the circuit breaker (20 per 10 minutes) overall.
-    let files = 2 * 200;
-    assert!(fs <= files, "{fs} fs events");
-    assert!(runs.len() <= 21, "{} runs", runs.len());
+    // The clone (about 300 files) and the checkout each settle as one `fs.burst`, plus the
+    // marker. Runs: the git rule's, the marker's, and whatever top-level files settled on
+    // their own.
+    assert!(
+        fs <= 10,
+        "{fs} fs events: {:#?}",
+        events.iter().map(|e| (&e.type_, &e.subject)).collect::<Vec<_>>()
+    );
+    assert!(runs.len() <= 10, "{} runs", runs.len());
     assert!(worst < Duration::from_secs(1));
     daemon.stop().await;
 }
