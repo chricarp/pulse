@@ -31,9 +31,10 @@ Read [docs/internals/0002-architecture.md](docs/internals/0002-architecture.md) 
 
 1. **Touching the real Pulse home.** Never run a daemon or a test against `~/.pulse`. Always set `PULSE_HOME` to a temp directory. Tests create their own.
 2. **Killing by pattern.** Never `pkill -f`, `killall`, or kill a PID you found by matching a name. Kill only a PID you captured when you spawned it. The same rule is product behaviour: Pulse signals only process groups it created.
-3. **Running real agents in tests.** Real agent runs cost the user money. Tests use the fake agents in `crates/pulse-agents/tests/fixtures`. Use a real agent only when the change is about that agent's real behaviour, once, with its cheapest model.
+3. **Running real agents in tests.** Real agent runs cost the user money. Tests use the fake agents in `crates/pulse-agents/tests/fixtures`. Use a real agent only when the change is about that agent's real behaviour, once, with its cheapest model. This includes trying things by hand: if `claude` or `codex` is on your `PATH`, adding a shipped template and then creating the folder it watches wakes the real one. Point the agent's `program` at a fixture first.
 4. **I/O in decision logic.** `pulse-core` takes time and state as arguments. If you need the clock, the filesystem or a channel in there, the design is wrong; move the I/O to the caller.
 5. **Shell strings.** Never build a shell command from event content or config templates. Arguments are arrays.
+6. **Cleaning up by glob.** Delete only directories you created, by the exact path you were given when you created them. Never `rm -rf` a pattern in a shared directory such as `/tmp`: other sessions' work lives there. Stop every daemon you start (`pulse stop` with its own `PULSE_HOME`) before you remove its home.
 
 ## Crates
 
@@ -82,6 +83,10 @@ cargo test --workspace         # before you hand off
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 pnpm --dir apps/web test       # UI logic
+pnpm --dir apps/web test:browser   # the UI in a browser, against the mock
+pnpm --dir apps/web test:real      # against the real daemon: after `pnpm --dir apps/web build`,
+                                   # then `cargo clean -p pulse-daemon && cargo build -p pulse-cli`
+pnpm --dir apps/desktop test   # shell logic; apps/desktop/e2e/run.sh drives the real app (0010)
 ```
 
 ## Documentation
