@@ -307,13 +307,21 @@ Not in v1, and recorded in the design notes as possible next steps:
   access, and outgoing webhooks as a rule action are out of v1; the code leaves seams for them
   ([0002](docs/internals/0002-architecture.md#not-in-v1-seams-only)).
 
-## Contributing
+## Contributing and support
 
-Start with [AGENTS.md](AGENTS.md) (conventions, the crates, testing rules, and the ways to hurt
-yourself: never run against your real `~/.pulse`, never kill by name, never run a real agent in a
-test). The design record is [docs/internals/](docs/internals/), beginning with
+Read [Contributing](CONTRIBUTING.md) first: it has the commands that must pass and the areas
+that always need a maintainer. [AGENTS.md](AGENTS.md) holds the conventions, the crates, the
+testing rules and the ways to hurt yourself (never run against your real `~/.pulse`, never kill
+by name, never run a real agent in a test); it applies to human and agent contributors alike.
+The design record is [docs/internals/](docs/internals/), beginning with
 [0002-architecture.md](docs/internals/0002-architecture.md).
+
+See also [Governance](GOVERNANCE.md) and the [Code of conduct](CODE_OF_CONDUCT.md). Use
+[Support](SUPPORT.md) for setup and usage questions; report vulnerabilities through the
+[security policy](.github/SECURITY.md), never in a public issue.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Lictory Pulse is a sibling of [Lictory](https://github.com/chricarp/lictory) and, like it, uses
+the [MIT License](LICENSE). Bundled and linked materials retain their own
+[third-party notices](THIRD_PARTY_NOTICES.md).

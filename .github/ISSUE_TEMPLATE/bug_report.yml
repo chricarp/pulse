@@ -1,0 +1,129 @@
+name: Bug report
+description: Something is broken, regressed, lost data or behaves differently from the documented behavior.
+title: "[Bug]: "
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One problem per issue. Search existing issues first.
+        Security problems belong in a private advisory, not here.
+        Never paste the token, an agent's MCP token, a login link, the event log or the database.
+        The event log and run output contain file names, paths, commit messages and program
+        output from your machine: read what you paste.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and found no duplicate.
+          required: true
+        - label: This report contains no tokens, no event log or database, and nothing private from my machine.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Sources (fs, git, schedule, calendar, pulse run, ingest)
+        - Rules, routing and deliveries
+        - Agents and adapters (Claude Code, Codex, command)
+        - Runs, approvals and process handling
+        - Loop protection
+        - Permissions and scopes
+        - Config file, write-back and project trust
+        - Web UI
+        - CLI
+        - MCP
+        - Desktop app
+        - Build, CI or packaging
+        - Docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did you see it?
+      options:
+        - Web UI (pulse open)
+        - Desktop app
+        - CLI
+        - Config file
+        - MCP client
+        - Not applicable
+        - Not sure
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A minimal, deterministic sequence, with a throwaway PULSE_HOME and the smallest pulse.toml that shows it. Use a `command` agent instead of a real agent where you can.
+      placeholder: |
+        1. export PULSE_HOME=$(mktemp -d); pulse init; pulse start --detach
+        2. Add this rule and agent to pulse.toml: ...
+        3. touch ~/pulse-demo/a.txt
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: The rule fires once and the run succeeds.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include what `pulse events show <id>` or `pulse rules history <rule>` says about it.
+      placeholder: The delivery is recorded as "debounced" and never fires.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      options:
+        - An agent ran when it should not have, ran something it should not, or saw events outside its scopes
+        - Lost or wrong history (events, deliveries or runs)
+        - Blocks work completely
+        - Major degradation or frequent failure
+        - Minor bug or occasional failure
+        - Cosmetic
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: "`pulse --version`, OS and version, CPU architecture, and how you built it."
+      placeholder: pulse 0.1.0 at commit abc1234, Ubuntu 24.04 arm64, ./scripts/build.sh --no-app
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Status and logs
+      description: >-
+        The output of `pulse status` (and `pulse --json status` if it is about a definition that
+        cannot work), and the relevant lines of $PULSE_HOME/logs/pulse.log, redacted. Not whole
+        files.
+      render: shell
+
+  - type: upload
+    id: attachments
+    attributes:
+      label: Screenshots or recordings
+    validations:
+      required: false

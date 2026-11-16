@@ -1,0 +1,31 @@
+name: Setup or usage help
+description: Ask about documented setup or behavior after checking the docs and existing issues.
+labels: [question, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: "Best-effort community support. Never include the token, an agent's MCP token, a login link, the event log or the database. Report vulnerabilities privately through the Security tab."
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+      description: Include the documentation you followed (README, docs/user/, Troubleshooting) and where you got stuck.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and environment
+      description: "`pulse --version`, OS and version, CPU architecture, and how you built it."
+    validations:
+      required: true
+  - type: textarea
+    id: attempts
+    attributes:
+      label: What have you tried?
+      description: >-
+        Include the output of `pulse status`, the relevant part of pulse.toml, relevant lines of
+        $PULSE_HOME/logs/pulse.log and the expected result, redacted. The event log and run
+        output contain file names, commit messages and program output: read before you paste.
+    validations:
+      required: true

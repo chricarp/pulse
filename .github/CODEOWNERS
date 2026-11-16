@@ -1,0 +1,36 @@
+# Code ownership requests review; enable required owner review in the ruleset.
+* @chricarp
+/.github/ @chricarp
+/AGENTS.md @chricarp
+/CLAUDE.md @chricarp
+/CONTRIBUTING.md @chricarp
+/LICENSE @chricarp
+/THIRD_PARTY_NOTICES.md @chricarp
+/LICENSES/ @chricarp
+/scripts/ @chricarp
+/Cargo.toml @chricarp
+/Cargo.lock @chricarp
+/package.json @chricarp
+/pnpm-lock.yaml @chricarp
+/pnpm-workspace.yaml @chricarp
+# Authentication, tokens and the proof handshake
+/crates/pulse-contracts/src/auth.rs @chricarp
+/crates/pulse-daemon/src/auth.rs @chricarp
+/crates/pulse-daemon/src/home.rs @chricarp
+/crates/pulse-daemon/src/transport/ @chricarp
+/apps/web/src/rpc/ @chricarp
+/apps/desktop/src/proof.ts @chricarp
+# Prompt rendering, scopes, loop protection and routing
+/crates/pulse-core/ @chricarp
+# Adapters and process supervision
+/crates/pulse-agents/ @chricarp
+# Config write-back and project trust
+/crates/pulse-daemon/src/config/ @chricarp
+/crates/pulse-daemon/src/services/projects.rs @chricarp
+# Schema and migrations
+/crates/pulse-store/ @chricarp
+# The MCP surface
+/crates/pulse-mcp/ @chricarp
+# Packaging
+/apps/desktop/electron-builder.yml @chricarp
+/apps/desktop/scripts/ @chricarp

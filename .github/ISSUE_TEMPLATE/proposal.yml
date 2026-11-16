@@ -1,0 +1,56 @@
+name: Proposal
+description: Propose a feature or an intentional change in behavior. Agree on the problem before anyone builds it.
+title: "[Proposal]: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lictory Pulse decides when an agent runs, what it is told, and keeps a record of why.
+        It stays small and invisible when idle, and the daemon is the product. Describe the
+        problem first; the solution can change during discussion. Do not open a pull request for
+        a proposal until a maintainer agrees on direction and scope.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can you not do today, and what happens on your machine that should (or should not) wake an agent?
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: Current workaround
+      description: How do you handle this today, with Lictory Pulse or without it?
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should happen? Include the way back (disable, resume, unsnooze, reopen) and how a person sees the state.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: surfaces
+    attributes:
+      label: Likely affected
+      options:
+        - label: Web UI
+        - label: CLI
+        - label: Config file
+        - label: MCP
+        - label: Permissions and scopes
+        - label: Loop protection
+        - label: Prompt rendering or what an agent is told
+        - label: Desktop app
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoffs
+      description: Simpler options you considered, and the configuration, machinery or idle cost this would add.
