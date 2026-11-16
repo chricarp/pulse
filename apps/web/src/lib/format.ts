@@ -1,6 +1,13 @@
 // Formatting for machine data. Everything here is pure; `now` is a parameter.
 
-const BIDI_AND_INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
+// Characters that change or hide how the text around them reads without showing themselves:
+// bidi controls, zero-width and other default-ignorable characters, invisible fillers, line and
+// paragraph separators, interlinear annotation, and the tag characters (U+E0000 to U+E007F,
+// invisible on screen but read by models) with the rest of that block. Not U+FE00 to U+FE0F,
+// which emoji need. The same list is in `pulse-core/src/prompt.rs` (`is_invisible`, also used
+// by the CLI) and `apps/desktop/src/text.ts`; their tests run over the same cases.
+// oxlint-disable-next-line no-misleading-character-class -- U+034F is matched on its own on purpose
+const BIDI_AND_INVISIBLE = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFEFF\uFFA0\uFFF0-\uFFFB\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{E0000}-\u{E0FFF}]/gu;
 // C0 and C1 controls except tab and newline.
 // oxlint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;

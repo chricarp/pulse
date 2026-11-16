@@ -31,6 +31,12 @@ export type SocketFactory = () => Socket;
 
 /** The daemon closes with this code when the token is missing or wrong. Retrying will not help. */
 export const CLOSE_UNAUTHORIZED = WS_CLOSE_UNAUTHORIZED;
+/**
+ * Not sent by the daemon: the socket reports it when whatever listens on the port could not
+ * prove that it knows the token, so the token was not sent. Retried like a daemon that is down
+ * (the real daemon may come back), and shown for what it is.
+ */
+export const CLOSE_UNPROVEN = 4900;
 
 export type ConnectionState =
   | { kind: "connecting"; attempt: number }

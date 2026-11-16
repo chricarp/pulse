@@ -18,6 +18,17 @@ use crate::support::*;
 
 type Mcp = RunningService<RoleClient, ()>;
 
+/// What `pulse mcp` builds: a target that requires the daemon's proof before the token goes out.
+pub fn proven_target(url: &str, agent: &str, token: &str) -> Target {
+    let expected = token.to_owned();
+    Target::new(url, token).unwrap().with_proof(
+        agent,
+        std::sync::Arc::new(move |nonce, answer, port| {
+            pulse_daemon::auth::proof_matches(&expected, port, nonce, answer)
+        }),
+    )
+}
+
 /// An MCP client (protocol 2026-07-28) connected as `agent`, through the stdio proxy.
 async fn connect(t: &TestDaemon, agent: &str) -> Mcp {
     let creds = t
@@ -28,7 +39,7 @@ async fn connect(t: &TestDaemon, agent: &str) -> Mcp {
         .unwrap();
     let (client_io, proxy_io) = tokio::io::duplex(1 << 20);
     let (pr, pw) = tokio::io::split(proxy_io);
-    tokio::spawn(proxy(Target::new(&creds.url, creds.token).unwrap(), pr, pw));
+    tokio::spawn(proxy(proven_target(&creds.url, agent, &creds.token), pr, pw));
     let (cr, cw) = tokio::io::split(client_io);
     let lifecycle =
         ClientLifecycleMode::Discover { preferred_versions: vec![ProtocolVersion::V_2026_07_28] };
@@ -297,7 +308,13 @@ async fn subscriptions_wake_on_visible_events_and_end_when_the_agent_goes() {
     assert_eq!(ended.is_error, Some(true));
     let text: String =
         ended.content.iter().filter_map(|c| c.as_text().map(|t| t.text.clone())).collect();
-    assert!(text.contains("ended by Pulse"), "{text}");
+    // Nothing tells the test when the wait has reached the daemon (each MCP message is its own
+    // connection, with a proof round trip first), so the removal can overtake it: then the
+    // subscription is already gone when the call arrives.
+    assert!(
+        text.contains("ended by Pulse") || text.contains("unknown or expired subscription"),
+        "{text}"
+    );
     let gone = within("a call after removal", x.list_all_tools()).await;
     assert!(gone.is_err(), "the removed agent's token is refused: {gone:?}");
     let _ = x.cancel().await;

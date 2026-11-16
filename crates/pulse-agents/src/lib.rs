@@ -114,6 +114,20 @@ impl Stream {
     }
 }
 
+/// What a run's output says about the files the agent wrote, for loop protection. Only adapters
+/// whose [`AgentAdapter::reports_writes`] is true produce these; see
+/// `docs/internals/0002-architecture.md`, "Loop protection".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WriteFact {
+    /// A tool call that writes this path, as the agent gave it (absolute or relative to the
+    /// run's working directory; untrusted text). Reported when the call is seen, before the
+    /// tool runs.
+    Wrote(String),
+    /// Something whose writes cannot be seen: a shell command, an MCP tool, a subagent, any tool
+    /// not known to be read-only, or output the parser does not understand. Says what, briefly.
+    Opaque(String),
+}
+
 /// Turns native output into normalized output. One parser per run; it may keep state across
 /// lines (for example, a partially streamed message).
 pub trait OutputParser: Send {
@@ -121,6 +135,10 @@ pub trait OutputParser: Send {
     fn line(&mut self, stream: Stream, line: &str, out: &mut Vec<RunOutput>);
     /// The process ended; flush anything pending.
     fn finish(&mut self, out: &mut Vec<RunOutput>);
+    /// Moves the write facts found since the last call into `out`. Called after every line.
+    fn take_facts(&mut self, out: &mut Vec<WriteFact>) {
+        let _ = out;
+    }
 }
 
 /// How Pulse invokes one kind of agent. Pure.
@@ -132,6 +150,12 @@ pub trait AgentAdapter: Send + Sync {
         request: &RunRequest,
     ) -> Result<Invocation, AdapterError>;
     fn parser(&self) -> Box<dyn OutputParser>;
+    /// Whether the parser reports every write the agent's tools make ([`WriteFact`]). A run of
+    /// an adapter that cannot is opaque from the start: its folder's changes are inferred to be
+    /// its own.
+    fn reports_writes(&self) -> bool {
+        false
+    }
 }
 
 /// The adapter for a kind. `None` for `mcp` agents, which Pulse does not run.

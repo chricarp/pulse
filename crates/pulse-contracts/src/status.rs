@@ -130,11 +130,36 @@ pub struct DaemonInfo {
 }
 
 /// `POST /auth/login`: exchanges a short-lived, single-use login code (from `pulse open`, in the
-/// URL fragment `#login=<code>`) for the daemon token. The whole browser handshake is described
+/// URL fragment `#login=<code>`), or a UI resume code, for the daemon token. The whole browser handshake is described
 /// in [`crate::auth`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct UiLoginRequest {
     pub code: String,
+}
+
+/// `GET /auth/proof`: asks the daemon to show that it knows the credential the client is about
+/// to send, before the client sends it (see [`crate::auth`] for the computation). Needs no
+/// credential itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ProofQuery {
+    /// Chosen by the client, fresh for each attempt: 32 to 128 lowercase hex digits.
+    pub nonce: String,
+    /// Prove knowledge of this agent's MCP token instead of the daemon token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent: Option<String>,
+    /// Prove knowledge of this daemon instance's UI resume code instead of the daemon token.
+    #[serde(default)]
+    pub resume: bool,
+}
+
+/// The answer to [`ProofQuery`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct DaemonProof {
+    /// Random per daemon start (32 hex digits). Not secret.
+    pub instance: String,
+    /// Lowercase hex HMAC-SHA256; see [`crate::auth`].
+    pub proof: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]

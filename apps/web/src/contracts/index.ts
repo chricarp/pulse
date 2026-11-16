@@ -60,7 +60,7 @@ refresh?: Duration,
  */
 lead?: Duration, };
 
-export type Causation = "exact" | "inferred";
+export type Causation = "exact" | "reported" | "inferred";
 
 export type ChangeKind = { "kind": "added" } | { "kind": "removed" } | { "kind": "changed", fields: Array<string>, };
 
@@ -145,6 +145,16 @@ warnings: Array<ConfigError>, };
 export type ConfigOrigin = { "kind": "user", path: string, } | { "kind": "project", name: string, dir: string, path: string, };
 
 export type DaemonInfo = { pid: number, port: number, version: string, started_at: Timestamp, };
+
+export type DaemonProof = { 
+/**
+ * Random per daemon start (32 hex digits). Not secret.
+ */
+instance: string, 
+/**
+ * Lowercase hex HMAC-SHA256; see [`crate::auth`].
+ */
+proof: string, };
 
 export type DebounceBy = "rule" | "subject";
 
@@ -481,6 +491,20 @@ name?: string,
  * nothing is trusted and the call fails with a `stale` error.
  */
 hash: string, };
+
+export type ProofQuery = { 
+/**
+ * Chosen by the client, fresh for each attempt: 32 to 128 lowercase hex digits.
+ */
+nonce: string, 
+/**
+ * Prove knowledge of this agent's MCP token instead of the daemon token.
+ */
+agent?: string, 
+/**
+ * Prove knowledge of this daemon instance's UI resume code instead of the daemon token.
+ */
+resume: boolean, };
 
 export type Rate = string;
 
@@ -926,15 +950,21 @@ export const RPC_METHOD_NAMES = [
   "system.config_errors",
 ] as const satisfies readonly RpcMethodName[];
 
-/** How the web UI authenticates; see `pulse_contracts::auth`. */
+/** How clients authenticate; see `pulse_contracts::auth`. */
 export const LOGIN_FRAGMENT_PARAM = "login";
 export const LOGIN_PATH = "/auth/login";
 export const LOGIN_CODE_TTL_SECS = 120;
+export const PROOF_PATH = "/auth/proof";
+export const PROOF_NONCE_MIN_HEX = 32;
+export const PROOF_NONCE_MAX_HEX = 128;
+export const PROOF_KEY_LABEL = "pulse/daemon-proof/v1";
+export const RESUME_KEY_LABEL = "pulse/ui-resume/v1";
+export const RESUME_CODE_PREFIX = "r.";
+export const RESUME_STORAGE_KEY = "pulse.resume";
 export const WS_PATH = "/ws";
 export const WS_PROTOCOL = "pulse";
 export const WS_TOKEN_PROTOCOL_PREFIX = "pulse.token.";
 export const WS_CLOSE_UNAUTHORIZED = 4401;
-export const TOKEN_STORAGE_KEY = "pulse.token";
 /** The `code` of a `stale` RPC error; its `data` is a `Stale`. */
 export const ERROR_STALE = -32007;
 

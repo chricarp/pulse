@@ -223,8 +223,11 @@ run = {{ agent = "long" }}
         RunStatus::Interrupted,
         "running at a crash: interrupted, never re-run"
     );
-    // The queued run from before the restart is started by the new daemon.
-    watch.until(Some(rid(2)), RunStatus::Succeeded).await;
+    // The queued run from before the restart is started by the new daemon, possibly before the
+    // watch subscribed: then the store already says so.
+    if get(rid(2)).await.unwrap().status != RunStatus::Succeeded {
+        watch.until(Some(rid(2)), RunStatus::Succeeded).await;
+    }
     t.stop().await;
 }
 

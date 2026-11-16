@@ -8,6 +8,8 @@
 //! - The token is `PULSE_MCP_TOKEN` if set (so the MCP client's config holds only an agent
 //!   token), otherwise it is derived from `$PULSE_HOME/token`, which the bridge reads but never
 //!   sends.
+//! - Before each connection carries the token, the daemon must prove that it knows it
+//!   (`pulse_contracts::auth`); a program that cannot is never sent the token.
 //! - Before serving, it presents the token once: no daemon is exit 3, an agent the daemon does
 //!   not know (or a token for another agent) is exit 1, each with a message on stderr. Failing
 //!   at launch is what MCP clients show the user.
@@ -16,6 +18,7 @@
 //!   It exits 0 when stdin closes.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use pulse_contracts::rpc::McpCredentials;
 use pulse_daemon::PulseHome;
@@ -59,10 +62,23 @@ pub async fn bridge(ctx: &Ctx, args: McpArgs) -> Res {
         }
     };
     let url = format!("http://127.0.0.1:{}/mcp", info.port);
-    let target = Target::new(&url, token).map_err(|e| Failure::Message(e.to_string()))?;
+    // Whatever listens on the port must prove it knows the agent token before it is sent.
+    let expected = token.clone();
+    let target = Target::new(&url, token).map_err(|e| Failure::Message(e.to_string()))?.with_proof(
+        &args.agent,
+        Arc::new(move |nonce, answer, port| {
+            pulse_daemon::auth::proof_matches(&expected, port, nonce, answer)
+        }),
+    );
     match check(&target).await {
         Ok(()) => {}
         Err(CheckError::Unreachable { .. }) => return Err(not_running()),
+        Err(e @ CheckError::NotPulse(_)) => {
+            return Err(Failure::Message(format!(
+                "pulse mcp: {e} If you set {TOKEN_ENV}, it may also be stale (the daemon's token was rotated): get a fresh one with `pulse agents mcp-credentials {}`.",
+                args.agent
+            )));
+        }
         Err(CheckError::Rejected) => {
             return Err(Failure::Message(format!(
                 "pulse mcp: the daemon does not accept this token for agent {:?}: the agent is not configured (see `pulse agents`), or the token is stale",

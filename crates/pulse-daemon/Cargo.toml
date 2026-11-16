@@ -32,6 +32,10 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "toki
 futures-util = { version = "0.3.31", default-features = false, features = ["sink", "std"] }
 getrandom = "0.4.3"
 hmac = "0.13.0"
+# The client's proof request and WebSocket upgrade share one HTTP/1.1 connection.
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 notify = { version = "7.0.0", default-features = false, features = ["macos_fsevent"] }
 rust-embed = { version = "8.7.2", features = ["debug-embed", "mime-guess"] }
 rustix = { version = "1.1.2", features = ["fs", "process"] }

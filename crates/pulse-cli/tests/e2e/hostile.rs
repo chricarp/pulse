@@ -152,8 +152,12 @@ run = {{ agent = "claude", prompt = "Review the commit: {{{{message}}}}" }}
         assert!(!first.contains(['\x1b', '\u{202e}']), "{first:?}");
         let fence = prompt.lines().find(|l| l.starts_with("PULSE-UNTRUSTED-DATA-")).unwrap();
         assert_eq!(prompt.lines().filter(|l| *l == fence).count(), 2, "{prompt}");
-        let json = serde_json::to_string(n).unwrap();
-        assert!(prompt.contains(&json), "the name is in the data block as JSON: {prompt}");
+        // The name is in the data block as JSON, exact once decoded, with what does not show
+        // (here the bidi override) escaped.
+        let block = prompt.split(&format!("\n{fence}\n")).nth(1).unwrap();
+        let data: serde_json::Value = serde_json::from_str(block).unwrap();
+        assert_eq!(data["data"]["name"], n, "{prompt}");
+        assert!(!block.contains('\u{202e}'), "{block}");
     }
     let first = get("claude", "new\nline.txt").prompt.clone().unwrap();
     assert!(first.lines().next().unwrap().ends_with("/new line.txt now."), "{first}");

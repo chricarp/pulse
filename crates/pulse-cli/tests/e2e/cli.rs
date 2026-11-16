@@ -194,3 +194,66 @@ async fn trusting_a_project_binds_to_the_content_shown() {
     assert_eq!(json(&out)["agents"][0]["config"]["name"], "repo/fmt");
     daemon.stop().await;
 }
+
+/// The daemon has stopped, `daemon.json` is stale, and another program now listens on its port.
+/// No CLI client sends it the token, an agent token or a login code, and each says what is
+/// wrong. The program records everything it receives and answers 404.
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_refuse_a_program_that_took_the_port() {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let env = Env::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let received: Arc<Mutex<Vec<u8>>> = Arc::default();
+    let log = received.clone();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            let log = log.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = s.read(&mut buf).await {
+                    if n == 0 {
+                        return;
+                    }
+                    log.lock().unwrap().extend_from_slice(&buf[..n]);
+                    if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                        let reply = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                        if s.write_all(reply).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    let token = "5ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7e75ec7";
+    std::fs::write(env.home.join("token"), token).unwrap();
+    let info = format!(
+        r#"{{"pid": 1, "port": {port}, "version": "0.0.0", "started_at": "2026-11-16T00:00:00Z"}}"#
+    );
+    std::fs::write(env.home.join("daemon.json"), info).unwrap();
+
+    for args in [&["status"][..], &["open", "--print"], &["open"], &["rules", "list"]] {
+        let (code, out, err) = env.run(args).await;
+        assert_ne!(code, 0, "{args:?}: {out}");
+        assert!(err.contains("something else is listening on Pulse's port"), "{args:?}: {err}");
+        assert!(!out.contains("login="), "{args:?}: no login link for an unproven port: {out}");
+    }
+    let (code, _, err) = env.run_stdin(&["ingest", "-s", "ci"], "{\"type\":\"x\"}\n").await;
+    assert_ne!(code, 0);
+    assert!(err.contains("something else is listening"), "{err}");
+    // `pulse run` stays silent about the daemon, as it does when there is none.
+    let (code, _, err) = env.run(&["run", "--", "true"]).await;
+    assert_eq!(code, 0, "{err}");
+    let (code, out, err) = env.run(&["mcp", "--agent", "x"]).await;
+    assert_ne!(code, 0, "{out}");
+    assert!(err.contains("something else is listening"), "{err}");
+
+    let seen = String::from_utf8_lossy(&received.lock().unwrap()).into_owned();
+    assert!(seen.contains("GET /auth/proof?nonce="), "the clients did ask: {seen}");
+    assert!(!seen.contains(token), "the token reached the program on the port:\n{seen}");
+    assert!(!seen.contains("pa.x."), "an agent token reached the program on the port:\n{seen}");
+    assert!(!seen.contains("login"), "{seen}");
+}

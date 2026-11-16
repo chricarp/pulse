@@ -11,6 +11,12 @@
 # - Only read-only tools (Read, Grep, Glob) are pre-approved; a headless run cannot ask for
 #   more, so it cannot edit files or run commands.
 # - A cooldown and a rate limit keep a failing loop from waking it over and over.
+#
+# Loop protection: Pulse reads the agent's tool calls, so it knows a diagnosis that only reads
+# changed nothing, and your own edits and commits under ~/code while it runs stay yours. If the
+# agent tries a command (refused here, but the attempt counts), Pulse can no longer tell, and
+# until 30 s after the run takes changes under ~/code to be the agent's. That matters only to
+# other rules on those changes: they see them as one step further down a chain of runs.
 
 [[agent]]
 name = "diagnose"

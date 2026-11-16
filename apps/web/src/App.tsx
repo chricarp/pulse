@@ -51,14 +51,26 @@ function View() {
   }
 }
 
-const NO_ACCESS: Record<NoAccessReason, { title: string; body: string }> = {
+const ROTATE =
+  "If you did not use this link before, something else on this computer may have used it first. Rotate the daemon's token: run pulse stop, delete the file token in the Pulse home (~/.pulse/token unless you set PULSE_HOME), then pulse start. That signs out every window and replaces every agent's MCP token; then run pulse open.";
+
+const NO_ACCESS: Record<NoAccessReason, { title: string; body: string; more?: string }> = {
   "no-code": {
     title: "Open Pulse from the command line",
     body: "This window has no access to the daemon yet. Pulse gives a window a one-time login code when you open it with the command below. If you typed this address or used a bookmark, run it instead.",
   },
   "code-refused": {
-    title: "This login link has expired",
-    body: "Login links work once, for two minutes. Run the command below for a new one.",
+    title: "This login link did not work",
+    body: "Login links work once, for two minutes, and only on the daemon that was running when they were made. Run the command below for a new one.",
+    more: ROTATE,
+  },
+  "resume-stale": {
+    title: "The daemon restarted since this tab was opened",
+    body: "A reloaded tab signs in again only with the daemon it was connected to. Run the command below to open Pulse again.",
+  },
+  unproven: {
+    title: "Something else is listening on Pulse's port",
+    body: "The program on this address could not prove that it is your Pulse daemon, so this window did not send it anything. If the daemon is stopped, another program may have taken its port: check with pulse status, stop that program or set another [daemon] port, then open Pulse again.",
   },
   unreachable: {
     title: "The daemon did not answer",
@@ -77,7 +89,8 @@ export function NoAccess({ reason }: { reason: NoAccessReason }) {
       <Empty title={text.title} tone="error">
         <p>{text.body}</p>
         <pre className="code">pulse open</pre>
-        <p className="faint">The command opens a link with a one-time code. The page exchanges it for access and removes it from the address bar; a reload of this tab keeps working, a new tab needs the command again.</p>
+        {text.more && <p>{text.more}</p>}
+        <p className="faint">The command opens a link with a one-time code. The page exchanges it for access and removes it from the address bar; a reload of this tab keeps working while the daemon runs, a new tab needs the command again.</p>
       </Empty>
     </div>
   );

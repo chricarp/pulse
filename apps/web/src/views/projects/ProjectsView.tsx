@@ -229,13 +229,12 @@ export function TrustReview({ dir, name, onClose, onTrusted }: { dir: string; na
     }
     setBusy(false);
   };
-  const v = (t: string) => visible(t);
   return (
     <Modal
       open
       wide
       onClose={onClose}
-      title={review ? `Trust ${v(review.name)}?` : "Review the project file"}
+      title={review ? `Trust ${review.name}?` : "Review the project file"}
       actions={
         <>
           <Button onClick={onClose}>Cancel</Button>
@@ -261,8 +260,9 @@ export function TrustReview({ dir, name, onClose, onTrusted }: { dir: string; na
   );
 }
 
+// Repository text: DOM text goes through `visible()` in the JSX runtime; `line` also shows
+// line breaks inside what should be one line.
 function ReviewBody({ review }: { review: ProjectReview }) {
-  const v = (t: string) => visible(t);
   const line = (t: string) => visible(t, { singleLine: true });
   const nothing = review.rules.length + review.agents.length + review.sources.length === 0;
   return (
@@ -326,7 +326,7 @@ function ReviewBody({ review }: { review: ProjectReview }) {
                   ...(r.enabled === false ? [["State", "disabled"] as [string, ReactNode]] : []),
                 ]}
               />
-              {r.run.prompt ? <pre className="code">{v(r.run.prompt)}</pre> : <p className="faint">No prompt: the agent's command runs as defined above.</p>}
+              {r.run.prompt ? <pre className="code">{r.run.prompt}</pre> : <p className="faint">No prompt: the agent's command runs as defined above.</p>}
             </div>
           ))}
         </Section>
@@ -344,7 +344,7 @@ function ReviewBody({ review }: { review: ProjectReview }) {
       )}
       <details className="review-text">
         <summary>The file as written</summary>
-        <pre className="code">{v(review.text)}</pre>
+        <pre className="code">{review.text}</pre>
       </details>
     </div>
   );

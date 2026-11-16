@@ -110,7 +110,7 @@ export class Shell extends EventEmitter {
   }
 
   private daemonEnv(env: NodeJS.ProcessEnv = this.config.env): DaemonEnv {
-    return { home: this.config.home, binary: this.config.binary ?? "pulse", env };
+    return { home: this.config.home, binary: this.config.binary ?? "pulse", env, log: (m) => this.log(m) };
   }
 
   // ---- start and stop ----

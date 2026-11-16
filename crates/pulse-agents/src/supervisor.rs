@@ -9,6 +9,8 @@
 //! 2. Send [`SupervisorEvent::Started`], then stream both pipes line by line through the
 //!    adapter's parser. Order is kept within a stream; the two streams are read concurrently and
 //!    interleave in the order lines complete. Each output carries the time its line was read.
+//!    What a line says about the agent's writes ([`SupervisorEvent::Writes`]) is sent before
+//!    that line's outputs.
 //! 3. The run ends when the leader exits, the timeout elapses, or `cancel` fires (the daemon
 //!    cancels every run on shutdown). In all three cases the group gets SIGTERM, then SIGKILL
 //!    after `grace` unless every process holding the pipes has exited by then. After a natural
@@ -65,7 +67,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Invocation, OutputParser, Stream};
+use crate::{Invocation, OutputParser, Stream, WriteFact};
 
 /// After the group is gone, stop draining a pipe that keeps producing more than this: whoever
 /// writes it has left the group.
@@ -101,6 +103,8 @@ pub enum SupervisorEvent {
     Started { pid: u32 },
     /// `at` is when the line it came from was read (for Pulse's markers, when it was made).
     Output { at: Timestamp, output: RunOutput },
+    /// What a line said about the agent's writes. Sent before that line's outputs.
+    Writes { at: Timestamp, facts: Vec<WriteFact> },
 }
 
 /// How a supervised process ended.
@@ -276,6 +280,7 @@ pub async fn supervise(
 
     parser.finish(&mut parsed);
     let at = now();
+    push_facts(&mut *parser, at, &mut sink);
     for output in parsed.drain(..) {
         sink.push(SupervisorEvent::Output { at, output });
     }
@@ -309,6 +314,14 @@ fn marker(text: &str, data: serde_json::Value) -> SupervisorEvent {
     }
 }
 
+fn push_facts(parser: &mut dyn OutputParser, at: Timestamp, sink: &mut Sink) {
+    let mut facts = Vec::new();
+    parser.take_facts(&mut facts);
+    if !facts.is_empty() {
+        sink.push(SupervisorEvent::Writes { at, facts });
+    }
+}
+
 /// Feeds one chunk to the parser; returns the bytes it consumed.
 fn handle(
     chunk: Option<Chunk>,
@@ -322,6 +335,7 @@ fn handle(
     match chunk {
         Chunk::Line(bytes) => {
             parser.line(lines.stream, &String::from_utf8_lossy(&bytes), parsed);
+            push_facts(parser, at, sink);
             for output in parsed.drain(..) {
                 sink.push(SupervisorEvent::Output { at, output });
             }

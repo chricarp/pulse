@@ -24,6 +24,15 @@ const test = base.extend<{ daemon: Daemon }>({
     await use(d);
     await d.dispose();
   },
+  // As in real.spec.ts: anything the daemon's Content-Security-Policy blocks fails the test.
+  page: async ({ page }, use) => {
+    const blocked: string[] = [];
+    page.on("console", (m) => {
+      if (/Content Security Policy/i.test(m.text())) blocked.push(m.text());
+    });
+    await use(page);
+    expect(blocked).toEqual([]);
+  },
 });
 
 async function openFeed(page: Page, daemon: Daemon): Promise<void> {

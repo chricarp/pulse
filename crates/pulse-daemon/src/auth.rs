@@ -10,12 +10,21 @@
 //!   at `POST /auth/login` for the token. The token itself never appears in process arguments
 //!   or browser history.
 //!
+//! - A **resume code** is `r.<hex HMAC(HMAC(secret, RESUME_KEY_LABEL), instance)>`: what a
+//!   browser tab keeps across a reload instead of the token. It works only on the daemon
+//!   instance (one start of the daemon) it was made for.
+//! - A **proof** shows a client, before it sends one of these, that whatever answers on the port
+//!   knows it: `hex(HMAC(HMAC(credential, PROOF_KEY_LABEL), port \0 instance \0 nonce))`. The
+//!   computation is specified in [`pulse_contracts::auth`]; [`proof`] is the one Rust
+//!   implementation, used by the daemon to answer and by Rust clients to check.
+//!
 //! None of these is ever logged.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use hmac::{Hmac, KeyInit, Mac};
+use pulse_contracts::auth::{DaemonProof, PROOF_KEY_LABEL, RESUME_CODE_PREFIX, RESUME_KEY_LABEL};
 use pulse_contracts::{Duration, Timestamp};
 use sha2::Sha256;
 
@@ -56,6 +65,48 @@ fn mac(secret: &str, context: &[u8], message: &[u8]) -> String {
     m.update(context);
     m.update(message);
     hex(&m.finalize().into_bytes())
+}
+
+fn hmac_parts(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    // HMAC accepts keys of any length, so construction cannot fail.
+    let Ok(mut m) = HmacSha256::new_from_slice(key) else { return [0; 32] };
+    for p in parts {
+        m.update(p);
+    }
+    m.finalize().into_bytes().into()
+}
+
+/// What a daemon on `port`, started as `instance`, answers to a proof request with `nonce` for
+/// `credential` (the daemon token, an agent token or a resume code). Clients compute the same
+/// and compare with [`proof_matches`].
+pub fn proof(credential: &str, port: u16, instance: &str, nonce: &str) -> String {
+    let key = hmac_parts(credential.as_bytes(), &[PROOF_KEY_LABEL.as_bytes()]);
+    let port = port.to_string();
+    hex(&hmac_parts(&key, &[port.as_bytes(), b"\0", instance.as_bytes(), b"\0", nonce.as_bytes()]))
+}
+
+/// Whether `answer` proves knowledge of `credential` for the daemon on `port`. Constant time.
+pub fn proof_matches(credential: &str, port: u16, nonce: &str, answer: &DaemonProof) -> bool {
+    let want = proof(credential, port, &answer.instance, nonce);
+    constant_time_eq(want.as_bytes(), answer.proof.as_bytes())
+}
+
+/// `N` random bytes from the OS, as hex: a proof nonce (32), a daemon instance id (16).
+pub fn random_hex<const N: usize>() -> std::io::Result<String> {
+    let mut bytes = [0u8; N];
+    getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(hex(&bytes))
+}
+
+/// The resume code of daemon instance `instance`. The web UI computes the same in the browser.
+pub fn resume_code(secret: &str, instance: &str) -> String {
+    let key = hmac_parts(secret.as_bytes(), &[RESUME_KEY_LABEL.as_bytes()]);
+    format!("{RESUME_CODE_PREFIX}{}", hex(&hmac_parts(&key, &[instance.as_bytes()])))
+}
+
+/// Whether `code` is the resume code of this daemon instance. Constant time.
+pub fn verify_resume_code(secret: &str, instance: &str, code: &str) -> bool {
+    constant_time_eq(resume_code(secret, instance).as_bytes(), code.as_bytes())
 }
 
 /// The MCP token for `agent`.
@@ -135,6 +186,42 @@ mod tests {
         let forged = t.replace("proj/study", "admin");
         assert_eq!(verify_agent_token("s1", &forged), None);
         assert_eq!(verify_agent_token("s1", "s1"), None, "the daemon token is not an agent token");
+    }
+
+    /// The same vector is checked by the web UI (`apps/web/src/rpc/proof.test.ts`) and the
+    /// desktop shell (`apps/desktop/src/proof.test.ts`); all three must agree.
+    #[test]
+    fn proofs_and_resume_codes_match_the_shared_vector() {
+        let (token, instance) =
+            ("0123456789abcdef0123456789abcdef", "00112233445566778899aabbccddeeff");
+        let nonce = "ab".repeat(32);
+        let p = proof(token, 7477, instance, &nonce);
+        assert_eq!(p, "53a4504b2c9efa0f0b23a3209f384d908c85147e725d1244d827c5ec32fb4a4a");
+        assert_eq!(
+            resume_code(token, instance),
+            "r.f07e6833dc77755c78d65044a0a50a984a8623d97c7d3c813796a0c5d1816bdf"
+        );
+        assert_eq!(
+            proof(&agent_token(token, "study"), 7477, instance, &nonce),
+            "19df5cf6bd407668c997937f4be5056ba59dd80856f5c993709f45366b906a8f"
+        );
+
+        let answer = DaemonProof { instance: instance.to_owned(), proof: p.clone() };
+        assert!(proof_matches(token, 7477, &nonce, &answer));
+        // Another port (a relay from a program on another port), another nonce, another
+        // credential: each fails.
+        assert!(!proof_matches(token, 7478, &nonce, &answer));
+        assert!(!proof_matches(token, 7477, &"cd".repeat(32), &answer));
+        assert!(!proof_matches("another token, also 32 bytes long", 7477, &nonce, &answer));
+        let other = DaemonProof { instance: "ff".repeat(16), proof: p };
+        assert!(!proof_matches(token, 7477, &nonce, &other), "the instance is covered");
+
+        assert!(verify_resume_code(token, instance, &resume_code(token, instance)));
+        assert!(!verify_resume_code(token, &"ff".repeat(16), &resume_code(token, instance)));
+        // A proof is never a credential: it does not verify as an agent token, a login code
+        // or a resume code, whatever nonce it was asked for.
+        let as_resume = format!("r.{}", proof(token, 7477, instance, &nonce));
+        assert!(!verify_resume_code(token, instance, &as_resume));
     }
 
     #[test]

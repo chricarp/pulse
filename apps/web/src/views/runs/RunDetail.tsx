@@ -286,7 +286,7 @@ function InvocationView({ run, pending }: { run: Run; pending?: boolean }) {
             <ol key="a" className="argv">
               {inv.args.map((a, i) => (
                 <li key={i} className="mono">
-                  {a === "" ? <span className="faint">(empty)</span> : visible(a)}
+                  {a === "" ? <span className="faint">(empty)</span> : a}
                 </li>
               ))}
             </ol>,

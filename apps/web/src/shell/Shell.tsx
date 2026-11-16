@@ -10,6 +10,7 @@ import { cycleTheme, useTheme } from "../app/theme";
 import { attempt, dismiss, toasts } from "../app/toasts";
 import { span } from "../lib/format";
 import { RUN_STATUS_LABEL } from "../lib/explain";
+import { CLOSE_UNPROVEN } from "../rpc/client";
 import { useStore } from "../store/store";
 import { Icon, type IconName } from "../ui/icons";
 import { Button, Kbd, cx, useTicker } from "../ui/primitives";
@@ -250,13 +251,18 @@ function ConnectionBanner() {
   }, [c.kind, client]);
   if (c.kind === "open" || c.kind === "closed" || c.kind === "unauthorized") return null;
   if (c.kind === "connecting" && failures === 0) return null;
-  const down = failures >= 3;
+  const unproven = c.kind === "waiting" && c.code === CLOSE_UNPROVEN;
+  const down = failures >= 3 || unproven;
   const wait = c.kind === "waiting" ? Math.max(0, c.retryAt - now) : 0;
   return (
-    <div className={cx("banner", down ? "tone-error" : "tone-attention")} role="status">
+    <div className={cx("banner", down ? "tone-error" : "tone-attention")} role="status" data-unproven={unproven || undefined}>
       <Icon name="alert" size={14} />
       <span className="banner-text">
-        {down ? (
+        {unproven ? (
+          <>
+            <strong>Something on Pulse's port could not prove it is your daemon</strong>, so this window did not send it its token. Either another program took the port while the daemon was stopped (<code>pulse status</code> says so), or the daemon's token was rotated (run <code>pulse open</code>).
+          </>
+        ) : down ? (
           <>
             <strong>The daemon is not answering.</strong> Is it running? Start it with <code>pulse start</code>.
           </>

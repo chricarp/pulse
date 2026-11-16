@@ -34,6 +34,10 @@ impl PulseHome {
     pub fn token_file(&self) -> PathBuf {
         self.root.join("token")
     }
+    /// The page `pulse open` points the browser at; it redirects to a URL with a login code.
+    pub fn login_page(&self) -> PathBuf {
+        self.root.join("open.html")
+    }
     pub fn lock_file(&self) -> PathBuf {
         self.root.join("daemon.lock")
     }
@@ -76,6 +80,35 @@ impl PulseHome {
 
     pub(crate) fn remove_daemon_info(&self) {
         let _ = fs::remove_file(self.daemon_info());
+    }
+
+    /// Writes [`Self::login_page`] (mode 0600), a page that sends the browser to `url`, so that
+    /// a login code reaches the browser without appearing in any process's arguments, where
+    /// other users could read it. Each `pulse open` replaces the page; the code in it works
+    /// once and expires after two minutes.
+    pub fn write_login_page(&self, url: &str) -> io::Result<PathBuf> {
+        let attr: String = url
+            .chars()
+            .map(|c| match c {
+                '&' => "&amp;".to_owned(),
+                '"' => "&quot;".to_owned(),
+                '<' => "&lt;".to_owned(),
+                '>' => "&gt;".to_owned(),
+                c => c.to_string(),
+            })
+            .collect();
+        // `location.replace` keeps this file out of the tab's history; the meta refresh and the
+        // link are for browsers that do not run scripts from files.
+        let js = serde_json::to_string(url).map_err(io::Error::other)?.replace('<', "\\u003c");
+        let page = format!(
+            "<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\">\n\
+             <meta http-equiv=\"refresh\" content=\"0;url={attr}\"><title>Opening Pulse</title>\n\
+             <script>location.replace({js})</script></head>\n\
+             <body><p>Opening <a href=\"{attr}\">Pulse</a>…</p></body></html>\n"
+        );
+        let path = self.login_page();
+        write_atomic(&path, page.as_bytes(), 0o600)?;
+        Ok(path)
     }
 
     /// Reads the daemon secret. Clients use it as the bearer token.

@@ -9,14 +9,18 @@
 #   pre-approved. A run is headless and cannot ask for more, so anything else (shell commands,
 #   web access, writes elsewhere) is refused. A bare "Write" would allow writing anywhere, for
 #   instance into ~/.bashrc if a PDF talked the model into it.
-# - At most one run at a time, at most 20 per hour.
+# - At most one run at a time, at most 20 per hour. Up to 20 more wait their turn, so a dozen
+#   PDFs saved at once are all summarized, one after another; past 20 in an hour, the rest
+#   wait for the rate limit instead of being dropped.
 # Pulse's scopes control what the agent is told; Claude Code's own permissions control what it
 # can do. Neither is a complete sandbox: see docs/internals/0003-threat-model.md.
 #
-# Loop protection: files that appear under ~/University while a run is active (and for 30 s
-# after) are taken to be the agent's, since Pulse cannot see who wrote them. That stops the
-# agent from triggering itself, but a PDF *you* save during a run is skipped too, recorded as
-# "loop protection" in `pulse rules history lecture-notes`; `pulse replay <event>` runs it.
+# Loop protection: Pulse reads the agent's tool calls, so the files its Write and Edit calls
+# name are known to be its own, and a PDF *you* save while it works gets its own run. If the
+# agent tries a tool whose writes Pulse cannot see (a shell command: refused here, but the
+# attempt counts), Pulse falls back to guessing: until 30 s after that run, anything new under
+# ~/University is taken to be the agent's. A PDF you save then is skipped, recorded as "loop
+# protection" in `pulse rules history lecture-notes`; `pulse replay <event>` runs it.
 
 [[source]]
 name = "university"
@@ -31,7 +35,7 @@ cwd = "~/University"
 allow = ["fs.file.created:~/University/**"]
 timeout = "15m"
 max_concurrent = 1
-max_queued = 4
+max_queued = 20
 
 [[rule]]
 name = "lecture-notes"

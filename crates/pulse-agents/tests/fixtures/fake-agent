@@ -25,11 +25,16 @@ env)
     env | grep '^PULSE_' | sort
     ;;
 replay)
-    # replay FILE [DELAY]: print FILE line by line, sleeping DELAY seconds between lines.
+    # replay FILE [DELAY]: print FILE line by line, sleeping DELAY seconds between lines. A
+    # line "#write PATH" is not printed: it writes a line to PATH instead (after the line
+    # before it was printed, as a real agent prints a tool call and then runs it).
     # Consumes stdin first (to $FAKE_AGENT_STDIN_FILE if set), exits with $FAKE_AGENT_EXIT.
     if [ -n "${FAKE_AGENT_STDIN_FILE:-}" ]; then cat > "$FAKE_AGENT_STDIN_FILE"; else cat > /dev/null; fi
     delay=${2:-}
     while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        '#write '*) echo "written by fake-agent" > "${line#\#write }"; continue ;;
+        esac
         printf '%s\n' "$line"
         if [ -n "$delay" ]; then sleep "$delay"; fi
     done < "$1"

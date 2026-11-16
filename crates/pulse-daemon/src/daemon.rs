@@ -102,6 +102,7 @@ impl Daemon {
                 },
             })?;
         let secret = home.load_or_create_token().map_err(io("cannot read or create the token"))?;
+        let instance = crate::auth::random_hex::<16>().map_err(io("cannot draw an instance id"))?;
         let store = StoreHandle::open(&home.database())?;
         let now = opts.clock.now();
         let interrupted = store.write(move |s| s.recover_after_restart(now)).await?;
@@ -133,6 +134,7 @@ impl Daemon {
             store,
             last_event,
             secret,
+            instance,
             snapshot: initial,
             loader,
             engine: engine_handle,

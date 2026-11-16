@@ -597,3 +597,50 @@ impl Fifo {
         self.writer = None;
     }
 }
+
+/// Lines of a Claude Code `stream-json` run, shaped like `pulse-agents/tests/fixtures/
+/// claude-code/write.jsonl` (recorded), for `fake-claude` to replay. A tool call is printed
+/// before the tool runs, as the real CLI does; follow it with [`claude::write`] when the call
+/// writes a file.
+pub mod claude {
+    use serde_json::{Value, json};
+
+    pub fn init(cwd: &str) -> String {
+        json!({"type": "system", "subtype": "init", "cwd": cwd, "session_id": "s",
+               "tools": ["Bash", "Edit", "Read", "Write"], "model": "fake",
+               "permissionMode": "dontAsk", "claude_code_version": "2.1.325"})
+        .to_string()
+    }
+
+    pub fn tool_use(name: &str, input: Value) -> String {
+        json!({"type": "assistant", "parent_tool_use_id": null, "session_id": "s",
+               "message": {"id": "msg", "role": "assistant",
+                           "content": [{"type": "tool_use", "id": "toolu", "name": name, "input": input}]}})
+        .to_string()
+    }
+
+    /// A `Write` tool call for `path`, then the write itself (a `fake-agent` directive).
+    pub fn write(path: &str) -> String {
+        format!("{}\n#write {path}", tool_use("Write", json!({"file_path": path, "content": "x"})))
+    }
+
+    pub fn result(text: &str) -> String {
+        json!({"type": "result", "subtype": "success", "is_error": false, "result": text,
+               "num_turns": 1, "session_id": "s"})
+        .to_string()
+    }
+}
+
+/// `text` (a config) with every `claude-code` agent running `fake-claude`, with this `env`.
+pub fn fake_claude(text: &str, env: &[(&str, String)]) -> String {
+    let env: Vec<String> = env.iter().map(|(k, v)| format!("{k} = {v:?}")).collect();
+    replace(
+        text,
+        "adapter = \"claude-code\"\n",
+        &format!(
+            "adapter = \"claude-code\"\nprogram = {:?}\nenv = {{ {} }}\n",
+            fixture("fake-claude"),
+            env.join(", ")
+        ),
+    )
+}
