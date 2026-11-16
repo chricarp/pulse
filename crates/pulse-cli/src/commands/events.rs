@@ -11,7 +11,8 @@ use pulse_daemon::client::Client;
 
 use super::{Res, parse_id, time_arg};
 use crate::cli::{EventsArgs, EventsCmd, FilterArgs, IngestArgs, ReplayArgs, RunArgs, TailArgs};
-use crate::{Ctx, Failure, eprint_line, format, print_json, print_line};
+use crate::output::{Out, note};
+use crate::{Ctx, Failure, format};
 
 fn filter(f: FilterArgs) -> Result<EventFilter, Failure> {
     let types = f
@@ -51,24 +52,25 @@ pub async fn tail(ctx: &Ctx, args: TailArgs) -> Res {
     if !args.no_runs {
         client.call::<method::RunsSubscribe>(RunsSubscribeParams::default()).await?;
     }
-    if !ctx.json {
-        eprint_line("Following events and runs; Ctrl-C stops.");
-    }
-    while let Some(note) = notes.recv().await {
-        if ctx.json {
-            if let Ok(line) = serde_json::to_string(&note) {
-                print_line(&line);
+    // For people on stderr in both modes; it also tells a script that tail is subscribed.
+    note("Following events and runs; Ctrl-C stops.");
+    let out = ctx.out();
+    while let Some(n) = notes.recv().await {
+        let text = match &out {
+            Out::Json(json) => {
+                json.line(&n);
+                continue;
             }
-            continue;
-        }
-        match note {
+            Out::Text(text) => text,
+        };
+        match n {
             Notification::EventsBatch(b) => {
                 let b = b.batch;
                 for e in &b.events {
-                    print_line(&format::event_line(e));
+                    text.line(&format::event_line(e));
                 }
                 if b.dropped > 0 {
-                    print_line(&format!(
+                    text.line(&format!(
                         "… {} more not shown live (the log has them: pulse events)",
                         b.dropped
                     ));
@@ -76,13 +78,13 @@ pub async fn tail(ctx: &Ctx, args: TailArgs) -> Res {
             }
             Notification::RunsChanged(c) => {
                 for r in &c.runs {
-                    print_line(&format!("run {}", format::run_line(r)));
+                    text.line(&format!("run {}", format::run_line(r)));
                 }
             }
             _ => {}
         }
     }
-    eprint_line("The daemon closed the connection.");
+    note("The daemon closed the connection.");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -90,20 +92,17 @@ pub async fn events(ctx: &Ctx, args: EventsArgs) -> Res {
     let client = ctx.client().await?;
     if let Some(EventsCmd::Show { id }) = args.show {
         let detail = client.call::<method::EventsGet>(EventIdParams { id: parse_id(&id)? }).await?;
-        if ctx.json {
-            print_json(&detail);
-            return Ok(ExitCode::SUCCESS);
-        }
-        print_line(&format::event_line(&detail.event));
-        print_line(&serde_json::to_string_pretty(&detail.event.data).unwrap_or_default());
+        let Some(out) = ctx.answer(&detail) else { return Ok(ExitCode::SUCCESS) };
+        out.line(&format::event_line(&detail.event));
+        out.line(&serde_json::to_string_pretty(&detail.event.data).unwrap_or_default());
         if detail.deliveries.is_empty() {
-            print_line("No rule matched this event.");
+            out.line("No rule matched this event.");
         }
         for d in &detail.deliveries {
-            print_line(&format::delivery_line(d));
+            out.line(&format::delivery_line(d));
         }
         for r in &detail.runs {
-            print_line(&format!("run {}", format::run_line(r)));
+            out.line(&format!("run {}", format::run_line(r)));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -116,15 +115,12 @@ pub async fn events(ctx: &Ctx, args: EventsArgs) -> Res {
         order: if args.oldest_first { Order::OldestFirst } else { Order::NewestFirst },
     };
     let page = client.call::<method::EventsQuery>(query).await?;
-    if ctx.json {
-        print_json(&page);
-        return Ok(ExitCode::SUCCESS);
-    }
+    let Some(out) = ctx.answer(&page) else { return Ok(ExitCode::SUCCESS) };
     for e in &page.page.events {
-        print_line(&format::event_line(e));
+        out.line(&format::event_line(e));
     }
     if let Some(next) = page.page.next_cursor {
-        eprint_line(&format!("More: pulse events --cursor {next}"));
+        note(&format!("More: pulse events --cursor {next}"));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -135,16 +131,13 @@ pub async fn replay(ctx: &Ctx, args: ReplayArgs) -> Res {
     let res = client
         .call::<method::EventsReplay>(ReplayParams { id: parse_id(&args.event)?, rules })
         .await?;
-    if ctx.json {
-        print_json(&res);
-        return Ok(ExitCode::SUCCESS);
-    }
-    print_line(&format!("Replayed as {}", res.event.id));
+    let Some(out) = ctx.answer(&res) else { return Ok(ExitCode::SUCCESS) };
+    out.line(&format!("Replayed as {}", res.event.id));
     if res.deliveries.is_empty() {
-        print_line("No rule matched.");
+        out.line("No rule matched.");
     }
     for d in &res.deliveries {
-        print_line(&format::delivery_line(d));
+        out.line(&format::delivery_line(d));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -212,10 +205,9 @@ pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
         accepted += res.accepted.len();
         duplicates += res.duplicates;
     }
-    if ctx.json {
-        print_json(&serde_json::json!({ "accepted": accepted, "duplicates": duplicates }));
-    } else {
-        eprint_line(&format!("Ingested {accepted} events ({duplicates} duplicates dropped)."));
+    let res = serde_json::json!({ "accepted": accepted, "duplicates": duplicates });
+    if ctx.answer(&res).is_some() {
+        note(&format!("Ingested {accepted} events ({duplicates} duplicates dropped)."));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -242,7 +234,7 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> Res {
     {
         Ok(d) => d,
         Err(e) => {
-            eprint_line(&format!("pulse run: {e}"));
+            note(&format!("pulse run: {e}"));
             // As a shell does for a command it cannot run.
             return Ok(ExitCode::from(127));
         }

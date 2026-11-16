@@ -16,8 +16,9 @@ Exit codes: `0` success, `1` error, `2` usage error, `3` the daemon is not runni
 exits with the wrapped command's code instead (see below).
 
 Text output escapes control and invisible characters from events and run output (`\u{1b}`), so a
-hostile file name cannot recolour, retitle or write to your terminal. `--json` output is plain
-JSON.
+hostile file name cannot recolour, retitle or write to your terminal. `--json` output is JSON as
+written by the daemon's types, never escaped for the terminal: one document per command, and one
+object per line for the streams (`tail`, `runs logs`).
 
 ## The daemon
 

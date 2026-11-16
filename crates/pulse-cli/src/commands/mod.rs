@@ -86,7 +86,7 @@ pub async fn warn_about(
     }
     let report = client.call::<method::SystemConfigErrors>(Empty {}).await?;
     for w in report.warnings.iter().filter(|w| w.item.as_deref() == Some(item)) {
-        crate::eprint_line(&format!("warning: {}", w.message));
+        crate::output::note(&format!("warning: {}", w.message));
     }
     Ok(())
 }

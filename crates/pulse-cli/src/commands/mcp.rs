@@ -26,7 +26,8 @@ use pulse_mcp::stdio::{CheckError, Target, check, proxy};
 
 use super::Res;
 use crate::cli::McpArgs;
-use crate::{Ctx, Failure, eprint_line};
+use crate::output::note as eprint_line;
+use crate::{Ctx, Failure};
 
 /// The environment variable the bridge takes an agent token from.
 pub const TOKEN_ENV: &str = "PULSE_MCP_TOKEN";

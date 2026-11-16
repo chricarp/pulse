@@ -268,3 +268,64 @@ async fn clients_refuse_a_program_that_took_the_port() {
     assert!(!seen.contains("pa.x."), "an agent token reached the program on the port:\n{seen}");
     assert!(!seen.contains("login"), "{seen}");
 }
+
+/// `--json` streams (`tail`, `runs logs`) are JSON as serde wrote it, whatever the event or
+/// the run printed: a bidi override and a DEL in a subject and in run output decode back to
+/// themselves instead of breaking the line with a terminal escape.
+#[tokio::test(flavor = "multi_thread")]
+async fn json_streams_are_json_whatever_the_content() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let hostile = "invoice\u{202e}txt.exe\u{7f}";
+    let env = Env::new();
+    env.write_config(
+        r#"
+[[agent]]
+name = "printer"
+adapter = "command"
+command = ["printf", "out \u202Eexe.txt\u007F\n"]
+allow = ["ext.*"]
+
+[[rule]]
+name = "print"
+on = "ext.ci.*"
+run = { agent = "printer" }
+"#,
+    );
+    let daemon = env.start().await;
+    let mut watch = daemon.watch().await;
+
+    let mut tail = env.pulse();
+    tail.args(["--json", "tail"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut tail = tail.spawn().unwrap();
+    let mut out = BufReader::new(tail.stdout.take().unwrap()).lines();
+    let mut err = BufReader::new(tail.stderr.take().unwrap()).lines();
+    // Subscribed once it says so (for people, on stderr).
+    within("tail to subscribe", err.next_line()).await.unwrap().unwrap();
+
+    let line = serde_json::json!({ "type": "built", "subject": hostile }).to_string();
+    let (code, _, e) = env.run_stdin(&["ingest", "-s", "ci"], &format!("{line}\n")).await;
+    assert_eq!(code, 0, "{e}");
+    let run = watch.run_in("the run", |_| true).await;
+    watch.run_terminal(run.id).await;
+
+    let mut subjects = Vec::new();
+    while subjects.is_empty() {
+        let line = within("a tail line", out.next_line()).await.unwrap().unwrap();
+        let note = json(&line);
+        if note["method"] == "events.batch" {
+            subjects.extend(note["params"]["events"].as_array().unwrap().iter().cloned());
+        }
+    }
+    assert_eq!(subjects[0]["subject"], hostile, "{subjects:?}");
+    drop(tail);
+
+    let (code, out, e) = env.run(&["--json", "runs", "logs", &run.id.to_string()]).await;
+    assert_eq!(code, 0, "{e}");
+    let texts: Vec<String> =
+        out.lines().map(|l| json(l)["text"].as_str().unwrap().to_owned()).collect();
+    assert!(texts.iter().any(|t| t == "out \u{202e}exe.txt\u{7f}"), "{texts:?}");
+    daemon.stop().await;
+}

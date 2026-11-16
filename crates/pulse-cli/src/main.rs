@@ -8,6 +8,7 @@
 mod cli;
 mod commands;
 mod format;
+mod output;
 mod templates;
 
 use std::path::PathBuf;
@@ -17,6 +18,7 @@ use clap::Parser;
 use pulse_daemon::client::{Client, ClientError};
 
 use crate::cli::{Cli, Command};
+use crate::output::{Out, Text, note as eprint_line};
 
 /// Where the CLI runs: the Pulse home and how to print.
 #[derive(Debug)]
@@ -29,6 +31,23 @@ pub struct Ctx {
 impl Ctx {
     pub async fn client(&self) -> Result<Client, Failure> {
         Client::connect(&self.home).await.map_err(Failure::from)
+    }
+
+    /// The one printer for this invocation: text, or JSON under `--json`.
+    pub fn out(&self) -> Out {
+        Out::new(self.json)
+    }
+
+    /// For a command that answers once: under `--json`, prints `value` as the answer and
+    /// returns `None`; otherwise returns the text printer for the command to describe it.
+    pub fn answer<T: serde::Serialize>(&self, value: &T) -> Option<Text> {
+        match self.out() {
+            Out::Json(json) => {
+                json.value(value);
+                None
+            }
+            Out::Text(text) => Some(text),
+        }
     }
 }
 
@@ -118,28 +137,5 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
         Err(Failure::Exit(code)) => ExitCode::from(code),
-    }
-}
-
-/// Writes a line to stdout, ignoring a closed pipe (`pulse events | head`). Text output
-/// carries event content (file names, commit messages, agent output), so terminal control is
-/// escaped: see [`format::terminal_safe`].
-pub fn print_line(s: &str) {
-    use std::io::Write;
-    let _ = writeln!(std::io::stdout().lock(), "{}", format::terminal_safe(s));
-}
-
-pub fn eprint_line(s: &str) {
-    use std::io::Write;
-    let _ = writeln!(std::io::stderr().lock(), "{}", format::terminal_safe(s));
-}
-
-/// Prints a value as pretty JSON (for `--json`). JSON escapes control characters itself, and
-/// its readers are programs, so it is written as is.
-pub fn print_json<T: serde::Serialize>(value: &T) {
-    use std::io::Write;
-    match serde_json::to_string_pretty(value) {
-        Ok(s) => drop(writeln!(std::io::stdout().lock(), "{s}")),
-        Err(e) => eprint_line(&format!("error: {e}")),
     }
 }

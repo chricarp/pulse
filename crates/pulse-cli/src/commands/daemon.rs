@@ -13,7 +13,8 @@ use pulse_daemon::{Daemon, DaemonOptions, PulseHome, StartError, Wiring};
 
 use super::{Res, now};
 use crate::cli::{InitArgs, OpenArgs, StartArgs};
-use crate::{Ctx, Failure, eprint_line, print_json, print_line, templates};
+use crate::output::{Out, Text, note as eprint_line, protocol_line};
+use crate::{Ctx, Failure, templates};
 
 /// `[daemon] log_level`, read before the daemon loads the file properly.
 fn log_level(home: &PulseHome) -> LogLevel {
@@ -61,9 +62,9 @@ pub fn start(ctx: &Ctx, args: StartArgs) -> ExitCode {
         if args.ready_line {
             // `--detach` passes these on before it returns.
             for p in &problems {
-                print_line(&format!("note {p}"));
+                protocol_line(&format!("note {p}"));
             }
-            print_line(&format!("ready {port}"));
+            protocol_line(&format!("ready {port}"));
         } else {
             for p in &problems {
                 eprint_line(p);
@@ -147,10 +148,9 @@ fn detach(ctx: &Ctx, args: &StartArgs) -> ExitCode {
         }
     };
     if let Some(port) = line.trim().strip_prefix("ready ") {
-        if ctx.json {
-            print_json(&serde_json::json!({ "pid": child.id(), "port": port.parse::<u16>().ok() }));
-        } else {
-            print_line(&format!(
+        let started = serde_json::json!({ "pid": child.id(), "port": port.parse::<u16>().ok() });
+        if let Some(out) = ctx.answer(&started) {
+            out.line(&format!(
                 "Pulse started in the background (pid {}) on http://127.0.0.1:{port}",
                 child.id()
             ));
@@ -189,7 +189,9 @@ pub async fn stop(ctx: &Ctx) -> Res {
     let client = match ctx.client().await {
         Ok(c) => c,
         Err(Failure::NotRunning(_)) => {
-            print_line("Pulse is not running.");
+            if let Out::Text(out) = ctx.out() {
+                out.line("Pulse is not running.");
+            }
             return Ok(ExitCode::SUCCESS);
         }
         Err(e) => return Err(e),
@@ -205,7 +207,9 @@ pub async fn stop(ctx: &Ctx) -> Res {
     .await;
     match waited {
         Ok(Ok(Ok(()))) => {
-            print_line("Pulse stopped.");
+            if let Out::Text(out) = ctx.out() {
+                out.line("Pulse stopped.");
+            }
             Ok(ExitCode::SUCCESS)
         }
         _ => Err(Failure::Message("the daemon has not exited after 2 minutes".into())),
@@ -220,50 +224,48 @@ pub async fn status(ctx: &Ctx) -> Res {
     } else {
         ConfigErrorList { errors: Vec::new(), warnings: Vec::new() }
     };
-    if ctx.json {
-        print_json(&serde_json::json!({
-            "status": s,
-            "config_errors": report.errors,
-            "config_warnings": report.warnings,
-        }));
-        return Ok(ExitCode::SUCCESS);
-    }
-    print_line(&format!(
+    let answer = serde_json::json!({
+        "status": s,
+        "config_errors": report.errors,
+        "config_warnings": report.warnings,
+    });
+    let Some(out) = ctx.answer(&answer) else { return Ok(ExitCode::SUCCESS) };
+    out.line(&format!(
         "Pulse {} on http://127.0.0.1:{}, since {}",
         s.version, s.port, s.started_at
     ));
-    print_line(&format!("home     {}", s.pulse_home));
-    print_line(&format!("paused   {}", if s.paused { "yes (pulse resume)" } else { "no" }));
-    print_line(&format!("rules    {}    agents {}", s.rules, s.agents));
+    out.line(&format!("home     {}", s.pulse_home));
+    out.line(&format!("paused   {}", if s.paused { "yes (pulse resume)" } else { "no" }));
+    out.line(&format!("rules    {}    agents {}", s.rules, s.agents));
     let src = s.sources;
-    print_line(&format!(
+    out.line(&format!(
         "sources  {} healthy, {} degraded, {} failed, {} other",
         src.healthy, src.degraded, src.failed, src.other
     ));
-    print_line(&format!(
+    out.line(&format!(
         "runs     {} running, {} queued, {} waiting for approval",
         s.runs.running, s.runs.queued, s.runs.pending_approval
     ));
     if report.errors.is_empty() && report.warnings.is_empty() {
-        print_line("config   ok");
+        out.line("config   ok");
     }
     if !report.errors.is_empty() {
-        print_line(&format!(
+        out.line(&format!(
             "config   {} error(s); the last good config is in effect:",
             report.errors.len()
         ));
         for e in &report.errors {
-            print_line(&format!("  {e}"));
+            out.line(&format!("  {e}"));
         }
     }
     if !report.warnings.is_empty() {
-        print_line(&format!("config   {} warning(s):", report.warnings.len()));
+        out.line(&format!("config   {} warning(s):", report.warnings.len()));
         for e in &report.warnings {
-            print_line(&format!("  {e}"));
+            out.line(&format!("  {e}"));
         }
     }
     if src.degraded + src.failed > 0 {
-        print_line("         `pulse sources` says what is wrong with the sources.");
+        out.line("         `pulse sources` says what is wrong with the sources.");
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -275,14 +277,13 @@ pub async fn pause(ctx: &Ctx, paused: bool) -> Res {
     } else {
         client.call::<method::SystemResume>(Empty {}).await?
     };
-    if ctx.json {
-        print_json(&s);
-    } else if s.paused {
-        print_line(
+    let Some(out) = ctx.answer(&s) else { return Ok(ExitCode::SUCCESS) };
+    if s.paused {
+        out.line(
             "Paused: rules are still evaluated and recorded, but nothing fires. `pulse resume` undoes it.",
         );
     } else {
-        print_line("Resumed.");
+        out.line("Resumed.");
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -299,30 +300,29 @@ pub async fn open(ctx: &Ctx, args: OpenArgs) -> Res {
     // A single-use code that expires in two minutes, not the token.
     let code = pulse_daemon::auth::login_code(&token, now());
     let url = format!("http://127.0.0.1:{}/#login={code}", info.port);
-    if args.print || ctx.json {
-        // Printed to the user's own terminal (or the desktop shell's pipe): no other user can
-        // read that, unlike a process's arguments.
-        if ctx.json {
-            print_json(&serde_json::json!({ "url": url }));
-        } else {
-            print_line(&url);
-        }
+    // Printed to the user's own terminal (or the desktop shell's pipe): no other user can
+    // read that, unlike a process's arguments.
+    let Some(out) = ctx.answer(&serde_json::json!({ "url": url })) else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    if args.print {
+        out.line(&url);
         return Ok(ExitCode::SUCCESS);
     }
     let (mut cmd, page) = browser_command(&home, &url)?;
     match cmd.stdout(Stdio::null()).stderr(Stdio::null()).status() {
         Ok(s) if s.success() => {
-            print_line(&format!("Opened the Pulse UI (port {}).", info.port));
+            out.line(&format!("Opened the Pulse UI (port {}).", info.port));
             let hidden =
                 page.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
             if hidden && cfg!(target_os = "linux") {
-                print_line(&format!(
+                out.line(&format!(
                     "If the browser says it cannot read {} (snap and flatpak browsers cannot read hidden directories), run `pulse open --print` and paste the link into it.",
                     page.display()
                 ));
             }
         }
-        _ => print_line(&format!("Open this URL within two minutes: {url}")),
+        _ => out.line(&format!("Open this URL within two minutes: {url}")),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -342,9 +342,14 @@ fn browser_command(
 }
 
 pub fn init(ctx: &Ctx, args: InitArgs) -> Res {
+    let text = match ctx.out() {
+        Out::Text(t) => Some(t),
+        Out::Json(_) => None,
+    };
+    let say = |s: &str| text.as_ref().map(|t: &Text| t.line(s)).unwrap_or_default();
     if args.list {
         for t in templates::TEMPLATES {
-            print_line(&format!("{:<16} {}", t.name, t.summary));
+            say(&format!("{:<16} {}", t.name, t.summary));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -363,7 +368,7 @@ pub fn init(ctx: &Ctx, args: InitArgs) -> Res {
         Err(e) => return Err(e.into()),
     };
     if existing.is_some() && chosen.is_empty() {
-        print_line(&format!(
+        say(&format!(
             "{} already exists; nothing changed. Add a template with --template.",
             path.display()
         ));
@@ -386,10 +391,10 @@ pub fn init(ctx: &Ctx, args: InitArgs) -> Res {
     }
     std::fs::write(&path, &text)?;
     if existing.is_none() {
-        print_line(&format!("Wrote {}.", path.display()));
+        say(&format!("Wrote {}.", path.display()));
     }
     for t in chosen {
-        print_line(&format!(
+        say(&format!(
             "Added the {} template to {}. Review its paths before relying on it.",
             t.name,
             path.display()

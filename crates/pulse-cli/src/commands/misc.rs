@@ -9,7 +9,8 @@ use pulse_contracts::status::{Project, TrustState};
 
 use super::Res;
 use crate::cli::{AgentsArgs, AgentsCmd, ProjectCmd, SourceKindArg, SourcesArgs, SourcesCmd};
-use crate::{Ctx, Failure, print_json, print_line};
+use crate::output::{Text, note};
+use crate::{Ctx, Failure};
 
 fn origin(o: &ConfigOrigin) -> String {
     match o {
@@ -28,14 +29,13 @@ pub async fn agents(ctx: &Ctx, args: AgentsArgs) -> Res {
     match args.cmd.unwrap_or(AgentsCmd::List) {
         AgentsCmd::List => {
             let list = client.call::<method::AgentsList>(Empty {}).await?;
-            if ctx.json {
-                print_json(&list);
-            } else if list.agents.is_empty() {
-                print_line("No agents.");
+            let Some(out) = ctx.answer(&list) else { return Ok(ExitCode::SUCCESS) };
+            if list.agents.is_empty() {
+                out.line("No agents.");
             }
-            for a in list.agents.iter().filter(|_| !ctx.json) {
+            for a in &list.agents {
                 let scopes: Vec<String> = a.config.allow.iter().map(ToString::to_string).collect();
-                print_line(&format!(
+                out.line(&format!(
                     "{:<20} {:<12} running {} queued {}  allow [{}]{}",
                     a.config.name,
                     kind_name(a.config.kind()),
@@ -48,17 +48,15 @@ pub async fn agents(ctx: &Ctx, args: AgentsArgs) -> Res {
         }
         AgentsCmd::Show { name } => {
             let a = client.call::<method::AgentsGet>(NameParams { name }).await?;
-            if ctx.json {
-                print_json(&a);
-            } else {
-                print_line(&format!(
+            if let Some(out) = ctx.answer(&a) {
+                out.line(&format!(
                     "# {} — running {}, queued {}{}",
                     a.config.name,
                     a.running,
                     a.queued,
                     origin(&a.origin)
                 ));
-                print_line(&toml::to_string_pretty(&a.config).unwrap_or_default());
+                out.line(&toml::to_string_pretty(&a.config).unwrap_or_default());
             }
         }
         AgentsCmd::Add { file, project, replace } => {
@@ -69,28 +67,22 @@ pub async fn agents(ctx: &Ctx, args: AgentsArgs) -> Res {
                 .call::<method::AgentsUpsert>(AgentUpsertParams { agent, project, expected })
                 .await
                 .map_err(|e| super::exists_hint(e, &what))?;
-            if ctx.json {
-                print_json(&a);
-            } else {
-                print_line(&format!("Saved agent {}{}.", a.config.name, origin(&a.origin)));
+            if let Some(out) = ctx.answer(&a) {
+                out.line(&format!("Saved agent {}{}.", a.config.name, origin(&a.origin)));
             }
             super::warn_about(ctx, &client, &format!("agent {:?}", a.config.name)).await?;
         }
         AgentsCmd::Remove { name } => {
             let params = DeleteParams { name: name.clone(), expected: Expected::Any };
             client.call::<method::AgentsDelete>(params).await?;
-            if ctx.json {
-                print_json(&serde_json::json!({ "removed": name }));
-            } else {
-                print_line(&format!("Removed agent {name}."));
+            if let Some(out) = ctx.answer(&serde_json::json!({ "removed": name })) {
+                out.line(&format!("Removed agent {name}."));
             }
         }
         AgentsCmd::McpCredentials { name } => {
             let c = client.call::<method::AgentsMcpCredentials>(NameParams { name }).await?;
-            if ctx.json {
-                print_json(&c);
-            } else {
-                print_line(&super::mcp::credentials_text(ctx, &c));
+            if let Some(out) = ctx.answer(&c) {
+                out.line(&super::mcp::credentials_text(ctx, &c));
             }
         }
     }
@@ -105,11 +97,9 @@ async fn set_source_enabled(
     enabled: bool,
 ) -> Res {
     let s = client.call::<method::SourcesSetEnabled>(SetEnabledParams { name, enabled }).await?;
-    if ctx.json {
-        print_json(&s);
-    } else {
+    if let Some(out) = ctx.answer(&s) {
         let done = if enabled { "Enabled" } else { "Disabled" };
-        print_line(&format!("{done} source {}{}.", s.config.name, origin(&s.origin)));
+        out.line(&format!("{done} source {}{}.", s.config.name, origin(&s.origin)));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -123,10 +113,8 @@ pub async fn sources(ctx: &Ctx, args: SourcesArgs) -> Res {
         SourcesCmd::Remove { name } => {
             let params = DeleteParams { name: name.clone(), expected: Expected::Any };
             client.call::<method::SourcesDelete>(params).await?;
-            if ctx.json {
-                print_json(&serde_json::json!({ "removed": name }));
-            } else {
-                print_line(&format!("Removed source {name}."));
+            if let Some(out) = ctx.answer(&serde_json::json!({ "removed": name })) {
+                out.line(&format!("Removed source {name}."));
             }
             return Ok(ExitCode::SUCCESS);
         }
@@ -149,10 +137,8 @@ pub async fn sources(ctx: &Ctx, args: SourcesArgs) -> Res {
                 .call::<method::SourcesUpsert>(SourceUpsertParams { source, project, expected })
                 .await
                 .map_err(|e| super::exists_hint(e, &what))?;
-            if ctx.json {
-                print_json(&s);
-            } else {
-                print_line(&format!(
+            if let Some(out) = ctx.answer(&s) {
+                out.line(&format!(
                     "Saved source {} ({}){}. `pulse sources` shows its health.",
                     s.config.name,
                     s.config.kind().as_str(),
@@ -163,12 +149,9 @@ pub async fn sources(ctx: &Ctx, args: SourcesArgs) -> Res {
         }
     }
     let list = client.call::<method::SourcesList>(Empty {}).await?;
-    if ctx.json {
-        print_json(&list);
-        return Ok(ExitCode::SUCCESS);
-    }
+    let Some(out) = ctx.answer(&list) else { return Ok(ExitCode::SUCCESS) };
     if list.sources.is_empty() {
-        print_line("No sources.");
+        out.line("No sources.");
     }
     for s in &list.sources {
         let h = &s.health;
@@ -184,9 +167,9 @@ pub async fn sources(ctx: &Ctx, args: SourcesArgs) -> Res {
         if let Some(m) = &h.message {
             line.push_str(&format!("  ({m})"));
         }
-        print_line(&line);
+        out.line(&line);
         if let Some(e) = h.last_error.as_ref().filter(|e| h.message.as_ref() != Some(&e.message)) {
-            print_line(&format!("    last problem {}: {}", e.at, e.message));
+            out.line(&format!("    last problem {}: {}", e.at, e.message));
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -252,14 +235,14 @@ fn absolute(dir: PathBuf) -> Result<String, Failure> {
     Ok(abs.display().to_string())
 }
 
-fn print_project(p: &Project) {
+fn print_project(out: &Text, p: &Project) {
     let state = match p.state {
         TrustState::Trusted => "trusted",
         TrustState::Changed => "changed since trusted: inactive until `pulse project trust` again",
         TrustState::Missing => "pulse.toml is missing",
         TrustState::Untrusted => "not trusted",
     };
-    print_line(&format!("{:<16} {}  {state}", p.name, p.dir));
+    out.line(&format!("{:<16} {}  {state}", p.name, p.dir));
 }
 
 /// A directory for a command line the user may paste.
@@ -272,27 +255,27 @@ fn shell_word(s: &str) -> String {
 }
 
 /// A project file's review: what it would load, then what changed. Every string in it comes
-/// from the repository; `print_line` escapes terminal control characters.
-fn print_review(r: &ProjectReview) {
+/// from the repository; `Text::line` escapes terminal control characters.
+fn print_review(out: &Text, r: &ProjectReview) {
     let state = match r.state {
         TrustState::Untrusted => "not trusted",
         TrustState::Trusted => "trusted, unchanged",
         TrustState::Changed => "changed since it was trusted",
         TrustState::Missing => "missing",
     };
-    print_line(&format!("# {} ({state})", r.file));
-    print_line(&format!("# definitions are named {}/…", r.name));
+    out.line(&format!("# {} ({state})", r.file));
+    out.line(&format!("# definitions are named {}/…", r.name));
     for e in &r.errors {
-        print_line(&format!("error: {e}"));
+        out.line(&format!("error: {e}"));
     }
     if let Some(changes) = &r.changes {
-        print_line("");
+        out.line("");
         if changes.is_empty() {
-            print_line(
+            out.line(
                 "Changes since it was trusted: none in its definitions (only formatting or comments).",
             );
         } else {
-            print_line("Changes since it was trusted:");
+            out.line("Changes since it was trusted:");
         }
         for c in changes {
             let kind = match c.kind {
@@ -305,7 +288,7 @@ fn print_review(r: &ProjectReview) {
                 ChangeKind::Removed => "removed".to_owned(),
                 ChangeKind::Changed { fields } => format!("changed: {}", fields.join(", ")),
             };
-            print_line(&format!("  {kind} {}: {what}", c.name));
+            out.line(&format!("  {kind} {}: {what}", c.name));
         }
     }
     let defs = [
@@ -315,13 +298,13 @@ fn print_review(r: &ProjectReview) {
     ];
     for (kind, items) in defs {
         for item in items {
-            print_line("");
-            print_line(&format!("# {kind}"));
-            print_line(item.unwrap_or_default().trim_end());
+            out.line("");
+            out.line(&format!("# {kind}"));
+            out.line(item.unwrap_or_default().trim_end());
         }
     }
-    print_line("");
-    print_line(&format!("# content hash {}", r.hash));
+    out.line("");
+    out.line(&format!("# content hash {}", r.hash));
 }
 
 pub async fn project(ctx: &Ctx, cmd: ProjectCmd) -> Res {
@@ -329,12 +312,11 @@ pub async fn project(ctx: &Ctx, cmd: ProjectCmd) -> Res {
     match cmd {
         ProjectCmd::List => {
             let list = client.call::<method::ProjectsList>(Empty {}).await?;
-            if ctx.json {
-                print_json(&list);
-            } else if list.projects.is_empty() {
-                print_line("No trusted projects.");
-            } else {
-                list.projects.iter().for_each(print_project);
+            if let Some(out) = ctx.answer(&list) {
+                if list.projects.is_empty() {
+                    out.line("No trusted projects.");
+                }
+                list.projects.iter().for_each(|p| print_project(&out, p));
             }
         }
         ProjectCmd::Trust { dir, name, hash: None } => {
@@ -344,19 +326,17 @@ pub async fn project(ctx: &Ctx, cmd: ProjectCmd) -> Res {
             let review = client
                 .call::<method::ProjectsReview>(ProjectReviewParams { dir: dir.clone(), name })
                 .await?;
-            if ctx.json {
-                print_json(&review);
-            } else {
-                print_review(&review);
+            if let Some(out) = ctx.answer(&review) {
+                print_review(&out, &review);
                 if review.errors.is_empty() {
                     let name_arg = format!(" --name {}", review.name);
-                    crate::eprint_line(&format!(
+                    note(&format!(
                         "Nothing was trusted. To trust exactly this content:\n  pulse project trust {}{name_arg} --hash {}",
                         shell_word(&review.dir),
                         review.hash
                     ));
                 } else {
-                    crate::eprint_line("Nothing was trusted: the file has errors.");
+                    note("Nothing was trusted: the file has errors.");
                 }
             }
             return Ok(ExitCode::FAILURE);
@@ -373,11 +353,9 @@ pub async fn project(ctx: &Ctx, cmd: ProjectCmd) -> Res {
                 }
                 other => other.into(),
             })?;
-            if ctx.json {
-                print_json(&p);
-            } else {
-                print_project(&p);
-                print_line(
+            if let Some(out) = ctx.answer(&p) {
+                print_project(&out, &p);
+                out.line(
                     "Its rules are active now. Any change to the file makes it inactive until you trust it again.",
                 );
             }
@@ -386,7 +364,9 @@ pub async fn project(ctx: &Ctx, cmd: ProjectCmd) -> Res {
             let p = client
                 .call::<method::ProjectsUntrust>(ProjectDirParams { dir: absolute(dir)? })
                 .await?;
-            if ctx.json { print_json(&p) } else { print_project(&p) }
+            if let Some(out) = ctx.answer(&p) {
+                print_project(&out, &p);
+            }
         }
     }
     Ok(ExitCode::SUCCESS)

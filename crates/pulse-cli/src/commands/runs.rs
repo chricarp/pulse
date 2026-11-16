@@ -8,18 +8,19 @@ use pulse_contracts::{RunId, RunStatus};
 
 use super::{Res, parse_id};
 use crate::cli::RunsCmd;
-use crate::{Ctx, Failure, eprint_line, format, print_json, print_line};
+use crate::output::{Out, note};
+use crate::{Ctx, Failure, format};
 
 fn print_chunks(ctx: &Ctx, chunks: &[RunOutputChunk]) {
+    let out = ctx.out();
     for c in chunks {
-        if ctx.json {
-            if let Ok(line) = serde_json::to_string(c) {
-                print_line(&line);
+        match &out {
+            Out::Json(json) => json.line(c),
+            Out::Text(text) => {
+                let (line, err) = format::chunk(c);
+                if err { note(&line) } else { text.line(&line) }
             }
-            continue;
         }
-        let (text, err) = format::chunk(c);
-        if err { eprint_line(&text) } else { print_line(&text) }
     }
 }
 
@@ -41,52 +42,48 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
                     limit: Some(limit),
                 })
                 .await?;
-            if ctx.json {
-                print_json(&page);
-            } else if page.runs.is_empty() {
-                print_line("No runs.");
-            } else {
-                page.runs.iter().for_each(|r| print_line(&format::run_line(r)));
+            if let Some(out) = ctx.answer(&page) {
+                if page.runs.is_empty() {
+                    out.line("No runs.");
+                }
+                page.runs.iter().for_each(|r| out.line(&format::run_line(r)));
             }
             return Ok(ExitCode::SUCCESS);
         }
         RunsCmd::Show { id } => {
             let run = client.call::<method::RunsGet>(RunIdParams { id: parse_id(&id)? }).await?;
-            if ctx.json {
-                print_json(&run);
-                return Ok(ExitCode::SUCCESS);
-            }
-            print_line(&format::run_line(&run.summary()));
-            print_line(&format!("event    {}", run.event));
-            print_line(&format!("created  {}", run.created_at));
+            let Some(out) = ctx.answer(&run) else { return Ok(ExitCode::SUCCESS) };
+            out.line(&format::run_line(&run.summary()));
+            out.line(&format!("event    {}", run.event));
+            out.line(&format!("created  {}", run.created_at));
             if let Some(t) = run.started_at {
-                print_line(&format!("started  {t}"));
+                out.line(&format!("started  {t}"));
             }
             if let Some(t) = run.ended_at {
-                print_line(&format!("ended    {t}"));
+                out.line(&format!("ended    {t}"));
             }
             // Rendered when the run was created: for a run awaiting approval, what approving
             // it will execute (and it starts only if that is still so).
             let verb = if run.started_at.is_some() { "ran     " } else { "will run" };
             match &run.invocation {
                 Some(inv) => {
-                    print_line(&format!("{verb} {} {:?} in {}", inv.program, inv.args, inv.cwd))
+                    out.line(&format!("{verb} {} {:?} in {}", inv.program, inv.args, inv.cwd))
                 }
                 None if run.started_at.is_none() && !run.status.is_terminal() => {
-                    print_line("will run (could not be prepared; the run will fail to start)")
+                    out.line("will run (could not be prepared; the run will fail to start)")
                 }
                 None => {}
             }
             if let Some(e) = &run.error {
-                print_line(&format!("error    {e}"));
+                out.line(&format!("error    {e}"));
             }
-            print_line(&format!(
+            out.line(&format!(
                 "output   {} bytes ({} dropped)",
                 run.output.bytes, run.output.dropped_bytes
             ));
             if let Some(p) = &run.prompt {
-                print_line("prompt:");
-                print_line(p);
+                out.line("prompt:");
+                out.line(p);
             }
             return Ok(ExitCode::SUCCESS);
         }
@@ -109,10 +106,8 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
                             let run = client.call::<method::RunsGet>(RunIdParams { id }).await?;
                             if !ctx.json {
                                 match &run.error {
-                                    Some(e) => {
-                                        eprint_line(&format!("[run {}: {e}]", run.status.as_str()))
-                                    }
-                                    None => eprint_line(&format!("[run {}]", run.status.as_str())),
+                                    Some(e) => note(&format!("[run {}: {e}]", run.status.as_str())),
+                                    None => note(&format!("[run {}]", run.status.as_str())),
                                 }
                             }
                             return Ok(ExitCode::SUCCESS);
@@ -136,7 +131,7 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
             if !ctx.json && after.is_none() {
                 let run = client.call::<method::RunsGet>(RunIdParams { id }).await?;
                 if let Some(e) = &run.error {
-                    eprint_line(&format!("[run {}: {e}]", run.status.as_str()));
+                    note(&format!("[run {}: {e}]", run.status.as_str()));
                 }
             }
             return Ok(ExitCode::SUCCESS);
@@ -154,10 +149,8 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
             client.call::<method::RunsRerun>(RunIdParams { id: parse_id(&id)? }).await?
         }
     };
-    if ctx.json {
-        print_json(&summary);
-    } else {
-        print_line(&format::run_line(&summary));
+    if let Some(out) = ctx.answer(&summary) {
+        out.line(&format::run_line(&summary));
     }
     Ok(ExitCode::SUCCESS)
 }
