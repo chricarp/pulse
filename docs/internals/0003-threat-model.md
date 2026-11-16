@@ -78,7 +78,7 @@ A checked-in `pulse.toml` is inert until trusted, and trust is tied to its conte
 
 ### 6. Killing the wrong process
 
-Pulse signals only process groups it created in this daemon lifetime. It never kills by name or by a PID read back from disk.
+Pulse signals only process groups it created in this daemon lifetime. It never kills by name or by a PID read back from disk. Every signal goes to a child that has not been reaped, so its ID cannot have been reused: the supervisor keeps a run's leader a zombie (`waitid(WNOWAIT)`) until its last signal, and `pulse run` stops forwarding the moment it reaps the command, even while it still drains output a background process holds. (`pulse run` used to keep forwarding during that drain to the PID captured at spawn; found in review.) In pipe mode in the terminal's foreground group, `pulse run` signals the command's process, not a group: it shares ours.
 
 ### 7. Resource exhaustion
 

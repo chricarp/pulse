@@ -71,6 +71,7 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 ## CLI
 
 - `pulse ingest` decodes each stdin line as an `IngestEvent` itself and sends batches as soon as stdin has nothing more ready, so `tail -f log | pulse ingest -s ci` streams. `POST /ingest` uses `pulse_sources::ingest::parse` (objects, arrays, JSON lines). Both fill `causation_run` from `PULSE_RUN_ID`.
+- `pulse run` forwards SIGINT, SIGTERM, SIGHUP and SIGQUIT to the command only until it has reaped it. After the reap it may still drain output for 200 ms (a background process can hold it), and a signal then is not forwarded: the command's ID, and its group's once the group is empty, may already name another process. A leftover in the command's group gets no signal then either; it is no longer ours to identify.
 - `pulse run` reports through `events.report` with a 3 s bound and is silent when the daemon is unreachable; it exits with the command's code (128 + signal when killed, 127 when it cannot run the command).
 - Exit codes: 0, 1 error, 2 usage, 3 the daemon is not running.
 - **Definitions from the CLI** (0009): `pulse sources add <kind> <name> <path|url> [--cron|--every …]`, `pulse agents add --file`, `pulse rules add --file` (the bare table `rules show` prints and `test-rule --file` reads; `-` is stdin), and `… remove`. They call the same `*.upsert` / `*.delete` services as the UI, so write-back keeps comments, and they print the config warnings about what was added. Editing a definition in place stays the config file's or the UI's job.
