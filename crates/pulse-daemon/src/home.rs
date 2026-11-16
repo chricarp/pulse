@@ -152,9 +152,34 @@ impl InstanceLock {
     }
 }
 
+/// Follows `path` while it is a symbolic link, to the file it finally names (which need not
+/// exist). Directories along the way are left as they are.
+pub(crate) fn resolve_links(path: &Path) -> io::Result<PathBuf> {
+    let mut path = path.to_path_buf();
+    // Linux's own limit; a cycle ends here.
+    for _ in 0..40 {
+        match fs::read_link(&path) {
+            Ok(target) => {
+                // A relative target is relative to the link's directory; `join` keeps an
+                // absolute one as it is.
+                path = path.parent().unwrap_or(Path::new(".")).join(target);
+            }
+            Err(e) if matches!(e.kind(), io::ErrorKind::InvalidInput | io::ErrorKind::NotFound) => {
+                return Ok(path);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other(format!("{}: too many levels of symbolic links", path.display())))
+}
+
 /// Writes `bytes` to a temporary file next to `path`, flushes it, and renames it over `path`, so
-/// readers see the old content or the new, never a mix.
+/// readers see the old content or the new, never a mix. When `path` is a symbolic link (a
+/// `pulse.toml` kept in a dotfiles repository), the file it points to is replaced and the link
+/// stays: renaming over the link would turn it into a regular file, and later edits to the
+/// linked copy would be silently ignored.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    let path = &resolve_links(path)?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let mut nonce = [0u8; 6];
@@ -195,5 +220,41 @@ mod tests {
         assert!(InstanceLock::try_acquire(&home).unwrap().is_none());
         drop(lock);
         assert!(InstanceLock::try_acquire(&home).unwrap().is_some());
+    }
+
+    #[test]
+    fn writing_through_a_symlink_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let dotfiles = dir.path().join("dotfiles");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&dotfiles).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let real = dotfiles.join("pulse.toml");
+        fs::write(&real, "old").unwrap();
+        // A relative link, then a link to that link, then a dangling one.
+        let link = home.join("pulse.toml");
+        std::os::unix::fs::symlink("../dotfiles/pulse.toml", &link).unwrap();
+        let chained = home.join("chained.toml");
+        std::os::unix::fs::symlink(&link, &chained).unwrap();
+        let dangling = home.join("dangling.toml");
+        std::os::unix::fs::symlink("../dotfiles/new.toml", &dangling).unwrap();
+
+        write_atomic(&link, b"new", 0o640).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "still a link");
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new", "the target was written");
+        assert_eq!(fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o640);
+
+        write_atomic(&chained, b"newer", 0o600).unwrap();
+        assert!(fs::symlink_metadata(&chained).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "newer");
+
+        write_atomic(&dangling, b"created", 0o600).unwrap();
+        assert!(fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(dotfiles.join("new.toml")).unwrap(), "created");
+
+        // No temporary file is left next to the link.
+        let names: Vec<_> = fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 3, "{names:?}");
     }
 }
