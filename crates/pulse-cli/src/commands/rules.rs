@@ -2,13 +2,14 @@
 
 use std::process::ExitCode;
 
-use pulse_contracts::Outcome;
 use pulse_contracts::config::{ConfigOrigin, RuleConfig};
 use pulse_contracts::rpc::*;
+use pulse_contracts::{BlockReason, Outcome};
 
-use super::{Res, parse_id, time_arg};
+use super::{Res, time_arg};
 use crate::cli::{OutcomeArg, RulesCmd, TestRuleArgs};
-use crate::{Ctx, Failure, format, print_json, print_line};
+use crate::output::Text;
+use crate::{Ctx, Failure, format};
 
 fn flags(info: &RuleInfo) -> String {
     let c = &info.config;
@@ -31,9 +32,9 @@ fn flags(info: &RuleInfo) -> String {
     f.join(", ")
 }
 
-fn print_rule(info: &RuleInfo) {
+fn print_rule(out: &Text, info: &RuleInfo) {
     let on: Vec<&str> = info.config.on.0.iter().map(|g| g.as_str()).collect();
-    print_line(&format!(
+    out.line(&format!(
         "{:<24} on {:<24} -> {:<12} {}",
         info.config.name,
         on.join(","),
@@ -48,12 +49,11 @@ pub async fn rules(ctx: &Ctx, cmd: RulesCmd) -> Res {
         RulesCmd::List { all } => {
             let list =
                 client.call::<method::RulesList>(RulesListParams { include_archived: all }).await?;
-            if ctx.json {
-                print_json(&list);
-            } else if list.rules.is_empty() {
-                print_line("No rules. `pulse init --list` shows templates.");
-            } else {
-                list.rules.iter().for_each(print_rule);
+            if let Some(out) = ctx.answer(&list) {
+                if list.rules.is_empty() {
+                    out.line("No rules. `pulse init --list` shows templates.");
+                }
+                list.rules.iter().for_each(|r| print_rule(&out, r));
             }
             return Ok(ExitCode::SUCCESS);
         }
@@ -76,12 +76,13 @@ pub async fn rules(ctx: &Ctx, cmd: RulesCmd) -> Res {
                     limit: Some(limit),
                 })
                 .await?;
-            if ctx.json {
-                print_json(&page);
-            } else if page.deliveries.is_empty() {
-                print_line("No decisions recorded for this rule yet.");
-            } else {
-                page.deliveries.iter().for_each(|d| print_line(&format::delivery_line(d)));
+            if let Some(out) = ctx.answer(&page) {
+                if page.deliveries.is_empty() {
+                    out.line("No decisions recorded for this rule yet.");
+                }
+                for d in &page.deliveries {
+                    out.line(&format::delivery_line(d, page.causes.get(&d.event).copied()));
+                }
             }
             return Ok(ExitCode::SUCCESS);
         }
@@ -100,10 +101,8 @@ pub async fn rules(ctx: &Ctx, cmd: RulesCmd) -> Res {
         RulesCmd::Remove { name } => {
             let params = DeleteParams { name: name.clone(), expected: Expected::Any };
             client.call::<method::RulesDelete>(params).await?;
-            if ctx.json {
-                print_json(&serde_json::json!({ "removed": name }));
-            } else {
-                print_line(&format!("Removed rule {name}."));
+            if let Some(out) = ctx.answer(&serde_json::json!({ "removed": name })) {
+                out.line(&format!("Removed rule {name}."));
             }
             return Ok(ExitCode::SUCCESS);
         }
@@ -129,23 +128,20 @@ pub async fn rules(ctx: &Ctx, cmd: RulesCmd) -> Res {
             client.call::<method::RulesReopen>(NameParams { name }).await?
         }
     };
-    if ctx.json {
-        print_json(&info);
-        return Ok(ExitCode::SUCCESS);
-    }
+    let Some(out) = ctx.answer(&info) else { return Ok(ExitCode::SUCCESS) };
     let file = match &info.origin {
         ConfigOrigin::User { path } => path.display().to_string(),
         ConfigOrigin::Project { name, path, .. } => format!("{} (project {name})", path.display()),
     };
-    print_line(&format!("# {} — in {file}", info.config.name));
+    out.line(&format!("# {} — in {file}", info.config.name));
     let state = flags(&info);
     if !state.is_empty() {
-        print_line(&format!("# {state}"));
+        out.line(&format!("# {state}"));
     }
     if let Some(at) = info.state.last_fired_at {
-        print_line(&format!("# last fired {at}"));
+        out.line(&format!("# last fired {at}"));
     }
-    print_line(&toml::to_string_pretty(&info.config).unwrap_or_default());
+    out.line(&toml::to_string_pretty(&info.config).unwrap_or_default());
     Ok(ExitCode::SUCCESS)
 }
 
@@ -155,42 +151,56 @@ pub async fn test_rule(ctx: &Ctx, args: TestRuleArgs) -> Res {
         (None, Some(file)) => {
             let text = std::fs::read_to_string(file)?;
             let rule: RuleConfig = toml::from_str(&text)
-                .map_err(|e| Failure::Message(format!("{}: {e}", file.display())))?;
+                .map_err(|e| Failure::invalid(format!("{}: {e}", file.display())))?;
             RuleRef::Draft { rule: Box::new(rule), project: args.project.clone() }
         }
-        _ => return Err(Failure::Message("give a rule name or --file, not both".into())),
+        _ => return Err(Failure::usage("give a rule name or --file, not both")),
     };
     let client = ctx.client().await?;
     let res = client
         .call::<method::RulesTest>(RuleTestParams {
             rule,
-            event: parse_id(&args.event)?,
+            event: super::event_id(&client, &args.event).await?,
             ignore_runtime_state: args.fresh,
         })
         .await?;
-    if ctx.json {
-        print_json(&res);
-        return Ok(ExitCode::SUCCESS);
-    }
+    let Some(out) = ctx.answer(&res) else { return Ok(ExitCode::SUCCESS) };
     let Some(decision) = &res.decision else {
-        print_line(
+        out.line(
             "No match: the event's type or `where` does not match this rule (or it is archived).",
         );
         return Ok(ExitCode::SUCCESS);
     };
-    print_line(&format!("decision: {}", format::decision(decision)));
+    out.line(&format!("decision: {}", format::decision(decision)));
+    // Loop protection comes from the event's recorded cause, which no flag of a dry run
+    // changes; a replay is a copy without it.
+    if let Outcome::Blocked {
+        reason: BlockReason::LoopSelfTrigger { .. } | BlockReason::LoopChainDepth { .. },
+    } = &decision.outcome
+    {
+        let what = if args.fresh {
+            "--fresh ignores the rule's history (snooze, cooldown, rate limit), not the event's cause"
+        } else {
+            "this comes from the event's cause"
+        };
+        let rule = args.rule.as_deref().map(|r| format!(" --rule {r}")).unwrap_or_default();
+        out.line(&format!(
+            "note: {what}: the event is recorded as caused by a run, so loop protection applies to it. If you made this change yourself, `pulse replay {}{rule}` routes a copy without the cause.",
+            args.event
+        ));
+    }
     let mut shown = &decision.outcome;
     if let Some(after) = &res.after_debounce {
-        print_line(&format!("after the debounce: {}", format::outcome(&after.outcome)));
+        out.line(&format!("after the debounce: {}", format::outcome(&after.outcome)));
         shown = &after.outcome;
     }
     match format::prompt_of(shown) {
         Some(prompt) => {
-            print_line("prompt:");
-            print_line(prompt);
+            out.line("prompt:");
+            out.line(prompt);
         }
         None if matches!(shown, Outcome::Fire { .. } | Outcome::AwaitApproval { .. }) => {
-            print_line("prompt: none (a command agent without a prompt)");
+            out.line("prompt: none (a command agent without a prompt)");
         }
         None => {}
     }

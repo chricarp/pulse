@@ -2,7 +2,8 @@
 
 use pulse_contracts::run::RunOutputChunk;
 use pulse_contracts::{
-    BlockReason, Decision, Delivery, DeliveryOutcome, Event, Outcome, OutputKind, RunSummary,
+    BlockReason, Causation, Decision, Delivery, DeliveryOutcome, Event, Outcome, OutputKind,
+    RunSummary,
 };
 
 /// Event content shown on a terminal: escape sequences could recolour or retitle the terminal,
@@ -122,10 +123,31 @@ pub fn delivery_outcome(o: &DeliveryOutcome) -> String {
     }
 }
 
-pub fn delivery_line(d: &Delivery) -> String {
+/// How an event's causing run is known, for people.
+pub fn causation(c: Causation) -> &'static str {
+    match c {
+        Causation::Exact => "exact: the run sent it itself",
+        Causation::Reported => "reported: its agent's tool call named the path",
+        Causation::Inferred => {
+            "inferred: it appeared in the run's working directory while the run's writes were not visible"
+        }
+    }
+}
+
+/// One routing decision. `cause` is how its event's causing run is known (it is recorded on
+/// the event), shown on a loop-protection block.
+pub fn delivery_line(d: &Delivery, cause: Option<Causation>) -> String {
     let run = d.run.map(|r| format!("  run {r}")).unwrap_or_default();
+    let loop_block = matches!(
+        &d.outcome,
+        DeliveryOutcome::Blocked {
+            reason: BlockReason::LoopSelfTrigger { .. } | BlockReason::LoopChainDepth { .. }
+        }
+    );
+    let how =
+        cause.filter(|_| loop_block).map(|c| format!(" ({})", causation(c))).unwrap_or_default();
     let mut line = format!(
-        "{}  {:<20} {}{run}  [event {}]",
+        "{}  {:<20} {}{how}{run}  [event {}]",
         d.at,
         d.rule,
         delivery_outcome(&d.outcome),

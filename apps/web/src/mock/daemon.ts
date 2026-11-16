@@ -81,6 +81,16 @@ const configInvalid = (errors: ConfigError[]) =>
   new MockRpcError(-32004, errors.map((e) => e.message).join("; "), { errors });
 const stale = (msg: string, current: string | null) => new MockRpcError(ERROR_STALE, msg, { current });
 
+/** The daemon's `events.resolve_id` / `runs.resolve_id`: the one id `ids` has that ends in `id`. */
+function resolveId(what: string, id: string, ids: Iterable<string>): string {
+  const suffix = id.trim().toUpperCase();
+  if (suffix.length === 26) return suffix;
+  const found = [...ids].filter((x) => x.endsWith(suffix)).sort().reverse();
+  if (found.length === 0) throw notFound("id", `ending in ${suffix}`);
+  if (found.length > 1) throw new MockRpcError(-32602, `${suffix} is the end of more than one ${what} id`, { candidates: found.slice(0, 10) });
+  return found[0] ?? suffix;
+}
+
 /** The daemon's `check_expected`. */
 function checkExpected(what: string, name: string, expected: Expected | undefined, current: string | null): void {
   const e = expected ?? { kind: "any" };
@@ -1155,6 +1165,7 @@ export class MockDaemon {
       const runs = [...this.runs.values()].filter((r) => r.event === id).map((r) => this.summary(r));
       return { event, deliveries, runs };
     },
+    "events.resolve_id": ({ id }) => ({ id: resolveId("event", id, this.eventById.keys()) }),
     "events.subscribe": ({ filter }, conn) => {
       const id = `S${this.nextSub++}`;
       conn.subs.set(id, { kind: "events", filter: filter ?? { types: [], sources: [] }, pending: [], late: [], dropped: 0, timer: null });
@@ -1278,7 +1289,14 @@ export class MockDaemon {
         }
         out.push(d);
       }
-      return { deliveries: out, next_cursor: more ? (out.at(-1)?.id ?? null) : null };
+      // The daemon's: how each loop-protection block's event was attributed.
+      const causes: Record<string, Causation> = {};
+      for (const d of out) {
+        if (d.outcome.kind !== "blocked" || (d.outcome.reason.reason !== "loop_self_trigger" && d.outcome.reason.reason !== "loop_chain_depth")) continue;
+        const c = this.eventById.get(d.event)?.pulsecausation;
+        if (c) causes[d.event] = c;
+      }
+      return { deliveries: out, next_cursor: more ? (out.at(-1)?.id ?? null) : null, causes };
     },
 
     "agents.list": () => ({ agents: this.agents.map((a) => this.agentInfo(a)) }),
@@ -1382,6 +1400,7 @@ export class MockDaemon {
       return { runs: out, next_cursor: more ? (out.at(-1)?.id ?? null) : null };
     },
     "runs.get": ({ id }) => structuredClone(this.getRun(id)),
+    "runs.resolve_id": ({ id }) => ({ id: resolveId("run", id, this.runs.keys()) }),
     "runs.output": ({ id, after, limit }) => {
       const run = this.getRun(id);
       const lim = Math.min(Math.max(limit ?? 100, 1), 500);

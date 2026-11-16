@@ -23,7 +23,7 @@ exercised as users run them.
 | `storm` | 10,000 files unzipped (events, runs, live batches; `system.status` calls are answered while the storm is still being processed, checked by the order of observations; latency is printed, not asserted, because it measures the machine); a real `git clone` and `git checkout` in a folder with an fs and a git source |
 | `sources` | A git commit and branch switch, a schedule and a calendar event fire rules |
 | `hostile` | Instruction-like, option-like, control-character, non-UTF-8 and 255-byte names; a 1 MB commit message; a symlink out of scope; an external payload claiming a built-in type |
-| `cli` | Exit codes without a daemon, `pulse run` exit codes and signals, `init`, adding and removing definitions, the `--json` shapes |
+| `cli` | Exit codes without a daemon, `pulse run` exit codes and signals, `init`, adding and removing definitions, the `--json` shapes, the `--json` contract for every command with and without a daemon (a table that fails when `pulse help` lists a command it lacks), `--json` streams with hostile content, `tail` showing an event before its run |
 
 **How they wait.** `support::Watch` subscribes to every event and run on one connection and
 accumulates what the daemon pushes; `Watch::until(what, predicate)` re-checks the predicate after
@@ -42,6 +42,14 @@ learnt the hard way:
   `ready` in the run's output and writes a line when it wants the agent to go on. The fifo's
   blocking `open` runs on a plain thread, not tokio's blocking pool: a pool thread stuck in
   `open` (the agent died) keeps the runtime, and so the test binary, from ever exiting.
+
+**Linux and macOS.** Tests and fixtures use only what both ship: POSIX `sh` and utilities,
+`mkfifo`, `perl` for `setsid(2)` (`fake-agent new-session`; macOS has no `setsid` command),
+signal 0 instead of `/proc` to see whether a process is gone. `git` and `python3` come with
+macOS's Command Line Tools. What only Linux has (a subreaper, to wait for orphaned grandchildren
+instead of racing init) is behind `#[cfg(target_os = "linux")]` with the reason beside it.
+Nothing has run on macOS yet; `cargo clippy --workspace --all-targets --target
+aarch64-apple-darwin` at least proves that every test compiles there.
 
 Durations that have to pass are configured short (`quiet = "100ms"`, `debounce = "200ms"`). Where
 time itself is the subject (the schedule), the test waits for the event that time produces. A

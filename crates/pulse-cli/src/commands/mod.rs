@@ -11,7 +11,9 @@ use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use pulse_contracts::{Duration, Timestamp};
+use pulse_contracts::rpc::{ResolveIdParams, method};
+use pulse_contracts::{Duration, EventId, RunId, Timestamp};
+use pulse_daemon::client::Client;
 
 use crate::cli::Command;
 use crate::{Ctx, Failure};
@@ -33,12 +35,16 @@ pub async fn run(ctx: &Ctx, command: Command) -> Res {
         Command::Ingest(args) => events::ingest(ctx, args).await,
         Command::Run(args) => events::run(ctx, args).await,
         Command::TestRule(args) => rules::test_rule(ctx, args).await,
-        Command::Rules(cmd) => rules::rules(ctx, cmd).await,
-        Command::Runs(cmd) => runs::runs(ctx, cmd).await,
+        Command::Rules(args) => {
+            rules::rules(ctx, args.cmd.unwrap_or(crate::cli::RulesCmd::List { all: false })).await
+        }
+        Command::Runs(args) => runs::runs(ctx, args.cmd.unwrap_or_default()).await,
         Command::Agents(args) => misc::agents(ctx, args).await,
         Command::Mcp(args) => mcp::bridge(ctx, args).await,
         Command::Sources(args) => misc::sources(ctx, args).await,
-        Command::Project(cmd) => misc::project(ctx, cmd).await,
+        Command::Project(args) => {
+            misc::project(ctx, args.cmd.unwrap_or(crate::cli::ProjectCmd::List)).await
+        }
     }
 }
 
@@ -50,9 +56,9 @@ pub fn read_definition<T: serde::de::DeserializeOwned>(
         std::io::read_to_string(std::io::stdin())?
     } else {
         std::fs::read_to_string(file)
-            .map_err(|e| Failure::Message(format!("cannot read {}: {e}", file.display())))?
+            .map_err(|e| Failure::invalid(format!("cannot read {}: {e}", file.display())))?
     };
-    toml::from_str(&text).map_err(|e| Failure::Message(format!("{}: {e}", file.display())))
+    toml::from_str(&text).map_err(|e| Failure::invalid(format!("{}: {e}", file.display())))
 }
 
 /// What `add` expects: nothing of that name, unless the user asked to replace it.
@@ -67,7 +73,8 @@ pub fn exists_hint(e: pulse_daemon::client::ClientError, what: &str) -> Failure 
         pulse_daemon::client::ClientError::Rpc(err)
             if err.kind() == Some(pulse_contracts::rpc::ErrorCode::Stale) =>
         {
-            Failure::Message(format!("{what} already exists; pass --replace to replace it"))
+            Failure::from(err)
+                .with_message(format!("{what} already exists; pass --replace to replace it"))
         }
         other => other.into(),
     }
@@ -86,7 +93,7 @@ pub async fn warn_about(
     }
     let report = client.call::<method::SystemConfigErrors>(Empty {}).await?;
     for w in report.warnings.iter().filter(|w| w.item.as_deref() == Some(item)) {
-        crate::eprint_line(&format!("warning: {}", w.message));
+        crate::output::note(&format!("warning: {}", w.message));
     }
     Ok(())
 }
@@ -101,16 +108,35 @@ pub fn time_arg(s: &str, ago: bool) -> Result<Timestamp, Failure> {
         return Ok(t);
     }
     let d = Duration::from_str(s).map_err(|_| {
-        Failure::Message(format!(
+        Failure::invalid(format!(
             "expected a time like 2026-11-16T09:00:00Z or a duration like 2h, got {s:?}"
         ))
     })?;
     Ok(if ago { now().saturating_sub(d) } else { now().saturating_add(d) })
 }
 
+/// An event id as typed: a full id as is, a shorter one (its last characters, as lists show
+/// them) resolved by the daemon.
+pub async fn event_id(client: &Client, text: &str) -> Result<EventId, Failure> {
+    if let Ok(id) = text.parse() {
+        return Ok(id);
+    }
+    let params = ResolveIdParams { id: text.to_owned() };
+    Ok(client.call::<method::EventsResolveId>(params).await?.id)
+}
+
+/// A run id as typed; see [`event_id`].
+pub async fn run_id(client: &Client, text: &str) -> Result<RunId, Failure> {
+    if let Ok(id) = text.parse() {
+        return Ok(id);
+    }
+    let params = ResolveIdParams { id: text.to_owned() };
+    Ok(client.call::<method::RunsResolveId>(params).await?.id)
+}
+
 pub fn parse_id<T: FromStr>(s: &str) -> Result<T, Failure>
 where
     T::Err: std::fmt::Display,
 {
-    s.parse().map_err(|e: T::Err| Failure::Message(e.to_string()))
+    s.parse().map_err(|e: T::Err| Failure::invalid(e.to_string()))
 }

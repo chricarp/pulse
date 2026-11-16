@@ -675,3 +675,28 @@ fn the_database_and_its_wal_are_private() {
     }
     drop(store);
 }
+
+#[test]
+fn ids_by_suffix_among_the_newest() {
+    let mut s = Store::open_in_memory().unwrap();
+    // Random parts that differ in the last characters, as generated ids do; 3 and 5 share
+    // their last four.
+    let random = [0, 0x11111, 0x22222, 0x10ABCD, 0x44444, 0x30ABCD];
+    let id = |n: u64| EventId::from_ulid(Ulid::from_parts(n, random[n as usize]));
+    let events: Vec<Event> =
+        (1..=5).map(|n| Event { id: id(n), ..fs(n, &format!("/a/{n}")) }).collect();
+    let runs = (1..=3).map(|n| new_run(n, id(1), "a", RunStatus::Queued)).collect();
+    s.commit(&Commit { events, runs, ..Default::default() }).unwrap();
+    let q = s.query();
+    let tail = |id: String, n: usize| id[id.len() - n..].to_owned();
+    assert_eq!(q.event_ids_ending_in(&tail(id(4).to_string(), 6), 100, 10).unwrap(), [id(4)]);
+    let shared = tail(id(5).to_string(), 4);
+    assert_eq!(shared, tail(id(3).to_string(), 4));
+    assert_eq!(q.event_ids_ending_in(&shared, 100, 10).unwrap(), [id(5), id(3)]);
+    assert_eq!(q.event_ids_ending_in(&shared, 100, 1).unwrap(), [id(5)]);
+    // Only the newest `window` are looked at.
+    assert_eq!(q.event_ids_ending_in(&shared, 2, 10).unwrap(), [id(5)]);
+    assert!(q.event_ids_ending_in(&tail(id(1).to_string(), 6), 4, 10).unwrap().is_empty());
+    assert_eq!(q.run_ids_ending_in(&tail(rid(2).to_string(), 26), 100, 10).unwrap(), [rid(2)]);
+    assert!(q.run_ids_ending_in("ZZZZZZ", 100, 10).unwrap().is_empty());
+}

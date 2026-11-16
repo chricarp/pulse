@@ -148,7 +148,9 @@ pulse test-rule --file draft.toml --event <event id>      # an unsaved draft
 ```
 
 It prints the decision and, if the rule would fire, the full prompt the agent would receive. For a
-debounced rule it also says what happens when the debounce elapses. In the UI, the rule editor
+debounced rule it also says what happens when the debounce elapses. `--fresh` does not lift loop
+protection: that comes from the event's recorded cause, and the output says how to replay the
+event without it. In the UI, the rule editor
 has the same tester beside the form (**Test**, Ctrl/Cmd+Enter).
 
 ## History: why did it fire, why didn't it

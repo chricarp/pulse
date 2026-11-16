@@ -161,13 +161,18 @@ echo '{"type":"deploy.finished","subject":"api","data":{"ok":true}}' | pulse ing
 # → an event of type ext.ci.deploy.finished
 ```
 
-Each stdin line is one JSON object with `type` (required) and optional `subject`, `time` (RFC
-3339), `data` and `dedupe_key`. Lines are sent as they arrive, so `tail -f build.log | … | pulse
-ingest -s ci` streams. The source name is yours to choose; external sources are not declared in
-`pulse.toml`.
+`pulse ingest` and `POST /ingest` parse events with the same code and accept the same thing.
+Each event is a JSON object with `type` (required) and optional `subject`, `time` (RFC 3339),
+`data` and `dedupe_key`, or a CloudEvent (with `specversion`; its `id` is the dedupe key).
+Unknown fields are refused, because they are usually typos: put your payload under `data`.
+
+For `pulse ingest`, each stdin line is one event. Lines are sent as they arrive, so `tail -f
+build.log | … | pulse ingest -s ci` streams. A bad line stops it with exit status 1: the lines
+before it have been ingested, that line and the rest have not. The source name is yours to
+choose; external sources are not declared in `pulse.toml`.
 
 Over HTTP, `POST http://127.0.0.1:7477/ingest?source=ci` with the daemon token accepts one
-object, an array, JSON lines, or a CloudEvent (with `specversion`):
+object, an array, or JSON lines, and a request is accepted whole or refused whole:
 
 ```console
 $ curl -s -X POST "http://127.0.0.1:7477/ingest?source=ci" \
@@ -182,12 +187,13 @@ failing:
 
 ```console
 $ echo '{"type":"fs.file.created","subject":"/etc/passwd"}' | pulse ingest -s ci
-error: event 0: type: fs.* is a built-in namespace; external events are always ext.<source>.<name>, so name it something else (for example "ci.fs.file.created")
+error: stdin line 1: type: fs.* is a built-in namespace; external events are always ext.<source>.<name>, so name it something else (for example "ci.fs.file.created"); nothing was ingested
+$ printf '{"type":"a"}\n{"type":"x","colour":"red"}\n' | pulse ingest -s ci
+error: stdin line 2: unknown field(s) "colour"; expected type, subject, time, data, dedupe_key, causation_run (or a CloudEvent with specversion); the lines before it were (1 ingested, 0 duplicates)
 ```
 
-`POST /ingest` refuses unknown fields (usually typos). **`pulse ingest` currently does not:** it
-drops them silently, so `{"type":"x","colour":"red"}` is stored as an event with no data. Put
-your payload under `data`.
+With `--json`, that failure is an `invalid_params` error whose `data` is `{"line", "accepted",
+"duplicates"}` ([JSON output](cli.md#json-output)).
 
 An event whose `dedupe_key` was already seen from the same source within `[limits] dedupe_ttl`
 (10 minutes) is dropped and counted (`Ingested 0 events (1 duplicates dropped).`).

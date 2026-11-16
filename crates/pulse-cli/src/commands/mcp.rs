@@ -26,7 +26,8 @@ use pulse_mcp::stdio::{CheckError, Target, check, proxy};
 
 use super::Res;
 use crate::cli::McpArgs;
-use crate::{Ctx, Failure, eprint_line};
+use crate::output::note as eprint_line;
+use crate::{Ctx, Failure};
 
 /// The environment variable the bridge takes an agent token from.
 pub const TOKEN_ENV: &str = "PULSE_MCP_TOKEN";
@@ -34,7 +35,7 @@ pub const TOKEN_ENV: &str = "PULSE_MCP_TOKEN";
 pub async fn bridge(ctx: &Ctx, args: McpArgs) -> Res {
     let home = PulseHome::new(&ctx.home);
     let not_running = || {
-        Failure::NotRunning(format!(
+        Failure::not_running(format!(
             "pulse mcp: the Pulse daemon for {} is not running; start it with `pulse start`",
             ctx.home.display()
         ))
@@ -47,13 +48,13 @@ pub async fn bridge(ctx: &Ctx, args: McpArgs) -> Res {
                     "pulse mcp: {TOKEN_ENV} is not a token for agent {:?}; get one with `pulse agents mcp-credentials {}`",
                     args.agent, args.agent
                 ));
-                return Err(Failure::Exit(2));
+                return Err(Failure::reported(2));
             }
             token
         }
         Err(_) => {
             let secret = home.read_token().map_err(|e| {
-                Failure::Message(format!(
+                Failure::connection(format!(
                     "pulse mcp: cannot read {}: {e}; or set {TOKEN_ENV}",
                     home.token_file().display()
                 ))
@@ -64,23 +65,24 @@ pub async fn bridge(ctx: &Ctx, args: McpArgs) -> Res {
     let url = format!("http://127.0.0.1:{}/mcp", info.port);
     // Whatever listens on the port must prove it knows the agent token before it is sent.
     let expected = token.clone();
-    let target = Target::new(&url, token).map_err(|e| Failure::Message(e.to_string()))?.with_proof(
-        &args.agent,
-        Arc::new(move |nonce, answer, port| {
-            pulse_daemon::auth::proof_matches(&expected, port, nonce, answer)
-        }),
-    );
+    let target =
+        Target::new(&url, token).map_err(|e| Failure::connection(e.to_string()))?.with_proof(
+            &args.agent,
+            Arc::new(move |nonce, answer, port| {
+                pulse_daemon::auth::proof_matches(&expected, port, nonce, answer)
+            }),
+        );
     match check(&target).await {
         Ok(()) => {}
         Err(CheckError::Unreachable { .. }) => return Err(not_running()),
         Err(e @ CheckError::NotPulse(_)) => {
-            return Err(Failure::Message(format!(
+            return Err(Failure::connection(format!(
                 "pulse mcp: {e} If you set {TOKEN_ENV}, it may also be stale (the daemon's token was rotated): get a fresh one with `pulse agents mcp-credentials {}`.",
                 args.agent
             )));
         }
         Err(CheckError::Rejected) => {
-            return Err(Failure::Message(format!(
+            return Err(Failure::connection(format!(
                 "pulse mcp: the daemon does not accept this token for agent {:?}: the agent is not configured (see `pulse agents`), or the token is stale",
                 args.agent
             )));
@@ -88,7 +90,7 @@ pub async fn bridge(ctx: &Ctx, args: McpArgs) -> Res {
     }
     proxy(target, tokio::io::stdin(), tokio::io::stdout())
         .await
-        .map_err(|e| Failure::Message(format!("pulse mcp: {e}")))?;
+        .map_err(|e| Failure::connection(format!("pulse mcp: {e}")))?;
     Ok(ExitCode::SUCCESS)
 }
 

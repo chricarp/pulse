@@ -41,7 +41,7 @@ mod state;
 
 use std::path::Path;
 
-use pulse_contracts::{Delivery, Event, RunId};
+use pulse_contracts::{Delivery, Event, EventId, RunId};
 use rusqlite::{Connection, OpenFlags};
 
 pub use handle::{Queryable, StoreHandle};
@@ -236,6 +236,58 @@ impl Reader {
 #[derive(Clone, Copy, Debug)]
 pub struct Queries<'c> {
     conn: &'c Connection,
+}
+
+impl Queries<'_> {
+    /// Ids in `table` (`events` or `runs`) among its newest `window` that end in `suffix`
+    /// (uppercase Crockford base32, which the caller has checked), newest first, at most `max`.
+    /// Bounded by `window` rows of the primary key whatever the log's size: a suffix is not
+    /// indexable, and a short id is what people copy from a recent list.
+    fn ids_ending_in(
+        &self,
+        table: IdTable,
+        suffix: &str,
+        window: u32,
+        max: u32,
+    ) -> Result<Vec<String>> {
+        let table = match table {
+            IdTable::Events => "events",
+            IdTable::Runs => "runs",
+        };
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT id FROM (SELECT id FROM {table} ORDER BY id DESC LIMIT ?1) \
+             WHERE id LIKE ?2 ORDER BY id DESC LIMIT ?3"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![window, format!("%{suffix}"), max], |r| {
+            r.get::<_, String>(0)
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// See [`Queries::ids_ending_in`].
+    pub fn event_ids_ending_in(&self, suffix: &str, window: u32, max: u32) -> Result<Vec<EventId>> {
+        parse_ids(self.ids_ending_in(IdTable::Events, suffix, window, max)?)
+    }
+
+    /// See [`Queries::ids_ending_in`].
+    pub fn run_ids_ending_in(&self, suffix: &str, window: u32, max: u32) -> Result<Vec<RunId>> {
+        parse_ids(self.ids_ending_in(IdTable::Runs, suffix, window, max)?)
+    }
+}
+
+fn parse_ids<T: std::str::FromStr>(ids: Vec<String>) -> Result<Vec<T>>
+where
+    T::Err: std::fmt::Display,
+{
+    ids.iter()
+        .map(|id| id.parse().map_err(|e: T::Err| StoreError::Corrupt(e.to_string())))
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IdTable {
+    Events,
+    Runs,
 }
 
 #[cfg(test)]

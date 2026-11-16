@@ -34,9 +34,9 @@ fn backend_error(e: ServiceError) -> BackendError {
         // The agent was removed (or never existed) since its token was accepted.
         ServiceError::NotFound { what: "agent", .. } => BackendError::Unauthorized,
         ServiceError::Invalid(m) => BackendError::Invalid(m),
-        ServiceError::NotFound { .. } | ServiceError::ConfigInvalid(_) => {
-            BackendError::Invalid(e.to_string())
-        }
+        ServiceError::NotFound { .. }
+        | ServiceError::Ambiguous { .. }
+        | ServiceError::ConfigInvalid(_) => BackendError::Invalid(e.to_string()),
         other => BackendError::Unavailable(other.to_string()),
     }
 }

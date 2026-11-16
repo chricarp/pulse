@@ -5,6 +5,17 @@ set -u
 mode=${1:-}
 [ $# -gt 0 ] && shift
 
+# new_session CMD [ARG...]: exec CMD in a new session (setsid(2)), out of the caller's process
+# group. Through perl, which macOS and Linux both ship; macOS has no setsid command. A process
+# group leader cannot start a session, so one forks first.
+new_session() {
+    exec perl -MPOSIX -e '
+        if (getpgrp() == $$) { defined(my $p = fork) or die "fork: $!"; exit 0 if $p }
+        POSIX::setsid() != -1 or die "setsid: $!";
+        exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!";
+    ' "$@"
+}
+
 case "$mode" in
 exit)
     # exit [CODE]: one line on each stream, then exit with CODE (default 0).
@@ -76,14 +87,17 @@ grandchild)
     if $hang; then exec sleep 100000; fi
     exit 0
     ;;
+new-session)
+    # new-session CMD [ARG...]: run CMD in a new session, out of this run's process group.
+    new_session "$@"
+    ;;
 escape)
-    # escape: start a grandchild that leaves the process group with setsid (Linux) and keeps
+    # escape: start a grandchild that leaves the process group (a new session) and keeps
     # stdout open; it prints "escaped <pid>" once it is out. Then write a last line without
     # newline and exit 0.
-    command -v setsid >/dev/null || { echo "fake-agent: setsid not available" >&2; exit 69; }
     fifo="${TMPDIR:-/tmp}/fake-agent-escape-$$"
     mkfifo "$fifo" || exit 70
-    setsid sh -c 'echo "escaped $$"; echo > "$1"; exec sleep 100000' sh "$fifo" &
+    ( new_session sh -c 'echo "escaped $$"; echo > "$1"; exec sleep 100000' sh "$fifo" ) &
     # Exiting before the grandchild has left would get it killed with the group.
     read -r _ < "$fifo"
     rm -f "$fifo"

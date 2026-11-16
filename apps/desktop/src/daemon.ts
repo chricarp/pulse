@@ -137,8 +137,23 @@ function run(d: DaemonEnv, args: string[], timeoutMs: number): Promise<Ran> {
   });
 }
 
+/**
+ * What a failed `pulse` command said. With `--json` the CLI reports a failure as one
+ * `{"error": {"message": …}}` object on stdout and leaves stderr empty; without it, as text on
+ * stderr.
+ */
+export function failureDetail(r: Pick<Ran, "stdout" | "stderr">): string {
+  try {
+    const message = (JSON.parse(r.stdout) as { error?: { message?: unknown } }).error?.message;
+    if (typeof message === "string" && message !== "") return plainText(message, 400);
+  } catch {
+    // Not JSON: text output.
+  }
+  return plainText(r.stderr || r.stdout, 400);
+}
+
 function failure(what: string, r: Ran): string {
-  const detail = plainText(r.stderr || r.stdout, 400);
+  const detail = failureDetail(r);
   return detail ? `${what}: ${detail}` : what;
 }
 

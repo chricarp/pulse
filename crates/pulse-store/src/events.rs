@@ -327,7 +327,7 @@ impl Queries<'_> {
         } else {
             None
         };
-        Ok(DeliveryPage { deliveries, next_cursor })
+        Ok(DeliveryPage { deliveries, next_cursor, causes: Default::default() })
     }
 
     /// `(source, dedupe key, when accepted)` of events accepted at or after `since`, oldest

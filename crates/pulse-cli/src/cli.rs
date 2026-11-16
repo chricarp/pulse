@@ -10,7 +10,8 @@ pub struct Cli {
     /// The Pulse home. Default: $PULSE_HOME, else ~/.pulse.
     #[arg(long, global = true, value_name = "DIR")]
     pub home: Option<PathBuf>,
-    /// Print JSON instead of text.
+    /// Print JSON instead of text, for scripts: one document, or an error object (see the CLI
+    /// reference).
     #[arg(long, global = true)]
     pub json: bool,
     #[command(subcommand)]
@@ -33,28 +34,26 @@ pub enum Command {
     Tail(TailArgs),
     /// Query the event log.
     Events(EventsArgs),
-    /// Rules: list, inspect, add, remove, enable, snooze, archive, history.
-    #[command(subcommand)]
-    Rules(RulesCmd),
+    /// Rules (lists them without a subcommand): show, add, remove, enable, snooze, archive,
+    /// history.
+    Rules(RulesArgs),
     /// Test a rule (saved, or a draft from a file) against a past event. No side effects.
     TestRule(TestRuleArgs),
     /// Re-emit a past event as a new one and route it.
     Replay(ReplayArgs),
     /// Run a command and report how it exited as `process.exited`.
     Run(RunArgs),
-    /// Runs: list, show, logs, approve, reject, cancel, rerun.
-    #[command(subcommand)]
-    Runs(RunsCmd),
-    /// Agents: list, show, add, remove, and their MCP credentials.
+    /// Runs (lists them without a subcommand): show, logs, approve, reject, cancel, rerun.
+    Runs(RunsArgs),
+    /// Agents (lists them without a subcommand): show, add, remove, and their MCP credentials.
     Agents(AgentsArgs),
     /// MCP over stdio, for MCP clients that launch a server: a bridge to the daemon's /mcp as
     /// one agent. Stdout carries MCP messages only.
     Mcp(McpArgs),
-    /// Sources and their health: list, add, remove, enable, disable.
+    /// Sources and their health (lists them without a subcommand): add, remove, enable, disable.
     Sources(SourcesArgs),
-    /// Trust or untrust a repository's pulse.toml.
-    #[command(subcommand)]
-    Project(ProjectCmd),
+    /// Projects: trust or untrust a repository's pulse.toml (lists them without a subcommand).
+    Project(ProjectArgs),
     /// Send external events (JSON lines on stdin) as `ext.<source>.<type>`.
     Ingest(IngestArgs),
     /// Open the web UI (or print its login URL).
@@ -110,12 +109,13 @@ pub struct EventsArgs {
     pub show: Option<EventsCmd>,
     #[command(flatten)]
     pub filter: FilterArgs,
-    /// At most this many (default 50).
+    /// At most this many.
     #[arg(long, short = 'n', default_value_t = 50)]
     pub limit: u32,
     /// Continue after this cursor (printed at the end of a page).
     #[arg(long)]
     pub cursor: Option<String>,
+    /// Oldest first instead of newest first.
     #[arg(long)]
     pub oldest_first: bool,
     /// Only events at or after this time (RFC 3339) or this long ago (e.g. 2h).
@@ -125,48 +125,69 @@ pub struct EventsArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum EventsCmd {
-    /// One event with its deliveries and runs.
-    Show { id: String },
+    /// One event: its data, its cause, every rule it reached and why, the runs it caused.
+    Show {
+        /// The event's id, or its last characters (at least 3).
+        id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct RulesArgs {
+    #[command(subcommand)]
+    pub cmd: Option<RulesCmd>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum RulesCmd {
-    /// Active rules (with --all, archived ones too).
+    /// Active rules with their state (with --all, archived ones too).
     List {
+        /// Include archived rules.
         #[arg(long)]
         all: bool,
     },
-    /// A rule's definition, origin and state.
+    /// A rule's definition as TOML, the file it is in, its state and its last fire.
     Show {
+        /// The rule's name.
         name: String,
     },
+    /// Let a disabled rule fire again (sets `enabled = true` in its file).
     Enable {
+        /// The rule's name.
         name: String,
     },
+    /// Stop a rule from firing, keeping it and its history (sets `enabled = false`).
     Disable {
+        /// The rule's name.
         name: String,
     },
     /// Hold a rule for a while (`1h`, `30m`) or until a time (RFC 3339).
     Snooze {
+        /// The rule's name.
         name: String,
+        /// How long (`1h`, `30m`) or until when (`2026-11-16T09:00:00Z`).
         r#for: String,
     },
     /// End a snooze (and close a tripped circuit breaker).
     Unsnooze {
+        /// The rule's name.
         name: String,
     },
     /// Hide a rule and stop routing to it; history is kept.
     Archive {
+        /// The rule's name.
         name: String,
     },
     /// Undo `archive`.
     Reopen {
+        /// The rule's name.
         name: String,
     },
     /// Add a rule from a TOML file (`name = …`, `on = …`, `[run]` …; what `rules show` prints).
     /// `-` reads stdin. Written to pulse.toml, comments kept. Refused if a rule of that name
     /// exists, unless --replace.
     Add {
+        /// The TOML file with the rule, or `-` for stdin.
         #[arg(long, short, value_name = "FILE")]
         file: PathBuf,
         /// Add it to this trusted project's pulse.toml instead.
@@ -178,14 +199,17 @@ pub enum RulesCmd {
     },
     /// Delete a rule from its config file (`archive` keeps it and its history visible).
     Remove {
+        /// The rule's name.
         name: String,
     },
-    /// The rule's decisions, newest first.
+    /// The rule's decisions, newest first, and how each loop-protection block knew its cause.
     History {
+        /// The rule's name.
         name: String,
         /// Only these outcomes (repeatable).
         #[arg(long, value_enum)]
         outcome: Vec<OutcomeArg>,
+        /// At most this many.
         #[arg(long, short = 'n', default_value_t = 50)]
         limit: u32,
     },
@@ -204,7 +228,7 @@ pub enum OutcomeArg {
 pub struct TestRuleArgs {
     /// The saved rule's name (omit with --file).
     pub rule: Option<String>,
-    /// The past event's id.
+    /// The past event's id, or its last characters (at least 3).
     #[arg(long, short)]
     pub event: String,
     /// A TOML file with one unsaved rule (`name = …`, `on = …`, `[run]` …).
@@ -220,6 +244,7 @@ pub struct TestRuleArgs {
 
 #[derive(Debug, Args)]
 pub struct ReplayArgs {
+    /// The event's id, or its last characters (at least 3).
     pub event: String,
     /// Only route to this rule (repeatable).
     #[arg(long)]
@@ -236,42 +261,70 @@ pub struct RunArgs {
     pub command: Vec<String>,
 }
 
+#[derive(Debug, Args)]
+pub struct RunsArgs {
+    #[command(subcommand)]
+    pub cmd: Option<RunsCmd>,
+}
+
+/// What `pulse runs` does without a subcommand: `list` with its defaults.
+impl Default for RunsCmd {
+    fn default() -> Self {
+        RunsCmd::List { rule: None, agent: None, status: Vec::new(), limit: 50 }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum RunsCmd {
     /// Runs, newest first.
     List {
+        /// Only runs of this rule.
         #[arg(long)]
         rule: Option<String>,
+        /// Only runs of this agent.
         #[arg(long)]
         agent: Option<String>,
         /// Only these states (repeatable), e.g. `running`, `pending_approval`.
         #[arg(long)]
         status: Vec<String>,
+        /// At most this many.
         #[arg(long, short = 'n', default_value_t = 50)]
         limit: u32,
     },
+    /// The event, timing, what was run (or will run) and where, the prompt, any error.
     Show {
+        /// The run's id, or its last characters (at least 3).
         id: String,
     },
     /// A run's output (with -f, follow it until it ends).
     Logs {
+        /// The run's id, or its last characters (at least 3).
         id: String,
+        /// Keep printing output until the run ends.
         #[arg(long, short)]
         follow: bool,
     },
+    /// Start a run that waits for approval (refused if its agent or rule changed since).
     Approve {
+        /// The run's id, or its last characters (at least 3).
         id: String,
     },
+    /// Refuse a run that waits for approval.
     Reject {
+        /// The run's id, or its last characters (at least 3).
         id: String,
+        /// Why, recorded on the run.
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Stop a queued or running run (its whole process group).
     Cancel {
+        /// The run's id, or its last characters (at least 3).
         id: String,
     },
-    /// A new run with the same event, prompt and configuration snapshot.
+    /// A new run with the same event and prompt, now, with the agent as it is configured now.
     Rerun {
+        /// The run's id, or its last characters (at least 3).
         id: String,
     },
 }
@@ -284,16 +337,21 @@ pub struct AgentsArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum AgentsCmd {
+    /// Agents, their running and queued counts, their scopes.
     List,
+    /// The agent's definition as TOML.
     Show {
+        /// The agent's name.
         name: String,
     },
     /// Add an agent from a TOML file (`name = …`, `adapter = …`, `allow = […]` …; what
     /// `agents show` prints). `-` reads stdin. Refused if an agent of that name exists, unless
     /// --replace.
     Add {
+        /// The TOML file with the agent, or `-` for stdin.
         #[arg(long, short, value_name = "FILE")]
         file: PathBuf,
+        /// Add it to this trusted project's pulse.toml instead.
         #[arg(long)]
         project: Option<String>,
         /// Replace the agent of that name, whatever it is now.
@@ -302,11 +360,13 @@ pub enum AgentsCmd {
     },
     /// Delete an agent from its config file. Refused while rules use it.
     Remove {
+        /// The agent's name.
         name: String,
     },
     /// The /mcp URL, the agent's token (valid only for MCP, only as this agent), and
     /// configuration to paste into MCP clients.
     McpCredentials {
+        /// The agent's name.
         name: String,
     },
 }
@@ -327,12 +387,15 @@ pub enum SourceKindArg {
 
 #[derive(Debug, Subcommand)]
 pub enum SourcesCmd {
+    /// Sources with their health and event counts.
     List,
     /// Add a source: `fs NAME DIR`, `git NAME REPO`, `schedule NAME --cron "0 9 * * 1-5"` or
     /// `--every 1h`, `calendar NAME FILE.ics|URL`. Refused if a source of that name exists,
     /// unless --replace.
     Add {
+        /// What it watches.
         kind: SourceKindArg,
+        /// Its name, which events carry as their source.
         name: String,
         /// The directory, repository, `.ics` file or calendar URL.
         target: Option<String>,
@@ -351,6 +414,7 @@ pub enum SourcesCmd {
         /// How long before an event `calendar.event.starting` fires (calendar).
         #[arg(long)]
         lead: Option<String>,
+        /// Add it to this trusted project's pulse.toml instead.
         #[arg(long)]
         project: Option<String>,
         /// Replace the source of that name, whatever it is now.
@@ -359,14 +423,17 @@ pub enum SourcesCmd {
     },
     /// Delete a source from its config file.
     Remove {
+        /// The source's name.
         name: String,
     },
     /// Start watching again (sets `enabled` in its config file, nothing else).
     Enable {
+        /// The source's name.
         name: String,
     },
     /// Stop watching, keeping the definition (`enable` reverses it).
     Disable {
+        /// The source's name.
         name: String,
     },
 }
@@ -378,12 +445,19 @@ pub struct McpArgs {
     pub agent: String,
 }
 
+#[derive(Debug, Args)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub cmd: Option<ProjectCmd>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum ProjectCmd {
     /// Trust DIR/pulse.toml. Without --hash, shows what it would load and its content hash,
     /// and trusts nothing; with --hash, trusts the file only if it still has that content.
     /// Any later change makes it inactive again.
     Trust {
+        /// The repository: the directory with the pulse.toml.
         dir: PathBuf,
         /// Prefix for its definitions (default: the directory name).
         #[arg(long)]
@@ -392,9 +466,12 @@ pub enum ProjectCmd {
         #[arg(long)]
         hash: Option<String>,
     },
+    /// Make a trusted project inactive again; its definitions stop loading.
     Untrust {
+        /// The repository: the directory with the pulse.toml.
         dir: PathBuf,
     },
+    /// Projects and their trust state.
     List,
 }
 

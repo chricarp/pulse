@@ -23,8 +23,9 @@ environment; each rule with its triggers, whether it needs your approval, and it
 source), what changed since you last trusted it, and its content hash, and then prints the exact
 command that trusts it. It exits with status 1, because nothing was trusted. With `--hash`, Pulse
 trusts the file only if it still has that content; if it changed in between (a `git pull` while
-you were reading), nothing is trusted and you are asked to look again. `--json` prints the
-review as JSON; its `hash` is what to pass back.
+you were reading), nothing is trusted and you are asked to look again. With `--json`, the review
+is the `data` of a `not_trusted` error (exit 1, see [JSON output](cli.md#json-output)); its
+`hash` is what to pass back.
 
 In the UI, **Projects → Trust** (or **Review and trust again** for a changed file) shows the same
 review before the **Trust this content** button does anything. If the file changes while the

@@ -248,7 +248,8 @@ impl Daemon {
         within("the daemon to die", child.wait()).await.unwrap();
     }
 
-    /// CPU time (user + system, clock ticks) and resident set (KiB) from /proc.
+    /// CPU time (user + system, clock ticks) and resident set (KiB) from /proc: Linux only,
+    /// zeros elsewhere. For measuring by hand (0009); no test asserts on it.
     pub fn proc_stats(&self) -> ProcStats {
         proc_stats(self.pid)
     }

@@ -1,5 +1,6 @@
 //! The v1 method set: params and results, then the table that ties names to types.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 
 use serde::{Deserialize, Serialize};
@@ -9,7 +10,7 @@ use ts_rs::TS;
 use super::{RpcError, RpcMethod, decode_params, encode_result};
 use crate::catalog::{EventTypeInfo, ProcessExitedData};
 use crate::config::{AgentConfig, ConfigError, ConfigOrigin, RuleConfig, SourceConfig, TypeGlob};
-use crate::event::Event;
+use crate::event::{Causation, Event};
 use crate::ids::{DeliveryId, EventId, RunId, SubscriptionId};
 use crate::run::{Decision, Delivery, OutputStats, Run, RunOutputChunk, RunStatus, RunSummary};
 use crate::status::{Project, SourceHealth, SystemStatus};
@@ -19,6 +20,8 @@ use crate::time::Timestamp;
 pub const DEFAULT_PAGE_LIMIT: u32 = 100;
 /// Larger `limit`s are clamped to this.
 pub const MAX_PAGE_LIMIT: u32 = 500;
+/// How many of the newest events, or runs, a short id is looked up among.
+pub const SHORT_ID_WINDOW: u32 = 10_000;
 
 /// Clamps a requested page size.
 pub fn page_limit(requested: Option<u32>) -> u32 {
@@ -194,6 +197,14 @@ pub struct EventPageWithOutcomes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct EventIdParams {
     pub id: EventId,
+}
+
+/// An event or run id as people type it: the full 26 characters, or its last few, which is
+/// what lists show (ids made close together share their first characters, not their last).
+/// Case does not matter.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ResolveIdParams {
+    pub id: String,
 }
 
 /// An event with everything that happened because of it.
@@ -411,6 +422,10 @@ pub struct DeliveryPage {
     /// Newest first.
     pub deliveries: Vec<Delivery>,
     pub next_cursor: Option<DeliveryId>,
+    /// For the loop-protection blocks in this page: how their event was attributed to the run
+    /// (`exact`, `reported`, `inferred`). The kind is recorded on the event, not the delivery.
+    #[serde(default)]
+    pub causes: BTreeMap<EventId, Causation>,
 }
 
 // ---- agents ----
@@ -854,6 +869,9 @@ rpc_methods! {
     "events.subscribe" => EventsSubscribe, events_subscribe(EventsSubscribeParams) -> Subscribed;
     "events.unsubscribe" => EventsUnsubscribe, events_unsubscribe(Unsubscribe) -> Empty;
     "events.replay" => EventsReplay, events_replay(ReplayParams) -> ReplayResult;
+    /// The full id of the one event among the newest [`SHORT_ID_WINDOW`] whose id ends in
+    /// `id`. Ambiguous: `invalid_params` with `data.candidates`; none: `not_found`.
+    "events.resolve_id" => EventsResolveId, events_resolve_id(ResolveIdParams) -> EventIdParams;
     /// External events; always typed `ext.<source>.…`.
     "events.ingest" => EventsIngest, events_ingest(IngestParams) -> IngestResult;
     /// Built-in events from trusted local reporters (`pulse run`).
@@ -891,6 +909,8 @@ rpc_methods! {
 
     "runs.list" => RunsList, runs_list(RunsListParams) -> RunPage;
     "runs.get" => RunsGet, runs_get(RunIdParams) -> Run;
+    /// As `events.resolve_id`, for runs.
+    "runs.resolve_id" => RunsResolveId, runs_resolve_id(ResolveIdParams) -> RunIdParams;
     "runs.output" => RunsOutputGet, runs_output(RunOutputParams) -> RunOutputPage;
     /// Run state changes, as `runs.changed` notifications.
     "runs.subscribe" => RunsSubscribe, runs_subscribe(RunsSubscribeParams) -> Subscribed;

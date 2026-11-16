@@ -15,8 +15,8 @@ fn blocked(detail: &pulse_contracts::rpc::EventDetail, rule: &str) -> Option<Blo
     })
 }
 
-/// A watched folder, a `command` agent running `script` (with `$LOOP_DIR`, `$E2E_PULSE_BIN` and
-/// `$FIFO` in its environment), and one rule on files created there.
+/// A watched folder, a `command` agent running `script` (with `$LOOP_DIR`, `$E2E_PULSE_BIN`,
+/// `$FIFO` and `$FAKE_AGENT` in its environment), and one rule on files created there.
 struct LoopSetup<'a> {
     agent_cwd: Option<&'a str>,
     script: &'a str,
@@ -45,7 +45,7 @@ adapter = "command"
 command = ["sh", "-c", {script:?}]
 allow = ["fs.*:~/watched/**"]
 {cwd}max_concurrent = 4
-env = {{ LOOP_DIR = {dir:?}, E2E_PULSE_BIN = {bin:?}, FIFO = {fifo:?} }}
+env = {{ LOOP_DIR = {dir:?}, E2E_PULSE_BIN = {bin:?}, FIFO = {fifo:?}, FAKE_AGENT = {fake:?} }}
 
 [[rule]]
 name = "on-new-file"
@@ -60,6 +60,7 @@ run = {{ agent = "writer" }}
         dir = dir.display().to_string(),
         bin = pulse_bin(),
         fifo = env.dir.path().join("fifo").display().to_string(),
+        fake = fixture("fake-agent"),
     )
 }
 
@@ -82,9 +83,10 @@ async fn a_run_writing_into_its_own_watched_folder_is_blocked_as_a_self_trigger(
     let at_once = "echo again > \"$LOOP_DIR/out-$PULSE_RUN_ID.txt\"";
     // The writer leaves the run's process group, then waits for the test, so it provably
     // writes after the run ended. The run waits until it has left (a fifo handshake): otherwise
-    // the group's SIGTERM at the run's end could reach it before `setsid` does.
+    // the group's SIGTERM at the run's end could reach it before it has left. It leaves by
+    // `setsid(2)` (`fake-agent new-session`), not the `setsid` command, which macOS lacks.
     let escaped = "r=\"$FIFO.left\"; mkfifo \"$r\"; \
-                   setsid sh -c 'echo > \"$1\"; read go < \"$2\"; echo late > \"$3\"' sh \
+                   \"$FAKE_AGENT\" new-session sh -c 'echo > \"$1\"; read go < \"$2\"; echo late > \"$3\"' sh \
                    \"$r\" \"$FIFO\" \"$LOOP_DIR/out-$PULSE_RUN_ID.txt\" </dev/null >/dev/null 2>&1 & \
                    read _ < \"$r\"; rm -f \"$r\"";
     let cases = [
@@ -140,6 +142,15 @@ async fn a_run_writing_into_its_own_watched_folder_is_blocked_as_a_self_trigger(
             let (code, text, _) = env.run(&["rules", "history", "on-new-file"]).await;
             assert_eq!(code, 0);
             assert!(text.contains("loop protection"), "{text}");
+            assert!(text.contains(&format!("own run {} (inferred: ", run.id)), "{text}");
+            // --fresh drops the rule's history, not the event's cause, and says so.
+            let id = out.id.to_string();
+            let args = ["test-rule", "on-new-file", "--event", &id, "--fresh"];
+            let (code, text, _) = env.run(&args).await;
+            assert_eq!(code, 0, "{text}");
+            assert!(text.contains("loop protection"), "{text}");
+            assert!(text.contains("not the event's cause"), "{text}");
+            assert!(text.contains(&format!("pulse replay {id} --rule on-new-file")), "{text}");
             // A replay is the user's explicit request: it fires once, without the old
             // causation, and the new run's own write is blocked in turn. One run, not a loop.
             let (code, text, _) = env.run(&["replay", &out.id.to_string()]).await;
@@ -250,6 +261,10 @@ run = {{ agent = "writer", prompt = "Handle {{{{path}}}}" }}
                 assert_eq!(code, 0);
                 let how = if kind == Causation::Reported { ", reported)" } else { ", inferred)" };
                 assert!(text.contains(&format!("(from run {}{how}", run.id)), "{case}: {text}");
+                // The rule's history says how the cause was known, as `events show` does.
+                let (_, text, _) = env.run(&["rules", "history", "on-new-file"]).await;
+                let how = if kind == Causation::Reported { "(reported: " } else { "(inferred: " };
+                assert!(text.contains(&format!("own run {} {how}", run.id)), "{case}: {text}");
             }
             Want::Fires => {
                 assert_eq!(event.causation_run, None, "{case}");

@@ -25,6 +25,56 @@ use crate::error::{ServiceError, ServiceResult};
 use crate::home::write_atomic;
 use crate::shared::Shared;
 
+/// The last characters of an event or run id, as typed: uppercase Crockford base32, shorter
+/// than a full id. `what` is `event` or `run`.
+pub(crate) fn id_suffix(text: &str, what: &str) -> ServiceResult<String> {
+    const MIN: usize = 3;
+    let suffix = text.trim().to_ascii_uppercase();
+    let crockford = |c: char| c.is_ascii_digit() || (c.is_ascii_uppercase() && !"ILOU".contains(c));
+    if suffix.len() < MIN || suffix.len() >= 26 || !suffix.chars().all(crockford) {
+        return Err(ServiceError::Invalid(format!(
+            "expected a {what} id: all 26 characters, or at least the last {MIN} (as lists show them), got {text:?}"
+        )));
+    }
+    Ok(suffix)
+}
+
+/// The one id `found` holds (newest first, up to one more than is shown), or why not. `what`
+/// is `event` or `run`.
+pub(crate) fn one_id<T: std::fmt::Display>(
+    found: Vec<T>,
+    suffix: &str,
+    what: &str,
+) -> ServiceResult<T> {
+    let count = found.len();
+    let mut found = found.into_iter();
+    match (found.next(), count) {
+        // "recent": among the newest `SHORT_ID_WINDOW`, as the CLI reference says.
+        (None, _) => Err(ServiceError::NotFound {
+            what: if what == "run" { "recent run ending in" } else { "recent event ending in" },
+            id: suffix.to_owned(),
+        }),
+        (Some(id), 1) => Ok(id),
+        (Some(first), _) => {
+            let candidates: Vec<String> =
+                std::iter::once(first).chain(found).map(|id| id.to_string()).collect();
+            let more = if candidates.len() > SHORT_ID_CANDIDATES { " and more" } else { "" };
+            let candidates: Vec<String> =
+                candidates.into_iter().take(SHORT_ID_CANDIDATES).collect();
+            Err(ServiceError::Ambiguous {
+                message: format!(
+                    "{suffix} is the end of more than one {what} id: {}{more}; type more of it",
+                    candidates.join(", ")
+                ),
+                candidates,
+            })
+        }
+    }
+}
+
+/// Candidates an ambiguous short id lists; the lookup asks for one more to know there are more.
+pub(crate) const SHORT_ID_CANDIDATES: usize = 10;
+
 /// Cloneable handle to every service.
 #[derive(Clone, Debug)]
 pub struct Services {
@@ -172,5 +222,39 @@ pub(crate) fn expand_tilde(s: &str, user_home: &std::path::Path) -> String {
         format!("{}/{rest}", home.trim_end_matches('/'))
     } else {
         s.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_ids_are_suffixes_and_resolve_to_exactly_one() {
+        assert_eq!(id_suffix(" 8d1 ", "run").unwrap(), "8D1");
+        for bad in ["8D", "8DI", "has space", "", &"0".repeat(26)] {
+            let err = id_suffix(bad, "run").unwrap_err().to_string();
+            assert!(err.contains("at least the last 3"), "{bad:?}: {err}");
+        }
+
+        assert_eq!(one_id(vec!["01AAA8D1"], "8D1", "run").unwrap(), "01AAA8D1");
+        let none = one_id(Vec::<String>::new(), "8D1", "run").unwrap_err();
+        assert!(matches!(none, ServiceError::NotFound { .. }), "{none:?}");
+        assert_eq!(none.to_string(), "recent run ending in \"8D1\" not found");
+
+        let Err(ServiceError::Ambiguous { message, candidates }) =
+            one_id(vec!["02B8D1", "01A8D1"], "8D1", "run")
+        else {
+            panic!("two matches are ambiguous");
+        };
+        assert_eq!(candidates, ["02B8D1", "01A8D1"]);
+        assert!(message.contains("02B8D1, 01A8D1; type more"), "{message}");
+        let many: Vec<String> = (0..=SHORT_ID_CANDIDATES).map(|n| format!("{n:02}8D1")).collect();
+        let Err(ServiceError::Ambiguous { message, candidates }) = one_id(many, "8D1", "run")
+        else {
+            panic!("ambiguous");
+        };
+        assert_eq!(candidates.len(), SHORT_ID_CANDIDATES);
+        assert!(message.contains("and more"), "{message}");
     }
 }

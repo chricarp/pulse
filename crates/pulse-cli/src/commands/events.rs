@@ -9,15 +9,16 @@ use pulse_contracts::rpc::*;
 use pulse_contracts::{EventId, RunId};
 use pulse_daemon::client::Client;
 
-use super::{Res, parse_id, time_arg};
+use super::{Res, event_id, parse_id, time_arg};
 use crate::cli::{EventsArgs, EventsCmd, FilterArgs, IngestArgs, ReplayArgs, RunArgs, TailArgs};
-use crate::{Ctx, Failure, eprint_line, format, print_json, print_line};
+use crate::output::{Out, note};
+use crate::{Ctx, Failure, format};
 
 fn filter(f: FilterArgs) -> Result<EventFilter, Failure> {
     let types = f
         .types
         .iter()
-        .map(|t| t.parse().map_err(|e| Failure::Message(format!("--type {t:?}: {e}"))))
+        .map(|t| t.parse().map_err(|e| Failure::invalid(format!("--type {t:?}: {e}"))))
         .collect::<Result<_, _>>()?;
     let path = match f.path {
         Some(p) => {
@@ -44,66 +45,90 @@ fn own_run() -> Option<RunId> {
 pub async fn tail(ctx: &Ctx, args: TailArgs) -> Res {
     let client = ctx.client().await?;
     let mut notes =
-        client.notifications().ok_or_else(|| Failure::Message("notifications taken".into()))?;
+        client.notifications().ok_or_else(|| Failure::internal("notifications taken"))?;
     client
         .call::<method::EventsSubscribe>(EventsSubscribeParams { filter: filter(args.filter)? })
         .await?;
-    if !args.no_runs {
-        client.call::<method::RunsSubscribe>(RunsSubscribeParams::default()).await?;
-    }
-    if !ctx.json {
-        eprint_line("Following events and runs; Ctrl-C stops.");
-    }
-    while let Some(note) = notes.recv().await {
-        if ctx.json {
-            if let Ok(line) = serde_json::to_string(&note) {
-                print_line(&line);
-            }
-            continue;
+    let runs = if args.no_runs {
+        None
+    } else {
+        Some(client.call::<method::RunsSubscribe>(RunsSubscribeParams::default()).await?)
+    };
+    // Read after subscribing: a run of any later event waits for it (see `tail::Order`).
+    let newest = EventQuery { limit: Some(1), ..EventQuery::default() };
+    let newest =
+        client.call::<method::EventsQuery>(newest).await?.page.events.first().map(|e| e.id);
+    let mut order = crate::tail::Order::new(newest);
+    // For people on stderr in both modes; it also tells a script that tail is subscribed.
+    note("Following events and runs; Ctrl-C stops.");
+    let out = ctx.out();
+    let show_runs = |runs_changed: RunsChanged| {
+        if runs_changed.runs.is_empty() {
+            return;
         }
-        match note {
-            Notification::EventsBatch(b) => {
-                let b = b.batch;
-                for e in &b.events {
-                    print_line(&format::event_line(e));
+        match &out {
+            Out::Json(json) => json.line(&Notification::RunsChanged(runs_changed)),
+            Out::Text(text) => {
+                for r in &runs_changed.runs {
+                    text.line(&format!("run {}", format::run_line(r)));
                 }
-                if b.dropped > 0 {
-                    print_line(&format!(
-                        "… {} more not shown live (the log has them: pulse events)",
-                        b.dropped
-                    ));
+            }
+        }
+    };
+    while let Some(n) = notes.recv().await {
+        match n {
+            Notification::EventsBatch(b) => {
+                let batch = &b.batch;
+                let ready = order.events(batch.events.iter().map(|e| e.id), batch.dropped > 0);
+                match &out {
+                    Out::Json(json) => json.line(&Notification::EventsBatch(b.clone())),
+                    Out::Text(text) => {
+                        for e in &batch.events {
+                            text.line(&format::event_line(e));
+                        }
+                        if batch.dropped > 0 {
+                            text.line(&format!(
+                                "… {} more not shown live (the log has them: pulse events)",
+                                batch.dropped
+                            ));
+                        }
+                    }
+                }
+                if let Some(subscribed) = &runs {
+                    show_runs(RunsChanged { subscription: subscribed.subscription, runs: ready });
                 }
             }
             Notification::RunsChanged(c) => {
-                for r in &c.runs {
-                    print_line(&format!("run {}", format::run_line(r)));
+                let ready = order.runs(c.runs);
+                show_runs(RunsChanged { subscription: c.subscription, runs: ready });
+            }
+            other => {
+                if let Out::Json(json) = &out {
+                    json.line(&other);
                 }
             }
-            _ => {}
         }
     }
-    eprint_line("The daemon closed the connection.");
-    Ok(ExitCode::SUCCESS)
+    Err(Failure::connection("the daemon closed the connection"))
 }
 
 pub async fn events(ctx: &Ctx, args: EventsArgs) -> Res {
     let client = ctx.client().await?;
     if let Some(EventsCmd::Show { id }) = args.show {
-        let detail = client.call::<method::EventsGet>(EventIdParams { id: parse_id(&id)? }).await?;
-        if ctx.json {
-            print_json(&detail);
-            return Ok(ExitCode::SUCCESS);
-        }
-        print_line(&format::event_line(&detail.event));
-        print_line(&serde_json::to_string_pretty(&detail.event.data).unwrap_or_default());
+        let detail = client
+            .call::<method::EventsGet>(EventIdParams { id: event_id(&client, &id).await? })
+            .await?;
+        let Some(out) = ctx.answer(&detail) else { return Ok(ExitCode::SUCCESS) };
+        out.line(&format::event_line(&detail.event));
+        out.line(&serde_json::to_string_pretty(&detail.event.data).unwrap_or_default());
         if detail.deliveries.is_empty() {
-            print_line("No rule matched this event.");
+            out.line("No rule matched this event.");
         }
         for d in &detail.deliveries {
-            print_line(&format::delivery_line(d));
+            out.line(&format::delivery_line(d, detail.event.causation));
         }
         for r in &detail.runs {
-            print_line(&format!("run {}", format::run_line(r)));
+            out.line(&format!("run {}", format::run_line(r)));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -116,15 +141,12 @@ pub async fn events(ctx: &Ctx, args: EventsArgs) -> Res {
         order: if args.oldest_first { Order::OldestFirst } else { Order::NewestFirst },
     };
     let page = client.call::<method::EventsQuery>(query).await?;
-    if ctx.json {
-        print_json(&page);
-        return Ok(ExitCode::SUCCESS);
-    }
+    let Some(out) = ctx.answer(&page) else { return Ok(ExitCode::SUCCESS) };
     for e in &page.page.events {
-        print_line(&format::event_line(e));
+        out.line(&format::event_line(e));
     }
     if let Some(next) = page.page.next_cursor {
-        eprint_line(&format!("More: pulse events --cursor {next}"));
+        note(&format!("More: pulse events --cursor {next}"));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -133,18 +155,18 @@ pub async fn replay(ctx: &Ctx, args: ReplayArgs) -> Res {
     let client = ctx.client().await?;
     let rules = (!args.rule.is_empty()).then_some(args.rule);
     let res = client
-        .call::<method::EventsReplay>(ReplayParams { id: parse_id(&args.event)?, rules })
+        .call::<method::EventsReplay>(ReplayParams {
+            id: event_id(&client, &args.event).await?,
+            rules,
+        })
         .await?;
-    if ctx.json {
-        print_json(&res);
-        return Ok(ExitCode::SUCCESS);
-    }
-    print_line(&format!("Replayed as {}", res.event.id));
+    let Some(out) = ctx.answer(&res) else { return Ok(ExitCode::SUCCESS) };
+    out.line(&format!("Replayed as {}", res.event.id));
     if res.deliveries.is_empty() {
-        print_line("No rule matched.");
+        out.line("No rule matched.");
     }
     for d in &res.deliveries {
-        print_line(&format::delivery_line(d));
+        out.line(&format::delivery_line(d, res.event.causation));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -162,6 +184,27 @@ fn stdin_lines() -> tokio::sync::mpsc::Receiver<std::io::Result<String>> {
     rx
 }
 
+/// One stdin line, parsed exactly as `POST /ingest` parses a line of JSON lines (one
+/// implementation, `pulse_sources::ingest::parse`): the same fields, CloudEvents, limits and
+/// refusals. Returns what is wrong with it, without the line number the parser counts.
+fn parse_line(line: &str) -> Result<Vec<IngestEvent>, String> {
+    use pulse_sources::ingest::{IngestError, IngestLimits, parse};
+    parse(Some("application/x-ndjson"), line.as_bytes(), &IngestLimits::default()).map_err(|e| {
+        match e {
+            IngestError::Parse { message, .. } => message,
+            IngestError::Invalid(items) => items
+                .iter()
+                .map(|i| match &i.field {
+                    Some(field) => format!("{field}: {}", i.message),
+                    None => i.message.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+            other => other.to_string(),
+        }
+    })
+}
+
 pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
     const BATCH: usize = 100;
     let client = ctx.client().await?;
@@ -169,6 +212,7 @@ pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
     let mut lines = stdin_lines();
     let (mut accepted, mut duplicates, mut number) = (0usize, 0u32, 0usize);
     let mut batch = Vec::new();
+    let mut bad_line = None;
     loop {
         // Send what is buffered as soon as stdin has nothing more ready.
         let next = match lines.try_recv() {
@@ -185,12 +229,17 @@ pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
             if line.trim().is_empty() {
                 continue;
             }
-            let mut event: IngestEvent = serde_json::from_str(&line)
-                .map_err(|e| Failure::Message(format!("stdin line {number}: {e}")))?;
-            if event.causation_run.is_none() {
-                event.causation_run = cause;
+            match parse_line(&line) {
+                Ok(events) => batch.extend(events.into_iter().map(|mut event| {
+                    event.causation_run = event.causation_run.or(cause);
+                    event
+                })),
+                Err(why) => {
+                    // The lines before it are sent; this one and the rest are not.
+                    bad_line = Some(why);
+                    break;
+                }
             }
-            batch.push(event);
             if batch.len() < BATCH {
                 continue;
             }
@@ -212,10 +261,19 @@ pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
         accepted += res.accepted.len();
         duplicates += res.duplicates;
     }
-    if ctx.json {
-        print_json(&serde_json::json!({ "accepted": accepted, "duplicates": duplicates }));
-    } else {
-        eprint_line(&format!("Ingested {accepted} events ({duplicates} duplicates dropped)."));
+    let res = serde_json::json!({ "accepted": accepted, "duplicates": duplicates });
+    if let Some(why) = bad_line {
+        let data =
+            serde_json::json!({ "line": number, "accepted": accepted, "duplicates": duplicates });
+        let sent = if accepted == 0 && duplicates == 0 {
+            "nothing was ingested".to_owned()
+        } else {
+            format!("the lines before it were ({accepted} ingested, {duplicates} duplicates)")
+        };
+        return Err(Failure::invalid(format!("stdin line {number}: {why}; {sent}")).with_data(data));
+    }
+    if ctx.answer(&res).is_some() {
+        note(&format!("Ingested {accepted} events ({duplicates} duplicates dropped)."));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -242,7 +300,7 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> Res {
     {
         Ok(d) => d,
         Err(e) => {
-            eprint_line(&format!("pulse run: {e}"));
+            note(&format!("pulse run: {e}"));
             // As a shell does for a command it cannot run.
             return Ok(ExitCode::from(127));
         }
