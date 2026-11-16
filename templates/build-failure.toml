@@ -32,10 +32,13 @@ rate_limit = "10/hour"
 
 [rule.run]
 agent = "diagnose"
+# Only the directory is inlined. The command line and its output are in the event data below,
+# where the agent reads them as data: arguments and output are whatever the command was given
+# and printed, and should not become part of the instruction.
 prompt = """
-The command `{{subject}}` failed with exit code {{exit_code}} in {{cwd}}.
+A command wrapped with `pulse run` failed in {{cwd}}.
 
-Its last output is in the event data below. Find the most likely cause in the code under
-{{cwd}} and explain it in a few sentences, then give the fix you suggest. Do not change any
-files.
+The event data below has its command line (`command`), its exit code and the last of its
+output (`output_tail`). Find the most likely cause in the code under {{cwd}} and explain it in
+a few sentences, then give the fix you suggest. Do not change any files.
 """

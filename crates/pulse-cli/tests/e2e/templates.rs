@@ -130,8 +130,13 @@ async fn a_failing_wrapped_command_runs_the_diagnosis_and_a_passing_one_does_not
     assert_eq!(watch.run_terminal(run.id).await.status, RunStatus::Succeeded);
     let full = watch.get_run(run.id).await;
     let prompt = std::fs::read_to_string(&prompt_file).unwrap();
-    assert!(prompt.contains("failed with exit code 3 in"), "{prompt}");
-    assert!(prompt.contains("mismatched types"), "the output tail is in the data block: {prompt}");
+    // The instruction names the event and inlines only a path; the command line and its
+    // output, which the command's arguments and output control, stay in the data block.
+    let (instruction, data) =
+        prompt.split_once("The event that triggered this run follows").expect("a data block");
+    assert!(instruction.contains(&project.display().to_string()), "{instruction}");
+    assert!(!instruction.contains("E0308"), "the command line is not inlined: {instruction}");
+    assert!(data.contains("mismatched types"), "the output tail is in the data block: {data}");
     let event = watch.detail(full.event).await.event;
     assert_eq!(event.data["exit_code"], 3);
     assert_eq!(event.data["cwd"], project.display().to_string());
