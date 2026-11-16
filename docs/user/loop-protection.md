@@ -8,7 +8,7 @@ guess, and what to do when it guesses wrong.
 ## The principle
 
 1. Every event may carry a **cause**: the run believed to have produced it, and how Pulse knows
-   (`exact` or `inferred`).
+   (`exact`, `reported` or `inferred`).
 2. A rule never fires on an event caused by **its own** run. The delivery is recorded as
    blocked, `loop_self_trigger`.
 3. Other rules may fire on it, but each run in a chain counts. A chain longer than
@@ -23,36 +23,56 @@ Every blocked delivery is kept in the log. A stopped loop is visible, not silent
 
 ## How Pulse knows who caused an event
 
-> **This section describes attribution as it is in this version and is expected to change.**
-> Everything else on this page is the stable principle.
+Filesystems do not say which process wrote a file. Pulse attributes what it knows and guesses
+only when it is blind. There are three strengths of knowledge, and the log says which applied:
 
 - **Exact.** Every run has `PULSE_RUN_ID` in its environment. When the run calls `pulse run` or
-  `pulse ingest`, the event it reports carries that run as its cause, marked `exact`. This is
-  the only way a `process.exited` event gets a cause.
-- **Inferred.** Filesystems do not say which process wrote a file. So while a run is active,
-  and for `[limits] causation_grace` (30 s) after it ends, any file or git event **inside that
-  run's working directory** (`cwd`) is attributed to it and marked `inferred`.
+  `pulse ingest`, the event it reports carries that run as its cause. This is the only way a
+  `process.exited` event gets a cause.
+- **Reported.** Claude Code prints each tool call it makes. When a run writes a file with one of
+  Claude Code's file tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`), Pulse notes the path,
+  and a file or git event on that path, during the run or within `[limits] causation_grace`
+  (30 s) after it, is attributed to the run, inside its working directory or not. As long as the
+  run has only read files and written through those tools, **nothing else is attributed to it**:
+  a file you save into the same folder meanwhile is yours. With the `lecture-notes` template, a
+  second PDF saved while the first is being summarized gets its own run.
+- **Inferred.** When Pulse cannot see what a run writes, it falls back to a guess: any file or
+  git event inside the run's working directory (`cwd`), during the run and the grace period, is
+  taken for the run's. That applies to every `command` and `codex` agent, to a run that was
+  active when the daemon restarted, and to a Claude Code run from the moment it calls anything
+  whose writes are invisible: `Bash`, a subagent, an MCP tool, any tool Pulse does not know.
+  A call that Claude Code refuses still counts. The run's output carries a marker saying when
+  and why this happened.
 
-Inference is wrong in both directions:
+Where each can be wrong:
 
-- **It can miss.** An agent that writes outside its working directory is not attributed at all.
-  The default working directory is a fresh `$PULSE_HOME/runs/<run id>/`, so an agent left at the
-  default that writes into a watched folder by absolute path is never recognised; only cooldown,
-  rate limit and the circuit breaker stop it. With the default breaker that is up to 20 runs in
-  10 minutes, then an hour's hold. Cheap for a script, real money for a model. Give agents that
-  write a `cwd` that contains what they write.
-- **It can claim too much.** Anything that appears in the working directory during a run (or
-  in the 30 s after) is taken for the agent's, including files you save yourself. With the
-  `lecture-notes` template, whose `cwd` is the watched folder, a second PDF saved while the
-  first is being summarized is blocked as a self-trigger.
+- **Inference claims too much.** Anything that appears in the working directory of such a run
+  is taken for the agent's, including files you save yourself. `pulse rules history` prints the
+  `pulse replay` command for each such block.
+- **Inference misses.** An agent that writes outside its working directory by a means Pulse
+  cannot see is not attributed at all. The default working directory is a fresh
+  `$PULSE_HOME/runs/<run id>/`, so a `command` agent left at the default that writes into a
+  watched folder is never recognised; only cooldown, rate limit and the circuit breaker stop it.
+  With the default breaker that is up to 20 runs in 10 minutes, then an hour's hold. Cheap for a
+  script, real money for a model. Give agents that write a `cwd` that contains what they write.
+- **A report can arrive late.** Pulse normally learns of a write before the file event (the
+  tool call is printed first, and the fs source waits for the file to settle). If an agent's
+  output is delayed, its write is taken for yours; if it matches the run's own rule, the rule
+  fires once more.
+- **A report names a path, not a moment.** Your own change to exactly the file a run wrote,
+  within the window, is attributed to the run.
+- **Hooks and symlinks.** A file written silently by a Claude Code hook is taken for yours. So
+  is an agent's write when the watched folder is reached through a symlink that differs from the
+  agent's `cwd` spelling.
 - After a daemon crash, a run that was running counts as active until its timeout would have
   ended it (the agent survives in its own process group), so its folder's events are attributed
-  to it for that long.
+  to it, by inference, for that long.
 
 ## Seeing a blocked delivery
 
 In the UI, the feed marks the event with an orange-red **loop** badge, and the event's detail
-says which run it was attributed to, whether that was exact or inferred, and the chain depth.
+says which run it was attributed to, whether that was exact, reported or inferred, and the
+chain depth.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/event-detail-dark.png">
@@ -72,12 +92,12 @@ $ pulse rules history copy-files
 2026-11-16T10:20:48.710Z  copy-files           fired  run 01M7HXZAP64BNK835NXSXTP6MK  [event 01M7HXZAP64BNK835NXSXTP6MJ]
 
 $ pulse events show 01M7HXZCMVAMZHABKDGR2Z6QDP
-2026-11-16T10:20:48.715Z  fs.file.created /home/me/loop/one.txt.copy  (from run ~01M7HXZAP64BNK835NXSXTP6MK)  [01M7HXZCMVAMZHABKDGR2Z6QDP]
+2026-11-16T10:20:48.715Z  fs.file.created /home/me/loop/one.txt.copy  (from run 01M7HXZAP64BNK835NXSXTP6MK, inferred)  [01M7HXZCMVAMZHABKDGR2Z6QDP]
 …
 ```
 
-In the CLI's text output, `~` before a run id means the cause was inferred; no `~` means exact.
-`--json` output has `pulsecausation: "inferred"` or `"exact"` on the event.
+The CLI's text output says `reported` or `inferred` after the run id; nothing after it means
+exact. `--json` output has `pulsecausation: "exact"`, `"reported"` or `"inferred"` on the event.
 
 ## Undoing a wrong block
 

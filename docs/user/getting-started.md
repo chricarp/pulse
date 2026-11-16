@@ -182,17 +182,19 @@ and adds no cost of its own. For scale: one `lecture-notes` run on a one-page PD
 [docs/internals/0009](../internals/0009-end-to-end.md#one-real-run)). Longer PDFs and larger
 models cost more. The templates set no `model`, so Claude Code's default applies; add
 `model = "haiku"` to the agent to choose the cheapest. Limits in the templates (`rate_limit`, one
-run at a time, a short queue) bound how many runs a burst of files can cause.
+run at a time, a bounded queue) bound how many runs a burst of files can cause.
 
 Requirements: Claude Code installed (`claude` on the daemon's `PATH`) and signed in. If it is not
 installed, `pulse status` warns that the agent's program cannot be found.
 
 **Loop protection and your own files.** Pulse stops a rule from reacting to its own run's
-output, and part of how it decides who wrote a file is a guess. In this version, a PDF you save
-into `~/University` while a `lecture-notes` run is working there can be taken for the agent's
-output and skipped. It is never lost silently: `pulse rules history lecture-notes` shows it as
-`blocked: loop protection`, followed by the `pulse replay <event>` command that runs it. See
-[Loop protection](loop-protection.md).
+output. With these templates it knows which files the agent wrote from Claude Code's own tool
+calls, so a PDF you save into `~/University` while a `lecture-notes` run is working there gets
+its own run. The exception is a run in which the model tried a tool Pulse cannot see into (a
+shell command, for instance, even though the template refuses it): from then until 30 s after
+that run, new files in the folder are taken for the agent's. Such a block is never silent:
+`pulse rules history lecture-notes` shows it as `blocked: loop protection`, followed by the
+`pulse replay <event>` command that runs it. See [Loop protection](loop-protection.md).
 
 ## Stopping
 

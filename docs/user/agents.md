@@ -13,7 +13,7 @@ cwd = "~/University"
 allow = ["fs.file.created:~/University/**"]
 timeout = "15m"
 max_concurrent = 1
-max_queued = 4
+max_queued = 20
 ```
 
 Add one from the UI (**Agents → New agent**), the config file, or a file with the same keys:

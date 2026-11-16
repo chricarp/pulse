@@ -233,11 +233,12 @@ What is **not** a safety boundary:
   says so in its menus. The browser UI (`pulse open`) is the alternative.
 - **MCP events extension (SEP-3415)** is experimental, **off by default**, and tracks a draft
   that will change; no mainstream client uses it yet. The plain MCP tools are what works today.
-- **Loop protection partly guesses.** Filesystems do not say which process wrote a file, so
-  deciding that a run caused an event is partly inference. It can block a change you made
-  yourself during a run (recorded, and `pulse replay` runs it), and it can miss an agent's own
-  writes, which then only cooldowns, rate limits and the circuit breaker stop (by default up to
-  20 runs in 10 minutes). How attribution works today is in
+- **Loop protection partly guesses.** Filesystems do not say which process wrote a file. For
+  Claude Code, Pulse reads the paths its file tools write and attributes exactly those. For
+  everything it cannot see (shell commands, `command` and Codex agents) it guesses from the
+  run's working directory, which can block a change you made yourself during a run (recorded,
+  and `pulse replay` runs it) and can miss an agent's own writes, which then only cooldowns,
+  rate limits and the circuit breaker stop (by default up to 20 runs in 10 minutes). Details in
   [Loop protection](docs/user/loop-protection.md#how-pulse-knows-who-caused-an-event).
 - **Runs.** A process that leaves its run's process group (`setsid`, daemons) is not killed with
   the run. A run that was running when the daemon stopped is recorded `interrupted`, not
@@ -254,8 +255,8 @@ What is **not** a safety boundary:
 
 Not in v1, and recorded in the design notes as possible next steps:
 
-- Exact attribution of an agent's file writes from the tool calls its adapter can see, so loop
-  protection guesses less (in progress).
+- Reading Codex's file changes the way Claude Code's are read, so loop protection guesses less
+  for Codex agents too.
 - Code signing and notarization, auto-update, and a `.deb` with an AppArmor profile that restores
   Chromium's sandbox on Ubuntu ([0010](docs/internals/0010-desktop-shell.md#known-gaps-in-v1)).
 - Notifications for single loop-protection blocks (today only a tripped circuit breaker notifies).
