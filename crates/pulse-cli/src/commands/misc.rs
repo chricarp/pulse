@@ -9,7 +9,7 @@ use pulse_contracts::status::{Project, TrustState};
 
 use super::Res;
 use crate::cli::{AgentsArgs, AgentsCmd, ProjectCmd, SourceKindArg, SourcesArgs, SourcesCmd};
-use crate::output::{Text, note};
+use crate::output::{Out, Text, note};
 use crate::{Ctx, Failure};
 
 fn origin(o: &ConfigOrigin) -> String {
@@ -202,11 +202,11 @@ fn source_config(
     };
     match (kind, target) {
         (SourceKindArg::Schedule, Some(t)) => {
-            return Err(Failure::Message(format!("a schedule takes --cron or --every, not {t:?}")));
+            return Err(Failure::invalid(format!("a schedule takes --cron or --every, not {t:?}")));
         }
         (SourceKindArg::Schedule, None) => {}
         (_, None) => {
-            return Err(Failure::Message(format!("a {kind_name} source needs a path (or URL)")));
+            return Err(Failure::invalid(format!("a {kind_name} source needs a path (or URL)")));
         }
         (SourceKindArg::Calendar, Some(u))
             if u.starts_with("http://") || u.starts_with("https://") =>
@@ -227,7 +227,7 @@ fn source_config(
     }
     toml::Value::Table(t)
         .try_into()
-        .map_err(|e: toml::de::Error| Failure::Message(e.message().to_owned()))
+        .map_err(|e: toml::de::Error| Failure::invalid(e.message().to_owned()))
 }
 
 fn absolute(dir: PathBuf) -> Result<String, Failure> {
@@ -326,19 +326,23 @@ pub async fn project(ctx: &Ctx, cmd: ProjectCmd) -> Res {
             let review = client
                 .call::<method::ProjectsReview>(ProjectReviewParams { dir: dir.clone(), name })
                 .await?;
-            if let Some(out) = ctx.answer(&review) {
-                print_review(&out, &review);
-                if review.errors.is_empty() {
-                    let name_arg = format!(" --name {}", review.name);
-                    note(&format!(
-                        "Nothing was trusted. To trust exactly this content:\n  pulse project trust {}{name_arg} --hash {}",
-                        shell_word(&review.dir),
-                        review.hash
-                    ));
-                } else {
-                    note("Nothing was trusted: the file has errors.");
-                }
-            }
+            let advice = if review.errors.is_empty() {
+                format!(
+                    "Nothing was trusted. To trust exactly this content:\n  pulse project trust {} --name {} --hash {}",
+                    shell_word(&review.dir),
+                    review.name,
+                    review.hash
+                )
+            } else {
+                "Nothing was trusted: the file has errors.".to_owned()
+            };
+            // A review trusts nothing, so it does not succeed: under --json it is the error's data.
+            let Out::Text(out) = ctx.out() else {
+                let review = serde_json::to_value(&review).unwrap_or_default();
+                return Err(Failure::new("not_trusted", advice).with_data(review));
+            };
+            print_review(&out, &review);
+            note(&advice);
             return Ok(ExitCode::FAILURE);
         }
         ProjectCmd::Trust { dir, name, hash: Some(hash) } => {
@@ -347,8 +351,8 @@ pub async fn project(ctx: &Ctx, cmd: ProjectCmd) -> Res {
                 pulse_daemon::client::ClientError::Rpc(err)
                     if err.kind() == Some(ErrorCode::Stale) =>
                 {
-                    Failure::Message(
-                        "the file changed since that hash was printed; nothing was trusted. Run `pulse project trust` without --hash to review it again.".into(),
+                    Failure::from(err).with_message(
+                        "the file changed since that hash was printed; nothing was trusted. Run `pulse project trust` without --hash to review it again.",
                     )
                 }
                 other => other.into(),

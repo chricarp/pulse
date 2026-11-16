@@ -134,6 +134,25 @@ impl ErrorCode {
         }
     }
 
+    /// The code as a word (`not_found`, `stale`), for clients that report errors by name (the
+    /// CLI's `--json` error object).
+    pub const fn name(self) -> &'static str {
+        match self {
+            ErrorCode::ParseError => "parse_error",
+            ErrorCode::InvalidRequest => "invalid_request",
+            ErrorCode::MethodNotFound => "method_not_found",
+            ErrorCode::InvalidParams => "invalid_params",
+            ErrorCode::Internal => "internal",
+            ErrorCode::Unauthorized => "unauthorized",
+            ErrorCode::NotFound => "not_found",
+            ErrorCode::Conflict => "conflict",
+            ErrorCode::ConfigInvalid => "config_invalid",
+            ErrorCode::Unavailable => "unavailable",
+            ErrorCode::NotImplemented => "not_implemented",
+            ErrorCode::Stale => "stale",
+        }
+    }
+
     pub fn from_code(code: i32) -> Option<ErrorCode> {
         use ErrorCode::*;
         [

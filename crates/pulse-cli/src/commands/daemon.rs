@@ -6,14 +6,16 @@ use std::process::{ExitCode, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use serde_json::Value;
+
 use pulse_contracts::config::{ConfigOrigin, LogLevel, parse_config_file};
-use pulse_contracts::rpc::{ConfigErrorList, Empty, method};
+use pulse_contracts::rpc::{ConfigErrorList, Empty, ErrorCode, method};
 use pulse_daemon::home::InstanceLock;
 use pulse_daemon::{Daemon, DaemonOptions, PulseHome, StartError, Wiring};
 
 use super::{Res, now};
 use crate::cli::{InitArgs, OpenArgs, StartArgs};
-use crate::output::{Out, Text, note as eprint_line, protocol_line};
+use crate::output::{note, protocol_line};
 use crate::{Ctx, Failure, templates};
 
 /// `[daemon] log_level`, read before the daemon loads the file properly.
@@ -26,35 +28,48 @@ fn log_level(home: &PulseHome) -> LogLevel {
         .unwrap_or_default()
 }
 
-pub fn start(ctx: &Ctx, args: StartArgs) -> ExitCode {
+/// Why the daemon could not start, as a failure for the user or, under `--ready-line`, for the
+/// `--detach` parent to report.
+fn start_failure(e: &StartError) -> Failure {
+    let kind = match e {
+        StartError::AlreadyRunning { .. } => "conflict",
+        StartError::Io { .. } => "io",
+        StartError::Store(_) | StartError::Other(_) => "internal",
+    };
+    Failure::new(kind, e.to_string())
+}
+
+pub fn start(ctx: &Ctx, args: StartArgs) -> Res {
     if args.detach {
         return detach(ctx, &args);
     }
+    let failed = |f: Failure| {
+        // The `--detach` parent reads stdout only; tell it why.
+        if args.ready_line {
+            if let Ok(json) = serde_json::to_string(&f) {
+                protocol_line(&format!("failed {json}"));
+            }
+        }
+        Err(f)
+    };
     let home = PulseHome::new(&ctx.home);
     if let Err(e) = home.create_dirs() {
-        eprint_line(&format!("pulse: cannot create {}: {e}", ctx.home.display()));
-        return ExitCode::from(1);
+        return failed(Failure::new("io", format!("cannot create {}: {e}", ctx.home.display())));
     }
     // Detached, stderr goes away once the parent has read `ready`; log to the file only.
     if let Err(e) = pulse_daemon::logging::init(&home, log_level(&home), !args.ready_line) {
-        eprint_line(&format!("pulse: cannot open the log: {e}"));
+        note(&format!("pulse: cannot open the log: {e}"));
     }
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
-        Err(e) => {
-            eprint_line(&format!("pulse: {e}"));
-            return ExitCode::from(1);
-        }
+        Err(e) => return failed(Failure::internal(e.to_string())),
     };
     runtime.block_on(async {
         let mut opts = DaemonOptions::new(&ctx.home, &ctx.user_home);
         opts.port = args.port;
         let daemon = match Daemon::start(opts, Wiring::real()).await {
             Ok(d) => d,
-            Err(e) => {
-                eprint_line(&format!("pulse: {e}"));
-                return ExitCode::from(if matches!(e, StartError::AlreadyRunning { .. }) { 1 } else { 2 });
-            }
+            Err(e) => return failed(start_failure(&e)),
         };
         let port = daemon.port();
         // Say what is wrong with the config now, while the user is looking.
@@ -67,13 +82,15 @@ pub fn start(ctx: &Ctx, args: StartArgs) -> ExitCode {
             protocol_line(&format!("ready {port}"));
         } else {
             for p in &problems {
-                eprint_line(p);
+                note(p);
             }
-            eprint_line(&format!(
+            note(&format!(
                 "Pulse {} on http://127.0.0.1:{port} (home {}). `pulse open` for the UI; Ctrl-C stops.",
                 pulse_daemon::VERSION,
                 ctx.home.display()
             ));
+            // The same answer as `--detach`, once listening.
+            ctx.answer(&serde_json::json!({ "pid": std::process::id(), "port": port }));
         }
         let stop = daemon.shutdown_token();
         let services = daemon.services();
@@ -84,7 +101,7 @@ pub fn start(ctx: &Ctx, args: StartArgs) -> ExitCode {
                 signal(SignalKind::interrupt()),
                 signal(SignalKind::hangup()),
             ) else {
-                eprint_line("pulse: cannot install signal handlers");
+                note("pulse: cannot install signal handlers");
                 stop.cancel();
                 return;
             };
@@ -100,32 +117,22 @@ pub fn start(ctx: &Ctx, args: StartArgs) -> ExitCode {
             stop.cancel();
         });
         daemon.wait().await;
-        ExitCode::SUCCESS
+        Ok(ExitCode::SUCCESS)
     })
 }
 
 /// Starts `pulse start --ready-line` in its own process group and returns when it is ready.
-fn detach(ctx: &Ctx, args: &StartArgs) -> ExitCode {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => {
-            eprint_line(&format!("pulse: cannot find my own executable: {e}"));
-            return ExitCode::from(1);
-        }
-    };
+fn detach(ctx: &Ctx, args: &StartArgs) -> Res {
+    let exe = std::env::current_exe()
+        .map_err(|e| Failure::new("io", format!("cannot find my own executable: {e}")))?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--home").arg(&ctx.home).arg("start").arg("--ready-line");
     if let Some(p) = args.port {
         cmd.arg("--port").arg(p.to_string());
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            eprint_line(&format!("pulse: cannot start the daemon: {e}"));
-            return ExitCode::from(1);
-        }
-    };
+    let mut child =
+        cmd.spawn().map_err(|e| Failure::new("io", format!("cannot start the daemon: {e}")))?;
     let (tx, rx) = mpsc::channel();
     if let Some(stdout) = child.stdout.take() {
         std::thread::spawn(move || {
@@ -143,7 +150,7 @@ fn detach(ctx: &Ctx, args: &StartArgs) -> ExitCode {
     let line = loop {
         let line = rx.recv_timeout(Duration::from_secs(30)).unwrap_or_default();
         match line.strip_prefix("note ") {
-            Some(note) => eprint_line(note.trim_end()),
+            Some(n) => note(n.trim_end()),
             None => break line,
         }
     };
@@ -156,16 +163,25 @@ fn detach(ctx: &Ctx, args: &StartArgs) -> ExitCode {
             ));
         }
         // The daemon keeps running in its own process group after we exit.
-        return ExitCode::SUCCESS;
+        return Ok(ExitCode::SUCCESS);
     }
     let mut err = String::new();
     if let Some(mut stderr) = child.stderr.take() {
         let _ = stderr.read_to_string(&mut err);
     }
     let _ = child.wait();
-    eprint_line(err.trim_end());
-    eprint_line("pulse: the daemon did not start");
-    ExitCode::from(1)
+    let reported = line.strip_prefix("failed ").and_then(|j| serde_json::from_str::<Value>(j).ok());
+    Err(match reported {
+        Some(f) => Failure::new(
+            match f["kind"].as_str() {
+                Some("conflict") => "conflict",
+                Some("io") => "io",
+                _ => "internal",
+            },
+            f["message"].as_str().unwrap_or("the daemon did not start"),
+        ),
+        None => Failure::internal(format!("the daemon did not start: {}", err.trim_end())),
+    })
 }
 
 /// Config errors and warnings as lines for people.
@@ -188,8 +204,8 @@ pub fn problem_lines(report: &ConfigErrorList) -> Vec<String> {
 pub async fn stop(ctx: &Ctx) -> Res {
     let client = match ctx.client().await {
         Ok(c) => c,
-        Err(Failure::NotRunning(_)) => {
-            if let Out::Text(out) = ctx.out() {
+        Err(f) if f.kind == "not_running" => {
+            if let Some(out) = ctx.answer(&serde_json::json!({ "was_running": false })) {
                 out.line("Pulse is not running.");
             }
             return Ok(ExitCode::SUCCESS);
@@ -207,12 +223,12 @@ pub async fn stop(ctx: &Ctx) -> Res {
     .await;
     match waited {
         Ok(Ok(Ok(()))) => {
-            if let Out::Text(out) = ctx.out() {
+            if let Some(out) = ctx.answer(&serde_json::json!({ "was_running": true })) {
                 out.line("Pulse stopped.");
             }
             Ok(ExitCode::SUCCESS)
         }
-        _ => Err(Failure::Message("the daemon has not exited after 2 minutes".into())),
+        _ => Err(Failure::internal("the daemon has not exited after 2 minutes")),
     }
 }
 
@@ -291,7 +307,7 @@ pub async fn pause(ctx: &Ctx, paused: bool) -> Res {
 pub async fn open(ctx: &Ctx, args: OpenArgs) -> Res {
     let home = PulseHome::new(&ctx.home);
     let info = home.read_daemon_info()?.ok_or_else(|| {
-        Failure::NotRunning("Pulse is not running. Start it with `pulse start`.".into())
+        Failure::not_running("Pulse is not running. Start it with `pulse start`.")
     })?;
     let token = home.read_token()?;
     // The browser will trust whatever answers on the port with a login code; make sure it is
@@ -342,21 +358,22 @@ fn browser_command(
 }
 
 pub fn init(ctx: &Ctx, args: InitArgs) -> Res {
-    let text = match ctx.out() {
-        Out::Text(t) => Some(t),
-        Out::Json(_) => None,
-    };
-    let say = |s: &str| text.as_ref().map(|t: &Text| t.line(s)).unwrap_or_default();
     if args.list {
-        for t in templates::TEMPLATES {
-            say(&format!("{:<16} {}", t.name, t.summary));
+        let list: Vec<_> = templates::TEMPLATES
+            .iter()
+            .map(|t| serde_json::json!({ "name": t.name, "summary": t.summary }))
+            .collect();
+        if let Some(out) = ctx.answer(&serde_json::json!({ "templates": list })) {
+            for t in templates::TEMPLATES {
+                out.line(&format!("{:<16} {}", t.name, t.summary));
+            }
         }
         return Ok(ExitCode::SUCCESS);
     }
     let mut chosen = Vec::new();
     for name in &args.template {
         chosen.push(templates::find(name).ok_or_else(|| {
-            Failure::Message(format!("no template named {name:?}; `pulse init --list` shows them"))
+            Failure::invalid(format!("no template named {name:?}; `pulse init --list` shows them"))
         })?);
     }
     let home = PulseHome::new(&ctx.home);
@@ -367,11 +384,19 @@ pub fn init(ctx: &Ctx, args: InitArgs) -> Res {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
     };
+    let names: Vec<&str> = chosen.iter().map(|t| t.name).collect();
+    let answer = serde_json::json!({
+        "path": path.display().to_string(),
+        "created": existing.is_none(),
+        "added": names,
+    });
     if existing.is_some() && chosen.is_empty() {
-        say(&format!(
-            "{} already exists; nothing changed. Add a template with --template.",
-            path.display()
-        ));
+        if let Some(out) = ctx.answer(&answer) {
+            out.line(&format!(
+                "{} already exists; nothing changed. Add a template with --template.",
+                path.display()
+            ));
+        }
         return Ok(ExitCode::SUCCESS);
     }
     let mut text = existing.clone().unwrap_or_else(|| templates::STARTER.to_owned());
@@ -384,17 +409,22 @@ pub fn init(ctx: &Ctx, args: InitArgs) -> Res {
     }
     let origin = ConfigOrigin::User { path: path.clone() };
     if let Err(errors) = parse_config_file(&text, &origin, &ctx.user_home) {
-        return Err(Failure::Message(format!(
-            "adding the template would make {} invalid, so nothing was written:\n{errors}",
-            path.display()
-        )));
+        return Err(Failure::new(
+            ErrorCode::ConfigInvalid.name(),
+            format!(
+                "adding the template would make {} invalid, so nothing was written:\n{errors}",
+                path.display()
+            ),
+        )
+        .with_data(serde_json::json!({ "errors": errors.0 })));
     }
     std::fs::write(&path, &text)?;
+    let Some(out) = ctx.answer(&answer) else { return Ok(ExitCode::SUCCESS) };
     if existing.is_none() {
-        say(&format!("Wrote {}.", path.display()));
+        out.line(&format!("Wrote {}.", path.display()));
     }
     for t in chosen {
-        say(&format!(
+        out.line(&format!(
             "Added the {} template to {}. Review its paths before relying on it.",
             t.name,
             path.display()

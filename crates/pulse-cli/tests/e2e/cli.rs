@@ -15,7 +15,7 @@ fn json(text: &str) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn without_a_daemon() {
     let env = Env::new();
-    for args in [&["status"][..], &["runs", "list"], &["--json", "rules", "list"], &["tail"]] {
+    for args in [&["status"][..], &["runs", "list"], &["tail"]] {
         let (code, out, err) = env.run(args).await;
         assert_eq!(code, 3, "{args:?}: {out}{err}");
         assert!(err.contains("pulse start"), "{args:?}: {err}");
@@ -188,7 +188,7 @@ async fn trusting_a_project_binds_to_the_content_shown() {
     assert!(out.contains("prettier") && out.contains("content hash"), "{out}");
     assert!(err.contains("Nothing was trusted") && err.contains("--hash"), "{err}");
     let (_, out, _) = env.run(&["--json", "project", "trust", dir]).await;
-    let hash = json(&out)["hash"].as_str().unwrap().to_owned();
+    let hash = json(&out)["error"]["data"]["hash"].as_str().unwrap().to_owned();
 
     std::fs::write(&file, text.replace("prettier", "curl")).unwrap();
     let (code, _, err) = env.run(&["project", "trust", dir, "--hash", &hash]).await;
@@ -328,4 +328,197 @@ run = { agent = "printer" }
         out.lines().map(|l| json(l)["text"].as_str().unwrap().to_owned()).collect();
     assert!(texts.iter().any(|t| t == "out \u{202e}exe.txt\u{7f}"), "{texts:?}");
     daemon.stop().await;
+}
+
+/// Every command path `pulse help` lists, recursively, without `help` itself.
+async fn command_paths(env: &Env) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut queue = vec![String::new()];
+    while let Some(path) = queue.pop() {
+        let mut args: Vec<&str> = path.split_whitespace().collect();
+        args.push("--help");
+        let (code, help, err) = env.run(&args).await;
+        assert_eq!(code, 0, "{args:?}: {err}");
+        let Some(list) = help.split("Commands:\n").nth(1) else { continue };
+        for line in list.lines().take_while(|l| !l.is_empty()) {
+            // `  name  Description`; wrapped descriptions are indented further.
+            let Some(name) = line.strip_prefix("  ").filter(|l| !l.starts_with(' ')) else {
+                continue;
+            };
+            let name = name.split_whitespace().next().unwrap();
+            if name != "help" {
+                let child = format!("{path} {name}").trim().to_owned();
+                found.push(child.clone());
+                queue.push(child);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Want {
+    Ok,
+    Err(&'static str),
+}
+
+/// The `--json` contract (docs/user/cli.md), for every command, with and without a daemon:
+/// stdout is exactly one JSON document, either the answer (exit 0) or `{"error": {kind,
+/// message, code?, data?}}` (exit 2 for `usage`, 3 for `not_running`, else 1) with nothing on
+/// stderr. A command missing from the table fails the test.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_command_answers_json_or_a_json_error() {
+    use Want::*;
+    const NO_ID: &str = "01KA0000000000000000000000";
+    // Not part of the contract: `start` is the daemon, `run` is the command it wraps, `mcp`
+    // keeps stdout for MCP.
+    const EXEMPT: &[&str] = &["start", "run", "mcp"];
+    let env = Env::new();
+    let project = env.mkdir("code/repo");
+    std::fs::write(project.join("pulse.toml"), "").unwrap();
+    let project = project.to_str().unwrap();
+    let rule = "name = \"r\"\non = \"ext.ci.*\"\n[run]\nagent = \"a\"\n";
+    env.write_config(
+        "[[agent]]\nname = \"a\"\nadapter = \"command\"\ncommand = [\"true\"]\nallow = [\"ext.*\"]\n\n[[rule]]\nname = \"r\"\non = \"ext.ci.*\"\nrun = { agent = \"a\" }\n",
+    );
+    #[rustfmt::skip]
+    let cases: &[(&[&str], &str, Want, Want)] = &[
+        // (arguments after --json, stdin, without a daemon, with one)
+        (&["status"], "", Err("not_running"), Ok),
+        (&["pause"], "", Err("not_running"), Ok),
+        (&["resume"], "", Err("not_running"), Ok),
+        (&["open", "--print"], "", Err("not_running"), Ok),
+        (&["open"], "", Err("not_running"), Ok),
+        (&["init"], "", Ok, Ok),
+        (&["init", "--list"], "", Ok, Ok),
+        (&["init", "--template", "nope"], "", Err("invalid_params"), Err("invalid_params")),
+        (&["tail", "--type", "a b"], "", Err("not_running"), Err("invalid_params")),
+        (&["events"], "", Err("not_running"), Ok),
+        (&["events", "show", NO_ID], "", Err("not_running"), Err("not_found")),
+        (&["replay", NO_ID], "", Err("not_running"), Err("not_found")),
+        (&["ingest", "-s", "ci"], "{\"type\":\"x\"}\n", Err("not_running"), Ok),
+        (&["test-rule", "r", "--event", NO_ID], "", Err("not_running"), Err("not_found")),
+        (&["rules", "list"], "", Err("not_running"), Ok),
+        (&["rules", "show", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["rules", "add", "--file", "-"], rule, Err("not_running"), Err("stale")),
+        (&["rules", "enable", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["rules", "disable", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["rules", "snooze", "nope", "1h"], "", Err("not_running"), Err("not_found")),
+        (&["rules", "snooze", "r", "soon"], "", Err("not_running"), Err("invalid_params")),
+        (&["rules", "unsnooze", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["rules", "archive", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["rules", "reopen", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["rules", "remove", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["rules", "history", "r"], "", Err("not_running"), Ok),
+        (&["runs", "list"], "", Err("not_running"), Ok),
+        (&["runs", "show", NO_ID], "", Err("not_running"), Err("not_found")),
+        (&["runs", "logs", NO_ID], "", Err("not_running"), Err("not_found")),
+        (&["runs", "approve", NO_ID], "", Err("not_running"), Err("not_found")),
+        (&["runs", "reject", NO_ID], "", Err("not_running"), Err("not_found")),
+        (&["runs", "cancel", NO_ID], "", Err("not_running"), Err("not_found")),
+        (&["runs", "rerun", NO_ID], "", Err("not_running"), Err("not_found")),
+        (&["runs", "show", "not-an-id"], "", Err("not_running"), Err("invalid_params")),
+        (&["agents"], "", Err("not_running"), Ok),
+        (&["agents", "list"], "", Err("not_running"), Ok),
+        (&["agents", "show", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["agents", "add", "--file", "-"], "not toml", Err("not_running"), Err("invalid_params")),
+        (&["agents", "remove", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["agents", "mcp-credentials", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["sources"], "", Err("not_running"), Ok),
+        (&["sources", "list"], "", Err("not_running"), Ok),
+        (&["sources", "add", "schedule", "bad"], "", Err("not_running"), Err("config_invalid")),
+        (&["sources", "remove", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["sources", "enable", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["sources", "disable", "nope"], "", Err("not_running"), Err("not_found")),
+        (&["project", "list"], "", Err("not_running"), Ok),
+        (&["project", "trust", project], "", Err("not_running"), Err("not_trusted")),
+        (&["project", "untrust", project], "", Err("not_running"), Err("not_found")),
+        (&["frobnicate"], "", Err("usage"), Err("usage")),
+        (&["runs", "show"], "", Err("usage"), Err("usage")),
+        (&["stop"], "", Ok, Ok),
+    ];
+
+    let paths = command_paths(&env).await;
+    let words = |args: &[&str]| -> String {
+        let mut path = String::new();
+        for a in args {
+            let longer = format!("{path} {a}").trim().to_owned();
+            if !paths.contains(&longer) {
+                break;
+            }
+            path = longer;
+        }
+        path
+    };
+    let covered: Vec<String> = cases.iter().map(|c| words(c.0)).collect();
+    let leaves = paths.iter().filter(|p| !paths.iter().any(|q| q.starts_with(&format!("{p} "))));
+    for path in leaves {
+        let exempt = EXEMPT.contains(&path.as_str());
+        assert!(
+            exempt || covered.contains(path),
+            "`pulse {path}` is not in the --json table; add what it answers with and without a daemon"
+        );
+    }
+
+    let check = |args: &[&str],
+                 want: Want,
+                 (code, out, err): (i32, String, String),
+                 daemon: &str| {
+        let doc: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| {
+            panic!(
+                "{args:?} {daemon}: stdout is not one JSON document ({e}):\n{out}\nstderr: {err}"
+            )
+        });
+        match want {
+            Ok => assert!(
+                code == 0 && doc.get("error").is_none(),
+                "{args:?} {daemon}: exit {code}, {doc}\nstderr: {err}"
+            ),
+            Err(kind) => {
+                let e = &doc["error"];
+                assert_eq!(e["kind"], kind, "{args:?} {daemon}: {doc}");
+                assert!(e["message"].as_str().is_some_and(|m| !m.is_empty()), "{args:?}: {doc}");
+                let exit = match kind {
+                    "usage" => 2,
+                    "not_running" => 3,
+                    _ => 1,
+                };
+                assert_eq!(code, exit, "{args:?} {daemon}: {doc}");
+                assert_eq!(err, "", "{args:?} {daemon}: a failure is reported on stdout only");
+            }
+        }
+        doc
+    };
+
+    for &(args, stdin, without, _) in cases {
+        let mut full = vec!["--json"];
+        full.extend_from_slice(args);
+        check(args, without, env.run_stdin(&full, stdin).await, "without a daemon");
+    }
+    let daemon = env.start().await;
+    for &(args, stdin, _, with) in cases {
+        let mut full = vec!["--json"];
+        full.extend_from_slice(args);
+        let doc = check(args, with, env.run_stdin(&full, stdin).await, "with a daemon");
+        // What a script needs to act on the refusal travels with it.
+        if let Err("stale") = with {
+            assert_eq!(doc["error"]["code"], -32007, "{doc}");
+            assert!(doc["error"]["data"]["current"].is_string(), "{doc}");
+        }
+        if let Err("config_invalid") = with {
+            let first = &doc["error"]["data"]["errors"][0];
+            assert!(first["file"].is_string() && first["line"].is_u64(), "{doc}");
+        }
+        if let Err("not_trusted") = with {
+            assert!(doc["error"]["data"]["hash"].is_string(), "{doc}");
+        }
+        if let Err("not_found") = with {
+            assert_eq!(doc["error"]["code"], -32002, "{doc}");
+        }
+    }
+    // The daemon is gone after `stop` (the last case).
+    let (code, _, _) = env.run(&["status"]).await;
+    assert_eq!(code, 3);
+    drop(daemon);
 }

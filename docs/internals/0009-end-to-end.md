@@ -23,7 +23,7 @@ exercised as users run them.
 | `storm` | 10,000 files unzipped (events, runs, live batches; `system.status` calls are answered while the storm is still being processed, checked by the order of observations; latency is printed, not asserted, because it measures the machine); a real `git clone` and `git checkout` in a folder with an fs and a git source |
 | `sources` | A git commit and branch switch, a schedule and a calendar event fire rules |
 | `hostile` | Instruction-like, option-like, control-character, non-UTF-8 and 255-byte names; a 1 MB commit message; a symlink out of scope; an external payload claiming a built-in type |
-| `cli` | Exit codes without a daemon, `pulse run` exit codes and signals, `init`, adding and removing definitions, the `--json` shapes |
+| `cli` | Exit codes without a daemon, `pulse run` exit codes and signals, `init`, adding and removing definitions, the `--json` shapes, the `--json` contract for every command with and without a daemon (a table that fails when `pulse help` lists a command it lacks), `--json` streams with hostile content |
 
 **How they wait.** `support::Watch` subscribes to every event and run on one connection and
 accumulates what the daemon pushes; `Watch::until(what, predicate)` re-checks the predicate after

@@ -32,7 +32,7 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
                 .iter()
                 .map(|s| {
                     RunStatus::parse(s)
-                        .ok_or_else(|| Failure::Message(format!("unknown run status {s:?}")))
+                        .ok_or_else(|| Failure::invalid(format!("unknown run status {s:?}")))
                 })
                 .collect::<Result<_, _>>()?;
             let page = client
@@ -92,7 +92,7 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
             if follow {
                 let mut notes = client
                     .notifications()
-                    .ok_or_else(|| Failure::Message("notifications taken".into()))?;
+                    .ok_or_else(|| Failure::internal("notifications taken"))?;
                 client
                     .call::<method::RunsSubscribeOutput>(RunOutputSubscribeParams {
                         id,
@@ -114,7 +114,7 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
                         }
                     }
                 }
-                return Err(Failure::Message("the daemon closed the connection".into()));
+                return Err(Failure::connection("the daemon closed the connection"));
             }
             let mut after = None;
             loop {

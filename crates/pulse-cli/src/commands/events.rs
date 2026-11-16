@@ -18,7 +18,7 @@ fn filter(f: FilterArgs) -> Result<EventFilter, Failure> {
     let types = f
         .types
         .iter()
-        .map(|t| t.parse().map_err(|e| Failure::Message(format!("--type {t:?}: {e}"))))
+        .map(|t| t.parse().map_err(|e| Failure::invalid(format!("--type {t:?}: {e}"))))
         .collect::<Result<_, _>>()?;
     let path = match f.path {
         Some(p) => {
@@ -45,7 +45,7 @@ fn own_run() -> Option<RunId> {
 pub async fn tail(ctx: &Ctx, args: TailArgs) -> Res {
     let client = ctx.client().await?;
     let mut notes =
-        client.notifications().ok_or_else(|| Failure::Message("notifications taken".into()))?;
+        client.notifications().ok_or_else(|| Failure::internal("notifications taken"))?;
     client
         .call::<method::EventsSubscribe>(EventsSubscribeParams { filter: filter(args.filter)? })
         .await?;
@@ -84,8 +84,7 @@ pub async fn tail(ctx: &Ctx, args: TailArgs) -> Res {
             _ => {}
         }
     }
-    note("The daemon closed the connection.");
-    Ok(ExitCode::SUCCESS)
+    Err(Failure::connection("the daemon closed the connection"))
 }
 
 pub async fn events(ctx: &Ctx, args: EventsArgs) -> Res {
@@ -179,7 +178,7 @@ pub async fn ingest(ctx: &Ctx, args: IngestArgs) -> Res {
                 continue;
             }
             let mut event: IngestEvent = serde_json::from_str(&line)
-                .map_err(|e| Failure::Message(format!("stdin line {number}: {e}")))?;
+                .map_err(|e| Failure::invalid(format!("stdin line {number}: {e}")))?;
             if event.causation_run.is_none() {
                 event.causation_run = cause;
             }

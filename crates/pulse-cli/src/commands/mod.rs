@@ -50,9 +50,9 @@ pub fn read_definition<T: serde::de::DeserializeOwned>(
         std::io::read_to_string(std::io::stdin())?
     } else {
         std::fs::read_to_string(file)
-            .map_err(|e| Failure::Message(format!("cannot read {}: {e}", file.display())))?
+            .map_err(|e| Failure::invalid(format!("cannot read {}: {e}", file.display())))?
     };
-    toml::from_str(&text).map_err(|e| Failure::Message(format!("{}: {e}", file.display())))
+    toml::from_str(&text).map_err(|e| Failure::invalid(format!("{}: {e}", file.display())))
 }
 
 /// What `add` expects: nothing of that name, unless the user asked to replace it.
@@ -67,7 +67,8 @@ pub fn exists_hint(e: pulse_daemon::client::ClientError, what: &str) -> Failure 
         pulse_daemon::client::ClientError::Rpc(err)
             if err.kind() == Some(pulse_contracts::rpc::ErrorCode::Stale) =>
         {
-            Failure::Message(format!("{what} already exists; pass --replace to replace it"))
+            Failure::from(err)
+                .with_message(format!("{what} already exists; pass --replace to replace it"))
         }
         other => other.into(),
     }
@@ -101,7 +102,7 @@ pub fn time_arg(s: &str, ago: bool) -> Result<Timestamp, Failure> {
         return Ok(t);
     }
     let d = Duration::from_str(s).map_err(|_| {
-        Failure::Message(format!(
+        Failure::invalid(format!(
             "expected a time like 2026-11-16T09:00:00Z or a duration like 2h, got {s:?}"
         ))
     })?;
@@ -112,5 +113,5 @@ pub fn parse_id<T: FromStr>(s: &str) -> Result<T, Failure>
 where
     T::Err: std::fmt::Display,
 {
-    s.parse().map_err(|e: T::Err| Failure::Message(e.to_string()))
+    s.parse().map_err(|e: T::Err| Failure::invalid(e.to_string()))
 }

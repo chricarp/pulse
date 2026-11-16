@@ -148,10 +148,10 @@ pub async fn test_rule(ctx: &Ctx, args: TestRuleArgs) -> Res {
         (None, Some(file)) => {
             let text = std::fs::read_to_string(file)?;
             let rule: RuleConfig = toml::from_str(&text)
-                .map_err(|e| Failure::Message(format!("{}: {e}", file.display())))?;
+                .map_err(|e| Failure::invalid(format!("{}: {e}", file.display())))?;
             RuleRef::Draft { rule: Box::new(rule), project: args.project.clone() }
         }
-        _ => return Err(Failure::Message("give a rule name or --file, not both".into())),
+        _ => return Err(Failure::usage("give a rule name or --file, not both")),
     };
     let client = ctx.client().await?;
     let res = client

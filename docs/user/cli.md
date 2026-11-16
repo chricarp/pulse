@@ -9,16 +9,70 @@ Global options, accepted by every command:
 | Option | Meaning |
 |---|---|
 | `--home <DIR>` | The Pulse home. Default: `$PULSE_HOME`, else `~/.pulse`. |
-| `--json` | Print JSON instead of text (for scripts). |
+| `--json` | Print JSON instead of text, for scripts: see [JSON output](#json-output). |
 | `-h`, `--help` / `-V`, `--version` | |
 
 Exit codes: `0` success, `1` error, `2` usage error, `3` the daemon is not running. `pulse run`
 exits with the wrapped command's code instead (see below).
 
 Text output escapes control and invisible characters from events and run output (`\u{1b}`), so a
-hostile file name cannot recolour, retitle or write to your terminal. `--json` output is JSON as
-written by the daemon's types, never escaped for the terminal: one document per command, and one
-object per line for the streams (`tail`, `runs logs`).
+hostile file name cannot recolour, retitle or write to your terminal.
+
+## JSON output
+
+With `--json`, every command except `pulse run` and `pulse mcp` keeps this contract, whether it
+succeeds or fails, with a daemon or without:
+
+- **stdout carries only JSON**, as the daemon's types serialize (never escaped for a terminal).
+  A command that answers once prints one document. The streams print one compact object per
+  line: `tail` prints each notification (`events.batch`, `runs.changed`, `state.changed`) and
+  `runs logs` each output chunk.
+- **On success** the exit code is `0` and stdout is the answer. Commands that only do something
+  answer with what they did: `stop` with `{"was_running": true|false}`, `init` with
+  `{"path", "created", "added"}` (`--list` with `{"templates": […]}`), `start` (with or without
+  `--detach`) with `{"pid", "port"}` once the daemon listens, `remove` with `{"removed": NAME}`.
+- **On failure** the exit code is `1`, `2` (usage) or `3` (no daemon), stdout is one error object,
+  and stderr is empty. For a stream, the error object is the last line.
+- **stderr** is for people in both modes (`tail` says it is following, `start` prints config
+  problems, `events` the next cursor in text mode). A program never needs it.
+
+The error object:
+
+```json
+{
+  "error": {
+    "kind": "stale",
+    "message": "a rule named \"r\" already exists; pass --replace to replace it",
+    "code": -32007,
+    "data": { "current": "9f2c…" }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `kind` | What went wrong, as a word (below). |
+| `message` | For people. |
+| `code` | The daemon's JSON-RPC error code, when the daemon refused the request. |
+| `data` | What the daemon attached, or what the CLI knows more; absent when there is nothing. |
+
+| `kind` | Exit | When | `data` |
+|---|---|---|---|
+| `usage` | 2 | The command line is wrong (unknown command, missing argument). | |
+| `not_running` | 3 | No daemon for this home. | |
+| `invalid_params` | 1 | An argument or input is invalid, whether the CLI or the daemon found it. | |
+| `not_found` | 1 | No such rule, agent, source, project, event or run. | |
+| `stale` | 1 | What the request was based on is no longer so: `add` without `--replace` when the name exists, `project trust --hash` when the file changed. | `{"current": REVISION}` |
+| `config_invalid` | 1 | The change would make a config file invalid (or `init --template` would). | `{"errors": [{"file", "line", "column", "item", "field", "message"}]}` |
+| `conflict` | 1 | The request conflicts with state: an illegal run transition, an agent still used by a rule, a daemon already running for this home (`start`). | |
+| `not_trusted` | 1 | `project trust` without `--hash`: a review, which trusts nothing. | the review: what it would load, what changed, its `hash` |
+| `not_pulse` | 1 | Something else listens on Pulse's port; the token was not sent to it. | |
+| `connection` | 1 | The connection to the daemon failed or closed (a `tail` whose daemon stopped). | |
+| `io` | 1 | A local file or directory could not be read or written. | |
+| `unavailable`, `internal`, `unauthorized`, `not_implemented` | 1 | The daemon's other error codes. | as sent |
+
+`pulse run` is the wrapped command: its output and exit code are the command's, and `--json`
+changes nothing. `pulse mcp` keeps stdout for MCP messages; its failures are text on stderr.
 
 ## The daemon
 
