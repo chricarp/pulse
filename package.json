@@ -7,6 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "web": "pnpm --dir apps/web"
+    "build": "./scripts/build.sh",
+    "web": "pnpm --dir apps/web",
+    "desktop": "pnpm --dir apps/desktop"
   }
 }
