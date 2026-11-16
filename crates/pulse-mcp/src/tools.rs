@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use crate::present::render;
-use crate::subscriptions::{SubscribeError, head, read_after};
+use crate::subscriptions::{LeaseError, SubscribeError, head, read_after};
 use crate::{AgentIdentity, Backend, BackendError, Shared};
 
 const LIST_EVENT_TYPES: &str = "List the kinds of events Pulse can deliver to you: for each type, what it means, what its `subject` holds, which fields carry file paths, and an example `data` payload. Only types your permissions cover are listed. Call this first to learn the type names to use with `query_events` and `subscribe`. Takes no arguments.";
@@ -333,11 +333,16 @@ async fn wait_for_events<B: Backend>(
         .timeout_seconds
         .map_or(limits.default_wait, std::time::Duration::from_secs)
         .min(limits.max_wait);
-    let mut lease = shared.subscriptions.lease(agent, id).map_err(|e| {
-        ToolError(format!(
+    let mut lease = shared.subscriptions.lease(agent, id).map_err(|e| match e {
+        LeaseError::Unknown(e) => ToolError(format!(
             "{e} {}. Subscribe again with the same filter and pass your last cursor to wait_for_events; nothing since that cursor is lost.",
             a.subscription
-        ))
+        )),
+        busy @ (LeaseError::SubscriptionBusy { .. } | LeaseError::AgentBusy { .. }) => {
+            ToolError(format!(
+                "{busy}. Each ends when an event arrives, at its timeout, or when its client disconnects. Wait for one to return before starting another; nothing is lost meanwhile, the cursor keeps your place."
+            ))
+        }
     })?;
     let started = Instant::now();
     let deadline = started + timeout;

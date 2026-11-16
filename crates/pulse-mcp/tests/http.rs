@@ -7,6 +7,7 @@ mod support;
 use axum::body::Body;
 use http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
+use pulse_mcp::{Limits, McpConfig};
 use serde_json::{Value, json};
 use support::*;
 use tower::ServiceExt;
@@ -142,4 +143,176 @@ async fn each_request_acts_as_its_own_token() {
     assert!(as_alice.contains("unknown or expired"), "{as_alice}");
     let as_bob = tool_over_http(&router, BOB_TOKEN, "wait_for_events", args).await;
     assert_eq!(split(&as_bob).0["timed_out"], true);
+}
+
+/// A request as a client on protocol 2025-06-18 sends it: sessions, no per-request metadata.
+fn legacy(
+    token: &str,
+    method: http::Method,
+    session: Option<&str>,
+    body: Option<&Value>,
+) -> Request<Body> {
+    let mut b = Request::builder()
+        .method(method)
+        .uri("/")
+        .header(header::HOST, "127.0.0.1:7477")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream");
+    if let Some(s) = session {
+        b = b.header("mcp-session-id", s).header("mcp-protocol-version", "2025-06-18");
+    }
+    b.body(body.map_or_else(Body::empty, |v| Body::from(v.to_string()))).unwrap()
+}
+
+/// `initialize` and `notifications/initialized`; returns the session id.
+async fn open_session(router: &axum::Router, token: &str) -> String {
+    let init = json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": { "name": "test", "version": "0" },
+    }});
+    let r =
+        router.clone().oneshot(legacy(token, http::Method::POST, None, Some(&init))).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let id = r.headers()["mcp-session-id"].to_str().unwrap().to_owned();
+    messages(r).await;
+    let done = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+    let r = router
+        .clone()
+        .oneshot(legacy(token, http::Method::POST, Some(&id), Some(&done)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::ACCEPTED);
+    id
+}
+
+async fn list_tools_in(router: &axum::Router, token: &str, session: &str) -> StatusCode {
+    let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+    let r = router
+        .clone()
+        .oneshot(legacy(token, http::Method::POST, Some(session), Some(&list)))
+        .await
+        .unwrap();
+    let status = r.status();
+    drop(r.into_body().collect().await);
+    status
+}
+
+#[tokio::test]
+async fn sessions_are_bounded_per_agent_and_the_least_recently_used_idle_one_goes() {
+    let fake = Fake::new();
+    let config = McpConfig {
+        limits: Limits { sessions_per_agent: 2, ..Limits::default() },
+        ..fake.config()
+    };
+    let router = pulse_mcp::router(fake.clone(), config);
+    let first = open_session(&router, ALICE_TOKEN).await;
+    let second = open_session(&router, ALICE_TOKEN).await;
+    let bobs = open_session(&router, BOB_TOKEN).await;
+    let third = open_session(&router, ALICE_TOKEN).await;
+    // The first was the least recently used: closed, and a client that still holds it is told
+    // to start over (404 is the spec's "session terminated").
+    assert_eq!(list_tools_in(&router, ALICE_TOKEN, &first).await, StatusCode::NOT_FOUND);
+    for (token, s) in [(ALICE_TOKEN, &second), (ALICE_TOKEN, &third), (BOB_TOKEN, &bobs)] {
+        assert_eq!(list_tools_in(&router, token, s).await, StatusCode::OK);
+    }
+
+    // A session with an open stream is not idle: `second` is now the least recently used, but
+    // its client is listening, so `third` goes instead.
+    let listening = router
+        .clone()
+        .oneshot(legacy(ALICE_TOKEN, http::Method::GET, Some(&second), None))
+        .await
+        .unwrap();
+    assert_eq!(listening.status(), StatusCode::OK);
+    assert_eq!(list_tools_in(&router, ALICE_TOKEN, &third).await, StatusCode::OK);
+    let fourth = open_session(&router, ALICE_TOKEN).await;
+    assert_eq!(list_tools_in(&router, ALICE_TOKEN, &third).await, StatusCode::NOT_FOUND);
+    for s in [&second, &fourth] {
+        assert_eq!(list_tools_in(&router, ALICE_TOKEN, s).await, StatusCode::OK);
+    }
+    assert_eq!(list_tools_in(&router, BOB_TOKEN, &bobs).await, StatusCode::OK);
+    drop(listening);
+}
+
+/// A `wait_for_events` call that stays open; its first progress notification opens the
+/// response.
+fn long_wait(token: &str, id: i64, subscription: &Value, cursor: &Value) -> Request<Body> {
+    let mut body = rpc(
+        id,
+        "tools/call",
+        json!({ "name": "wait_for_events", "arguments": {
+            "subscription": subscription, "cursor": cursor, "timeout_seconds": 600,
+        }}),
+    );
+    body["params"]["_meta"]["progressToken"] = json!(id);
+    request(Some(token), &body).body(Body::from(body.to_string())).unwrap()
+}
+
+async fn subscribe_over_http(router: &axum::Router, token: &str) -> (Value, Value) {
+    let v: Value =
+        serde_json::from_str(&tool_over_http(router, token, "subscribe", json!({})).await).unwrap();
+    (v["subscription"].clone(), v["cursor"].clone())
+}
+
+#[tokio::test]
+async fn requests_in_flight_are_bounded_per_agent_and_in_total() {
+    let fake = Fake::new();
+    let config = McpConfig {
+        limits: Limits { requests_per_agent: 2, requests_total: 3, ..Limits::default() },
+        ..fake.config()
+    };
+    let router = pulse_mcp::router(fake.clone(), config);
+    let (alice_sub, alice_cursor) = subscribe_over_http(&router, ALICE_TOKEN).await;
+    let (bob_sub, bob_cursor) = subscribe_over_http(&router, BOB_TOKEN).await;
+    let mut held = Vec::new();
+    for id in [1, 2] {
+        let r = router.clone().oneshot(long_wait(ALICE_TOKEN, id, &alice_sub, &alice_cursor)).await;
+        let r = r.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        held.push(r);
+    }
+    let query = rpc(3, "tools/call", json!({ "name": "query_events", "arguments": {} }));
+    let send_query = |token| {
+        router
+            .clone()
+            .oneshot(request(Some(token), &query).body(Body::from(query.to_string())).unwrap())
+    };
+    let reads = *fake.queries.borrow();
+    let refused = send_query(ALICE_TOKEN).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(refused.headers()[header::CONNECTION], "close");
+    assert!(refused.headers().contains_key(header::RETRY_AFTER));
+    let error = messages(refused).await.remove(0);
+    assert_eq!(error["error"]["code"], -32000, "{error}");
+    assert!(error["error"]["message"].as_str().unwrap().contains("requests in flight"), "{error}");
+    assert_eq!(*fake.queries.borrow(), reads, "refused before any work");
+
+    // Another agent is not affected by alice's share, until the total is reached.
+    let r = router.clone().oneshot(long_wait(BOB_TOKEN, 4, &bob_sub, &bob_cursor)).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    held.push(r);
+    let refused = send_query(BOB_TOKEN).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // A request ends when its response is dropped (the client disconnected).
+    drop(held.remove(0));
+    assert_eq!(send_query(ALICE_TOKEN).await.unwrap().status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn oversized_requests_are_refused() {
+    let fake = Fake::new();
+    let router = pulse_mcp::router(fake.clone(), fake.config());
+    let body = rpc(
+        1,
+        "tools/call",
+        json!({ "name": "query_events", "arguments": { "text": "x".repeat(100 * 1024) } }),
+    );
+    let r = router
+        .oneshot(request(Some(ALICE_TOKEN), &body).body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(*fake.queries.borrow(), 0);
 }
