@@ -21,11 +21,13 @@
 //! [`process`] and [`ingest`].
 
 pub mod calendar;
+pub mod clock;
 pub mod fs;
 pub mod git;
 pub mod ingest;
 pub mod process;
 pub mod schedule;
+mod state;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -124,6 +126,14 @@ impl EventSink {
         Ok(())
     }
 
+    /// Waits for room in the channel without giving up an event. Use this in a `select!` next to
+    /// other work: unlike `send`, dropping the future loses nothing, so a source can keep
+    /// coalescing while the engine is behind and send once there is room.
+    pub async fn reserve(&self) -> Result<SinkPermit<'_>, SourceError> {
+        let permit = self.tx.reserve().await.map_err(|_| SourceError::SinkClosed)?;
+        Ok(SinkPermit { permit, health: &self.health })
+    }
+
     /// Sends without waiting. `Err` gives the event back when the channel is full, so the
     /// caller can keep it in its (bounded) coalescing state.
     pub fn try_send(&self, event: NewEvent) -> Result<(), TrySendError> {
@@ -136,6 +146,21 @@ impl EventSink {
             Err(mpsc::error::TrySendError::Full(e)) => Err(TrySendError::Full(Box::new(e))),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(TrySendError::Closed),
         }
+    }
+}
+
+/// Room for one event, from [`EventSink::reserve`].
+#[derive(Debug)]
+pub struct SinkPermit<'a> {
+    permit: mpsc::Permit<'a, NewEvent>,
+    health: &'a HealthReporter,
+}
+
+impl SinkPermit<'_> {
+    pub fn send(self, event: NewEvent) {
+        let at = event.time;
+        self.permit.send(event);
+        self.health.record_event(at);
     }
 }
 
