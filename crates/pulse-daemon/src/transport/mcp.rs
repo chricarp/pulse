@@ -8,6 +8,11 @@
 //! sees it, and tools act only as the identity it stored. The daemon's own guard checks `Host`
 //! and refuses any `Origin` on `/mcp` (MCP clients are not browsers), and leaves the token to
 //! that layer, so the daemon token, a forged token or a removed agent's token is a 401 there.
+//!
+//! **What one agent can hold** is bounded in `pulse-mcp` (`pulse_mcp::Limits`): requests in
+//! flight per agent and in total, sessions, waits, streams, subscriptions. The total keeps
+//! `/mcp` to a few hundred sockets; [`raise_open_file_limit`] gives the process room above
+//! that, so `/ws` (the CLI and the UI) stays reachable while one agent holds all it may.
 
 use std::sync::Arc;
 
@@ -63,9 +68,36 @@ impl Backend for McpBackend {
     }
 }
 
+/// The soft limit on open descriptors the daemon asks for at start, if the hard limit allows.
+/// The usual default soft limit is 1024 (Linux) or 256 (macOS), which `/mcp`'s total request
+/// budget (256) plus the daemon's own descriptors (the store, watchers, run output pipes) and
+/// idle keep-alive connections can approach. 8192 leaves room for all of those many times
+/// over, and is below macOS's `OPEN_MAX` (10240), above which `setrlimit` fails there.
+const OPEN_FILES_WANTED: u64 = 8192;
+
+/// The soft limit to set, or `None` to leave it: raised to [`OPEN_FILES_WANTED`], never above
+/// the hard limit, never lowered. `None` in an `Rlimit` is "unlimited".
+fn raised_soft_limit(soft: Option<u64>, hard: Option<u64>) -> Option<u64> {
+    let want = hard.map_or(OPEN_FILES_WANTED, |h| h.min(OPEN_FILES_WANTED));
+    soft.filter(|&s| s < want).map(|_| want)
+}
+
+/// Raises this process's soft descriptor limit (see [`OPEN_FILES_WANTED`]). Called once, when
+/// `/mcp` is built at start. Failing is not fatal: the per-agent and total budgets still hold.
+fn raise_open_file_limit() {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let limit = getrlimit(Resource::Nofile);
+    let Some(soft) = raised_soft_limit(limit.current, limit.maximum) else { return };
+    match setrlimit(Resource::Nofile, Rlimit { current: Some(soft), maximum: limit.maximum }) {
+        Ok(()) => tracing::debug!("raised the open file limit to {soft}"),
+        Err(e) => tracing::warn!("cannot raise the open file limit to {soft}: {e}"),
+    }
+}
+
 /// The MCP router for `/mcp`, built once: it owns the subscription registry. `allowed_hosts`
 /// is the list the daemon's guard accepts.
 pub(crate) fn router(services: Services, allowed_hosts: Vec<String>) -> Router {
+    raise_open_file_limit();
     let shared = &services.shared;
     let clock = shared.clock;
     let config = McpConfig {
@@ -77,4 +109,25 @@ pub(crate) fn router(services: Services, allowed_hosts: Vec<String>) -> Router {
         ..McpConfig::default()
     };
     pulse_mcp::router(Arc::new(McpBackend { services }), config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_soft_descriptor_limit_is_raised_within_the_hard_limit() {
+        let cases = [
+            // (soft, hard) -> new soft
+            ((Some(1024), Some(524_288)), Some(OPEN_FILES_WANTED)),
+            ((Some(256), None), Some(OPEN_FILES_WANTED)),
+            ((Some(1024), Some(4096)), Some(4096)),
+            ((Some(512), Some(512)), None),
+            ((Some(65_536), Some(1_048_576)), None),
+            ((None, None), None),
+        ];
+        for ((soft, hard), want) in cases {
+            assert_eq!(raised_soft_limit(soft, hard), want, "{soft:?} {hard:?}");
+        }
+    }
 }
