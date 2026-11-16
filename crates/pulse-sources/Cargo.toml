@@ -20,7 +20,7 @@ tokio-util.workspace = true
 
 chrono = { version = "0.4.39", default-features = false, features = ["clock", "std"] }
 chrono-tz.workspace = true
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 pty-process = { version = "0.5", features = ["async"] }
 rustix = { version = "1", features = ["fs", "process", "pty", "termios", "time", "stdio"] }
