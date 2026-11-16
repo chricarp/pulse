@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pulse_agents::{RunEnd, SuperviseError, SuperviseOptions, SupervisorEvent, WriteFact};
 use pulse_contracts::run::InvocationSummary;
 use pulse_contracts::{OutputKind, Run, RunId, RunOutput, RunStatus, Timestamp};
-use pulse_core::path::{rebase, resolve_reported};
+use pulse_core::path::{is_clean_absolute, rebase, resolve_reported};
 use pulse_core::{RecentRun, RunWrites};
 use pulse_store::{Effect, OutboxItem, RunTransition, StoreError};
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -334,6 +334,19 @@ fn spellings(raw: &str, cwd: &str, cwd_real: Option<&str>) -> Vec<String> {
     out
 }
 
+/// A working directory as configured and canonical, for inference (as `spellings` gives a
+/// reported path's).
+pub(crate) fn cwd_spellings(cwd: &str, cwd_real: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = [Some(cwd), cwd_real]
+        .into_iter()
+        .flatten()
+        .filter(|c| is_clean_absolute(c))
+        .map(str::to_owned)
+        .collect();
+    out.dedup();
+    out
+}
+
 /// `path` with its longest existing prefix canonicalized (the file itself usually does not
 /// exist yet when its write is reported).
 fn canonical(path: &Path) -> Option<String> {
@@ -487,6 +500,7 @@ impl RunTask {
         invocation: &InvocationSummary,
         at: Timestamp,
         writes: RunWrites,
+        cwds: Vec<String>,
     ) -> bool {
         let t = RunTransition::Start { pid: None, invocation: invocation.clone() };
         let started = self.transition_at(t, at).await;
@@ -496,7 +510,7 @@ impl RunTask {
                 let recent = RecentRun {
                     id: run.id,
                     rule: run.rule.clone(),
-                    cwd: Some(invocation.cwd.clone()),
+                    cwds,
                     started_at: run.started_at.unwrap_or(run.created_at),
                     ended_at: None,
                     chain_depth: run.chain_depth,
@@ -531,7 +545,8 @@ impl RunTask {
         // The run starts before its process does: inferred causation compares event times with
         // this, and an agent can write a file before the worker gets to record the start.
         let spawned_at = self.shared.clock.now();
-        if !self.start(&summary, spawned_at, writes.state.clone()).await {
+        let cwds = cwd_spellings(&writes.cwd, writes.cwd_real.as_deref());
+        if !self.start(&summary, spawned_at, writes.state.clone(), cwds).await {
             return;
         }
         let options = SuperviseOptions {

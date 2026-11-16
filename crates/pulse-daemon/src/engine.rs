@@ -216,6 +216,14 @@ impl Engine {
         let runs =
             self.shared.store.read(move |q| q.query().runs_ended_since(since, limit)).await?;
         for run in runs {
+            let cwd = run.invocation.map(|i| i.cwd).filter(|c| !c.is_empty());
+            let cwds = match cwd {
+                Some(cwd) => {
+                    let real = tokio::fs::canonicalize(&cwd).await.ok();
+                    crate::worker::cwd_spellings(&cwd, real.as_ref().and_then(|r| r.to_str()))
+                }
+                None => Vec::new(),
+            };
             let started_at = run.started_at.unwrap_or(run.created_at);
             let ended_at = if interrupted.contains(&run.id) {
                 run.ended_at
@@ -226,7 +234,7 @@ impl Engine {
             self.recent.push(RecentRun {
                 id: run.id,
                 rule: run.rule,
-                cwd: run.invocation.map(|i| i.cwd).filter(|c| !c.is_empty()),
+                cwds,
                 started_at,
                 ended_at,
                 chain_depth: run.chain_depth,
@@ -410,7 +418,8 @@ impl Engine {
         Some(RecentRun {
             id: run.id,
             rule: run.rule,
-            cwd: run.invocation.map(|i| i.cwd),
+            // Only used as an exact cause: no inference.
+            cwds: Vec::new(),
             started_at: run.started_at.unwrap_or(run.created_at),
             ended_at: run.ended_at,
             chain_depth: run.chain_depth,

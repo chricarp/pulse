@@ -62,8 +62,9 @@ Where each can be wrong:
 - **A report names a path, not a moment.** Your own change to exactly the file a run wrote,
   within the window, is attributed to the run.
 - **Hooks and symlinks.** A file written silently by a Claude Code hook is taken for yours. So
-  is an agent's write when the watched folder is reached through a symlink that differs from the
-  agent's `cwd` spelling.
+  is an agent's write when the source watches the folder through a symlink and the agent's
+  `cwd` names it another way (its real path, say). The other way round (the source names the
+  real folder, the agent's `cwd` is a symlink to it) is recognised.
 - After a daemon crash, a run that was running counts as active until its timeout would have
   ended it (the agent survives in its own process group), so its folder's events are attributed
   to it, by inference, for that long.
