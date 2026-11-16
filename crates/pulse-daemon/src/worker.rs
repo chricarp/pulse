@@ -307,7 +307,7 @@ impl Writes {
                         let raw: String = raw.chars().take(200).collect();
                         format!("a write to {raw:?}, a path Pulse cannot resolve")
                     } else {
-                        format!("more than {} files written", RunWrites::MAX_PATHS)
+                        "more files written than Pulse remembers per run".to_owned()
                     };
                     (self.state.record_write(&spellings), why)
                 }
