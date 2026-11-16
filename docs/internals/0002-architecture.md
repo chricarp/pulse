@@ -229,7 +229,8 @@ The run environment contract (`PULSE_RUN_ID`, `PULSE_RULE`, `PULSE_AGENT`, `PULS
 inotify and FSEvents do not say which process wrote a file, so causation is partly inference. We are explicit about which part:
 
 - **Exact:** every run gets `PULSE_RUN_ID` in its environment. `pulse run` and `pulse ingest` read it, so events they report carry exact causation.
-- **Inferred:** while a run is active, and for a short grace period after, filesystem and git events inside that run's working directory are attributed to it and marked `inferred`.
+- **Inferred:** while a run is active, and for a short grace period after (`causation_grace`, 30 s), filesystem and git events inside that run's working directory are attributed to it and marked `inferred`. A run counts as active from just before its process is spawned, so a write in its first milliseconds is covered. Inference is wrong in both directions: it misses an agent that writes outside its `cwd`, and it claims **anything** that appears in the `cwd` during that window, the user's own files included. What that looks like in practice is in [0009](0009-end-to-end.md).
+- **Across restarts:** dedupe keys and recent runs are reloaded from the log at startup, so a keyed external event retried after a restart is still a duplicate, and a run orphaned by a crash still has its folder's events attributed to it until its timeout.
 - **Policy:** a rule never fires on an event caused by its own run (`LoopSelfTrigger`). Other rules may, up to `max_chain_depth` (default 3).
 - **Backstops that do not depend on attribution:** per-rule cooldown and rate limit, and a **circuit breaker** that snoozes a rule that fires too often in a short window (`CircuitOpen`).
 - Blocked deliveries are recorded and shown in the UI. A loop that was stopped should be visible, not silent.
