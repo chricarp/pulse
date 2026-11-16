@@ -7,7 +7,7 @@ export interface Binding {
   /** `mod+k`, `shift+p`, `g f`, `/`, `?`, `j`, `escape`, `mod+enter`. */
   keys: string;
   label: string;
-  group: "Navigation" | "Actions" | "Lists" | "Feed" | "Runs" | "Rules" | "Editor";
+  group: "Navigation" | "Actions" | "Lists" | "Feed" | "Runs" | "Rules" | "Sources" | "Editor";
   run: (e: KeyboardEvent) => void;
   /** Also fire while focus is in a text field. Implied for `mod+` combinations. */
   inInputs?: boolean;

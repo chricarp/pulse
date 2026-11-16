@@ -109,7 +109,7 @@ fn show(events: &[BuiltinEvent]) -> Vec<String> {
             }
             BuiltinEvent::GitMergeConflicted(d) => format!("conflict {:?}", d.files),
             BuiltinEvent::GitPushCompleted(d) => {
-                format!("push {}/{} {}", d.remote, d.branch, &d.sha[..7])
+                format!("push {} {} {}", d.remote.as_deref().unwrap_or("?"), d.branch, &d.sha[..7])
             }
             other => format!("{other:?}"),
         })
@@ -258,7 +258,7 @@ fn pushes_to_a_local_bare_remote() {
     let mut t = g.tracker("r");
     g.ok("r", &["push", "-q", "origin", "main"]);
     let sha = g.sha("r", "HEAD");
-    assert_eq!(show(&t.scan()), vec![format!("push origin/main {}", &sha[..7])]);
+    assert_eq!(show(&t.scan()), vec![format!("push origin main {}", &sha[..7])]);
     // Fetching is not pushing.
     g.ok("r", &["fetch", "-q", "origin"]);
     assert_eq!(show(&t.scan()), Vec::<String>::new());
@@ -266,10 +266,31 @@ fn pushes_to_a_local_bare_remote() {
     g.ok("r", &["commit", "-q", "--allow-empty", "-m", "x"]);
     g.ok("r", &["push", "-q", "origin", "feature/x"]);
     let evs = show(&t.scan());
-    assert_eq!(evs[2], format!("push origin/feature/x {}", &g.sha("r", "HEAD")[..7]), "{evs:?}");
+    assert_eq!(evs[2], format!("push origin feature/x {}", &g.sha("r", "HEAD")[..7]), "{evs:?}");
     // Deleting the remote branch is not a completed push of a commit.
     g.ok("r", &["push", "-q", "origin", "--delete", "feature/x"]);
     assert_eq!(show(&t.scan()), Vec::<String>::new());
+
+    // Remote names may contain a slash. The ref belongs to the longest configured remote that
+    // prefixes it: `team/fork/main` is branch `main` of `team/fork`, not `fork/main` of `team`.
+    g.ok("", &["init", "-q", "--bare", "fork.git"]);
+    g.ok("r", &["remote", "add", "team", "../remote.git"]);
+    g.ok("r", &["remote", "add", "team/fork", "../fork.git"]);
+    g.ok("r", &["switch", "-q", "main"]);
+    g.ok("r", &["push", "-q", "team/fork", "main"]);
+    g.ok("r", &["push", "-q", "team", "feature/x"]);
+    let sha = &g.sha("r", "main")[..7];
+    let evs = show(&t.scan());
+    assert!(evs.contains(&format!("push team/fork main {sha}")), "{evs:?}");
+    assert!(
+        evs.contains(&format!("push team feature/x {}", &g.sha("r", "feature/x")[..7])),
+        "{evs:?}"
+    );
+    // A remote-tracking ref no configured remote prefixes (its remote is defined somewhere the
+    // source does not read, or was removed by hand): the remote is unknown, not guessed, and the
+    // branch is the whole name under `refs/remotes/`.
+    g.ok("r", &["update-ref", "-m", "update by push", "refs/remotes/ghost/x", "main"]);
+    assert_eq!(show(&t.scan()), vec![format!("push ? ghost/x {sha}")]);
 }
 
 #[test]
@@ -381,7 +402,7 @@ fn reflog_times_are_not_trusted_after_the_first_scan() {
             "commit main \"one\"".to_owned(),
             "commit main \"two, dated 2020\"".into(),
             "commit main \"three\"".into(),
-            format!("push origin/main {}", &sha[..7]),
+            format!("push origin main {}", &sha[..7]),
         ]
     );
 }

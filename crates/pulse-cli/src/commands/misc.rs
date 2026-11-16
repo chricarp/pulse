@@ -110,6 +110,13 @@ pub async fn sources(ctx: &Ctx, args: SourcesArgs) -> Res {
         SourcesCmd::List => {}
         SourcesCmd::Enable { name } => return set_source_enabled(ctx, &client, name, true).await,
         SourcesCmd::Disable { name } => return set_source_enabled(ctx, &client, name, false).await,
+        SourcesCmd::Restart { name } => {
+            let s = client.call::<method::SourcesRestart>(NameParams { name }).await?;
+            if let Some(out) = ctx.answer(&s) {
+                out.line(&format!("Restarted source {}{}.", s.config.name, origin(&s.origin)));
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
         SourcesCmd::Remove { name } => {
             let params = DeleteParams { name: name.clone(), expected: Expected::Any };
             client.call::<method::SourcesDelete>(params).await?;

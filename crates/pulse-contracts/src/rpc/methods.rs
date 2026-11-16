@@ -906,6 +906,10 @@ rpc_methods! {
     "sources.delete" => SourcesDelete, sources_delete(DeleteParams) -> Empty;
     /// Changes `enabled` of the definition as it is in its file, nothing else.
     "sources.set_enabled" => SourcesSetEnabled, sources_set_enabled(SetEnabledParams) -> SourceInfo;
+    /// Stops the source and starts it again from its definition in effect: the way back from
+    /// `failed`. The old instance is fully stopped first, and the events it produced are
+    /// recorded. A disabled source is refused (`conflict`): enable it instead.
+    "sources.restart" => SourcesRestart, sources_restart(NameParams) -> SourceInfo;
 
     "runs.list" => RunsList, runs_list(RunsListParams) -> RunPage;
     "runs.get" => RunsGet, runs_get(RunIdParams) -> Run;

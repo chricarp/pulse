@@ -1,9 +1,6 @@
-//! Five-field cron (`minute hour day-of-month month day-of-week`) evaluated in a time zone.
-//!
-//! Fields take `*`, numbers, ranges `a-b`, steps `*/n` and `a-b/n` (and `a/n`, meaning `a` to the
-//! field's maximum), comma lists, and English names for months and weekdays. Day-of-week is
-//! 0-7 with both 0 and 7 meaning Sunday. As in classic cron, when both day fields are
-//! restricted a day matches if either does.
+//! Five-field cron (`minute hour day-of-month month day-of-week`) evaluated in a time zone. The
+//! syntax and what is valid are `pulse_contracts::config::Cron`'s, shared with the config
+//! validator; this is when it fires.
 //!
 //! Daylight saving time, decided once and tested: a local time that does not exist (skipped by
 //! a spring-forward) fires at the first instant after the gap; a local time that happens twice
@@ -14,61 +11,26 @@
 use chrono::{
     DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
 };
+pub(crate) use pulse_contracts::config::Cron;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Cron {
-    minutes: u64,
-    hours: u32,
-    days: u32,
-    months: u16,
-    weekdays: u8,
-    days_restricted: bool,
-    weekdays_restricted: bool,
+fn day_matches(cron: &Cron, d: NaiveDate) -> bool {
+    let dom = cron.days & (1 << d.day()) != 0;
+    let dow = cron.weekdays & (1 << d.weekday().num_days_from_sunday()) != 0;
+    match (cron.days_restricted, cron.weekdays_restricted) {
+        (true, true) => dom || dow,
+        (true, false) => dom,
+        (false, true) => dow,
+        (false, false) => true,
+    }
 }
 
-const MONTHS: [&str; 12] =
-    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-const WEEKDAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-
-impl Cron {
-    pub(crate) fn parse(s: &str) -> Result<Cron, String> {
-        let fields: Vec<&str> = s.split_whitespace().collect();
-        let [mi, h, dom, mo, dow] = fields[..] else {
-            return Err(format!("expected five fields (minute hour day month weekday), got {s:?}"));
-        };
-        let weekdays = field(dow, 0, 7, &WEEKDAYS, 0, "day of week")?;
-        // 7 is Sunday too.
-        let weekdays = (weekdays | (weekdays >> 7)) & 0x7f;
-        Ok(Cron {
-            minutes: field(mi, 0, 59, &[], 0, "minute")?,
-            hours: u32::try_from(field(h, 0, 23, &[], 0, "hour")?).map_err(|e| e.to_string())?,
-            days: u32::try_from(field(dom, 1, 31, &[], 0, "day of month")?)
-                .map_err(|e| e.to_string())?,
-            months: u16::try_from(field(mo, 1, 12, &MONTHS, 1, "month")?)
-                .map_err(|e| e.to_string())?,
-            weekdays: u8::try_from(weekdays).map_err(|e| e.to_string())?,
-            days_restricted: dom != "*",
-            weekdays_restricted: dow != "*",
-        })
-    }
-
-    fn day_matches(&self, d: NaiveDate) -> bool {
-        let dom = self.days & (1 << d.day()) != 0;
-        let dow = self.weekdays & (1 << d.weekday().num_days_from_sunday()) != 0;
-        match (self.days_restricted, self.weekdays_restricted) {
-            (true, true) => dom || dow,
-            (true, false) => dom,
-            (false, true) => dow,
-            (false, false) => true,
-        }
-    }
-
+pub(crate) trait NextFire {
     /// The first fire strictly after `after`, searching up to eight years ahead.
-    pub(crate) fn next_after<Z: TimeZone>(
-        &self,
-        tz: &Z,
-        after: DateTime<Utc>,
-    ) -> Option<DateTime<Utc>> {
+    fn next_after<Z: TimeZone>(&self, tz: &Z, after: DateTime<Utc>) -> Option<DateTime<Utc>>;
+}
+
+impl NextFire for Cron {
+    fn next_after<Z: TimeZone>(&self, tz: &Z, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
         let local = after.with_timezone(tz).naive_local();
         let minute = Duration::minutes(1);
         let mut t = local.with_second(0)?.with_nanosecond(0)?.checked_add_signed(minute)?;
@@ -80,7 +42,7 @@ impl Cron {
                 t = NaiveDate::from_ymd_opt(y, m, 1)?.and_hms_opt(0, 0, 0)?;
                 continue;
             }
-            if !self.day_matches(t.date()) {
+            if !day_matches(self, t.date()) {
                 t = t.date().succ_opt()?.and_hms_opt(0, 0, 0)?;
                 continue;
             }
@@ -118,71 +80,6 @@ fn resolve<Z: TimeZone>(tz: &Z, t: NaiveDateTime) -> Option<DateTime<Utc>> {
     None
 }
 
-/// One field as a bit set over `min..=max`. `name_base` is the value of `names[0]`.
-fn field(
-    s: &str,
-    min: u32,
-    max: u32,
-    names: &[&str],
-    name_base: u32,
-    what: &str,
-) -> Result<u64, String> {
-    let err = |detail: &str| format!("invalid {what} field {s:?}: {detail}");
-    let value = |v: &str| -> Result<u32, String> {
-        let lower = v.to_ascii_lowercase();
-        if let Some(i) = names.iter().position(|n| *n == lower) {
-            return Ok(name_base + u32::try_from(i).unwrap_or(0));
-        }
-        let n: u32 = v.parse().map_err(|_| err(&format!("{v:?} is not a number")))?;
-        if n < min || n > max {
-            return Err(err(&format!("{n} is outside {min}-{max}")));
-        }
-        Ok(n)
-    };
-    let mut bits = 0u64;
-    for part in s.split(',') {
-        let (range, step) = match part.split_once('/') {
-            Some((r, st)) => {
-                let st: u32 = st.parse().map_err(|_| err("the step must be a number"))?;
-                if st == 0 {
-                    return Err(err("the step must be positive"));
-                }
-                // A larger step only ever matches the start of its range, which is never what
-                // `*/90` meant.
-                let span = max - min + 1;
-                if st > span {
-                    return Err(err(&format!(
-                        "the step must be at most {span} (for longer intervals use `every`)"
-                    )));
-                }
-                (r, st)
-            }
-            None => (part, 1),
-        };
-        let (lo, hi) = match range {
-            "*" => (min, max),
-            r => match r.split_once('-') {
-                Some((a, b)) => (value(a)?, value(b)?),
-                None if part.contains('/') => (value(r)?, max),
-                None => {
-                    let v = value(r)?;
-                    (v, v)
-                }
-            },
-        };
-        if lo > hi {
-            return Err(err("a range must go from low to high"));
-        }
-        let mut v = lo;
-        while v <= hi {
-            bits |= 1 << v;
-            let Some(next) = v.checked_add(step) else { break };
-            v = next;
-        }
-    }
-    Ok(bits)
-}
-
 #[cfg(test)]
 mod tests {
     use chrono_tz::Tz;
@@ -191,30 +88,6 @@ mod tests {
 
     fn utc(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
-    }
-
-    #[test]
-    fn parse_errors() {
-        for bad in [
-            "",
-            "* * * *",
-            "60 * * * *",
-            "* 24 * * *",
-            "* * 0 * *",
-            "* * * 13 *",
-            "* * * * 8",
-            "*/0 * * * *",
-            "5-1 * * * *",
-            "x * * * *",
-            "* * * foo *",
-            "*/61 * * * *",
-            "0 0 */32 * *",
-            "0 0 * */13 *",
-        ] {
-            assert!(Cron::parse(bad).is_err(), "{bad:?}");
-        }
-        assert!(Cron::parse("0 9 * jan-mar mon-fri").is_ok());
-        assert!(Cron::parse("*/15 0,12 1-7 * 7").is_ok());
     }
 
     #[test]
@@ -319,10 +192,5 @@ mod tests {
                 t = got;
             }
         }
-        // Never: the 31st of February.
-        assert_eq!(
-            Cron::parse("0 0 31 2 *").unwrap().next_after(&rome, utc("2026-01-01T00:00:00Z")),
-            None
-        );
     }
 }

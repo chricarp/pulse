@@ -103,7 +103,10 @@ pub(crate) struct TrustRecord {
 const KEEP_TRUSTED_TEXT: usize = 64 * 1024;
 /// Project files larger than this are refused: nobody reviews them, and a review must fit in
 /// one RPC response.
-const MAX_PROJECT_FILE: usize = 1024 * 1024;
+pub(crate) const MAX_PROJECT_FILE: usize = 1024 * 1024;
+/// The user's own `pulse.toml` gets more room; the bound only keeps a mistake (a link to a
+/// device, a log file) from being read whole.
+const MAX_USER_FILE: usize = 8 * 1024 * 1024;
 
 fn kept_text(text: &str) -> Option<String> {
     (text.len() <= KEEP_TRUSTED_TEXT).then(|| text.to_owned())
@@ -155,12 +158,32 @@ pub(crate) struct Loader {
     pub(crate) trust: Vec<TrustRecord>,
 }
 
-fn read_text(path: &Path) -> std::io::Result<Option<String>> {
-    match std::fs::read_to_string(path) {
-        Ok(t) => Ok(Some(t)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
+/// A config file's text, or `None` if it does not exist. A project's `pulse.toml` is read
+/// before anyone has trusted it, so the file is whatever a repository's author made it: a FIFO
+/// would block the reload (which holds the loader lock) forever, and a link to `/dev/zero`
+/// would be read until memory ran out. So only a regular file is read (links are followed: a
+/// linked file may be reviewed and trusted by its content), without blocking, up to `max` bytes.
+fn read_text(path: &Path, max: usize) -> std::io::Result<Option<String>> {
+    use std::io::{Error, ErrorKind, Read};
+    use std::os::unix::fs::OpenOptionsExt;
+    let nonblock = rustix::fs::OFlags::NONBLOCK.bits() as i32;
+    let file = match std::fs::OpenOptions::new().read(true).custom_flags(nonblock).open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(Error::new(ErrorKind::InvalidInput, "not a regular file"));
     }
+    let mut bytes = Vec::new();
+    file.take(max as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > max {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!("larger than {} KiB; Pulse does not load config files that size", max / 1024),
+        ));
+    }
+    String::from_utf8(bytes).map(Some).map_err(|e| Error::new(ErrorKind::InvalidData, e))
 }
 
 fn io_error(path: &Path, e: std::io::Error) -> ConfigError {
@@ -189,7 +212,7 @@ impl Loader {
     }
 
     fn project_status(&self, t: &TrustRecord) -> (Project, Option<String>) {
-        let text = read_text(&t.file()).ok().flatten();
+        let text = read_text(&t.file(), MAX_PROJECT_FILE).ok().flatten();
         let current = text.as_deref().map(|s| hash(s.as_bytes()));
         let state = match &current {
             None => TrustState::Missing,
@@ -213,7 +236,7 @@ impl Loader {
         let mut errors = Vec::new();
         let origin = user_origin(&self.home);
         let path = self.home.config_file();
-        let user = match read_text(&path) {
+        let user = match read_text(&path, MAX_USER_FILE) {
             Ok(None) => {
                 self.user_good = Some((hash(b""), ConfigFile::default()));
                 ConfigFile::default()
@@ -351,7 +374,7 @@ impl Loader {
         validate_name(&name)
             .map_err(|m| ServiceError::Invalid(format!("project {m}; choose one with --name")))?;
         let file = dir.join("pulse.toml");
-        let text = read_text(&file)
+        let text = read_text(&file, MAX_PROJECT_FILE)
             .map_err(|e| ServiceError::Invalid(format!("cannot read {}: {e}", file.display())))?
             .ok_or_else(|| ServiceError::Invalid(format!("{} does not exist", file.display())))?;
         if text.len() > MAX_PROJECT_FILE {
@@ -569,5 +592,34 @@ pub(crate) fn bare_name<'n>(full: &'n str, origin: &ConfigOrigin) -> &'n str {
     match origin.project() {
         Some(p) => full.strip_prefix(p).and_then(|r| r.strip_prefix('/')).unwrap_or(full),
         None => full,
+    }
+}
+
+#[cfg(test)]
+mod read_text_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_bounded_regular_file_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pulse.toml");
+        assert_eq!(read_text(&file, 16).unwrap(), None);
+        std::fs::write(&file, "0123456789abcdef").unwrap();
+        assert_eq!(read_text(&file, 16).unwrap().as_deref(), Some("0123456789abcdef"));
+        // Through a link, too: a linked file may be reviewed.
+        let link = dir.path().join("link.toml");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(read_text(&link, 16).unwrap().is_some());
+        std::fs::write(&file, "0123456789abcdefg").unwrap();
+        assert_eq!(read_text(&file, 16).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+
+        // A FIFO with no writer would block an ordinary read forever; a device never ends.
+        let fifo = dir.path().join("fifo.toml");
+        // The `mkfifo` command: rustix has no `mknodat` on macOS.
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        assert_eq!(read_text(&fifo, 16).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        let zero = dir.path().join("zero.toml");
+        std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+        assert_eq!(read_text(&zero, 16).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
     }
 }

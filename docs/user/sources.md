@@ -16,6 +16,7 @@ pulse sources add calendar lectures ~/Calendar/lectures.ics
 pulse sources                       # list them with their health
 pulse sources disable hourly        # stop watching, keep the definition
 pulse sources enable hourly
+pulse sources restart lectures      # start it again after fixing why it failed
 pulse sources remove hourly
 ```
 
@@ -31,10 +32,25 @@ it to appear"), a calendar URL that failed ("retrying in 2m"), the inotify watch
 queue overflow, file names that are not valid UTF-8 and were skipped. A missing folder or
 repository is not an error: the source waits for it.
 
-Failed means the source stopped: its settings are invalid, or it hit a problem it cannot work
-around (or a bug in Pulse), and the message says which. A failed source is not retried on its
-own; it starts again the next time the configuration changes (edit it, or re-add it) or the
-daemon restarts.
+Failed means the source stopped: it hit a problem it cannot work around (or a bug in Pulse),
+and the message says which. (Settings that cannot work are not a failed source: they are config
+errors, refused when you save them, see [the config file](config.md).) A failed source is not retried on its own, because the same input
+would usually fail it again. Once you have fixed the cause, restart it:
+
+```console
+$ pulse sources restart lectures
+Restarted source lectures.
+```
+
+In the UI, open the source and press **Restart** (Shift+R). Editing the source or restarting the
+daemon also starts it again.
+
+You can restart a healthy source too, for example after remounting a drive or reconnecting to
+a network. Pulse stops the source completely before starting it again, and records every event
+the source had already produced, once. A restart loses what a daemon restart loses and no more.
+A schedule's last fire and a calendar's fired events are kept, so nothing fires twice. A file
+change still settling (within `quiet`) is not reported. Git activity during the moment the source
+is stopped is not reported either. A disabled source is not restarted: enable it instead.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/sources-dark.png">
@@ -110,6 +126,12 @@ and commits have `branch: null`. Worktrees and submodules are followed. History 
 at startup, and is not replayed when git rewrites a reflog (`gc`) or the repository is replaced;
 a new commit or push is reported whatever date it carries. A push to a URL with no remote-tracking branch leaves no trace and is not seen.
 
+A push's `remote` is the remote as configured in the repository (`git remote -v`), and may contain
+a slash: a push to remote `team/fork`, branch `main`, is `remote: "team/fork", branch: "main"`.
+If a remote-tracking branch belongs to no remote in the repository's own config file (one
+defined through an `include`, which Pulse does not read, or one removed by hand), `remote` is
+`null` and `branch` is the whole name under `refs/remotes/`, for example `"ghost/main"`.
+
 ## `schedule`: a timer
 
 `schedule.fired` with `cron` or `every`, `scheduled_for`, and `late`. `cron` is five fields in
@@ -125,7 +147,7 @@ when it ends. Data: `uid, title, start, end, location, minutes_until`. Recurring
 exceptions, cancellations and time zones (IANA, Outlook's Windows names) are handled. Each
 occurrence fires at most once per kind, even if it is moved; a fire up to 15 minutes late (after
 a suspend or restart) still happens and `minutes_until` shows how late. A URL is re-fetched every
-`refresh` (default 15 minutes) with caching headers; failures retry with backoff and show in the
+`refresh` (default 15 minutes; `refresh` and `lead` are at most `365d`) with caching headers; failures retry with backoff and show in the
 source's health. A feed may redirect (up to 5 times), but not from https to http, and not to an
 address on your machine or your local network unless the URL you configured is itself one (a
 calendar on your NAS); the source's health then says which address was refused. Calendar URLs

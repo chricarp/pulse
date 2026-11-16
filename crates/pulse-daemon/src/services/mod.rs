@@ -12,6 +12,7 @@ mod runs;
 
 mod system;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use pulse_contracts::config::{ConfigOrigin, Sourced};
@@ -22,7 +23,7 @@ use pulse_contracts::rpc::Expected;
 
 use crate::config::{DefKind, Loader, edit};
 use crate::error::{ServiceError, ServiceResult};
-use crate::home::write_atomic;
+use crate::home::{NoFollowError, NoFollowFile, write_atomic};
 use crate::shared::Shared;
 
 /// The last characters of an event or run id, as typed: uppercase Crockford base32, shorter
@@ -113,13 +114,8 @@ impl Services {
     {
         let mut loader = self.shared.loader.lock().await;
         let (origin, path, trusted) = loader.target(project)?;
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => {
-                return Err(ServiceError::Internal(format!("cannot read {}: {e}", path.display())));
-            }
-        };
+        let file = Target::open(&origin, path.clone())?;
+        let (text, mode) = file.read()?;
         Loader::check_trusted(&origin, trusted.as_deref(), &text)?;
         let edit_error = |e: edit::EditError| match e {
             edit::EditError::NotFound => ServiceError::not_found(kind.array(), bare),
@@ -148,12 +144,7 @@ impl Services {
             return Ok(());
         }
         loader.check(&new_text, &origin, &self.shared.snapshot())?;
-        let mode = std::fs::metadata(&path).map_or(0o600, |m| {
-            use std::os::unix::fs::PermissionsExt;
-            m.permissions().mode() & 0o777
-        });
-        write_atomic(&path, new_text.as_bytes(), mode)
-            .map_err(|e| ServiceError::Internal(format!("cannot write {}: {e}", path.display())))?;
+        file.write(&new_text, mode)?;
         // Binds trust to exactly the text written, which was derived from text that had the
         // trusted hash.
         if loader.retrust_written(&origin, &new_text) {
@@ -168,6 +159,79 @@ impl Services {
         let watched = loader.watched_dirs();
         self.shared.apply(loaded, watched).await;
         Ok(())
+    }
+}
+
+/// The file write-back reads once and then replaces. The user's own `pulse.toml` follows
+/// symbolic links (one kept in a dotfiles repository stays a link, see [`write_atomic`]). A
+/// project's never does: it is read and replaced relative to its directory without following
+/// any link ([`NoFollowFile`]), and one that is a link is refused, since someone who can write
+/// the repository chose where it points.
+enum Target {
+    User(PathBuf),
+    Project(NoFollowFile),
+}
+
+/// Permission bits a new file gets.
+const NEW_FILE_MODE: u32 = 0o600;
+
+impl Target {
+    fn open(origin: &ConfigOrigin, path: PathBuf) -> ServiceResult<Target> {
+        let Some(dir) = origin.base_dir() else { return Ok(Target::User(path)) };
+        NoFollowFile::open(dir, "pulse.toml").map(Target::Project).map_err(no_follow_error)
+    }
+
+    /// The text (empty if there is no file) and its permission bits.
+    fn read(&self) -> ServiceResult<(String, u32)> {
+        match self {
+            Target::User(path) => match std::fs::read_to_string(path) {
+                Ok(t) => {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = std::fs::metadata(path)
+                        .map_or(NEW_FILE_MODE, |m| m.permissions().mode() & 0o777);
+                    Ok((t, mode))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Ok((String::new(), NEW_FILE_MODE))
+                }
+                Err(e) => {
+                    Err(ServiceError::Internal(format!("cannot read {}: {e}", path.display())))
+                }
+            },
+            Target::Project(file) => match file.read(crate::config::MAX_PROJECT_FILE as u64) {
+                Ok(Some(read)) => Ok(read),
+                Ok(None) => Ok((String::new(), NEW_FILE_MODE)),
+                Err(e) => Err(no_follow_error(e)),
+            },
+        }
+    }
+
+    fn write(&self, text: &str, mode: u32) -> ServiceResult<()> {
+        match self {
+            Target::User(path) => write_atomic(path, text.as_bytes(), mode).map_err(|e| {
+                ServiceError::Internal(format!("cannot write {}: {e}", path.display()))
+            }),
+            Target::Project(file) => file.replace(text.as_bytes(), mode).map_err(no_follow_error),
+        }
+    }
+}
+
+fn no_follow_error(e: NoFollowError) -> ServiceError {
+    match e {
+        NoFollowError::Link(path) => {
+            let dir = path.parent().unwrap_or(&path).display().to_string();
+            ServiceError::Conflict(format!(
+                "{} is a symbolic link (or a directory on its path is). Pulse reads and trusts a \
+                 project file through a link, but never writes through one, because whoever can \
+                 write the repository chooses where it points. Edit the file by hand, then trust \
+                 it again (`pulse project trust {dir}`).",
+                path.display()
+            ))
+        }
+        NoFollowError::NotAFile(_) | NoFollowError::TooLarge(..) => {
+            ServiceError::Conflict(e.to_string())
+        }
+        NoFollowError::Io(..) => ServiceError::Internal(e.to_string()),
     }
 }
 

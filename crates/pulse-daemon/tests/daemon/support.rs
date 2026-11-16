@@ -58,11 +58,27 @@ pub async fn within<T>(what: &str, f: impl std::future::Future<Output = T>) -> T
 pub struct FakeSources {
     senders: Arc<Mutex<HashMap<String, mpsc::Sender<NewEvent>>>>,
     built: Arc<Mutex<Vec<String>>>,
+    /// Instances per name whose `run` has not returned yet (or that have not run).
+    alive: Arc<Mutex<HashMap<String, usize>>>,
+    /// Names built while an earlier instance of the same name was still alive.
+    overlaps: Arc<Mutex<Vec<String>>>,
 }
 
 struct FakeSource {
     source: SourceRef,
     events: mpsc::Receiver<NewEvent>,
+    _alive: Alive,
+}
+
+/// Counts one instance alive until the source is dropped, which is when its `run` returns.
+struct Alive(Arc<Mutex<HashMap<String, usize>>>, String);
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        if let Some(n) = self.0.lock().unwrap().get_mut(&self.1) {
+            *n -= 1;
+        }
+    }
 }
 
 impl Source for FakeSource {
@@ -92,9 +108,16 @@ impl FakeSources {
             let (tx, rx) = mpsc::channel(1024);
             this.senders.lock().unwrap().insert(config.name.clone(), tx);
             this.built.lock().unwrap().push(config.name.clone());
+            let mut alive = this.alive.lock().unwrap();
+            let n = alive.entry(config.name.clone()).or_default();
+            if *n > 0 {
+                this.overlaps.lock().unwrap().push(config.name.clone());
+            }
+            *n += 1;
             Ok(Box::new(FakeSource {
                 source: SourceRef::new(config.kind(), &config.name),
                 events: rx,
+                _alive: Alive(this.alive.clone(), config.name.clone()),
             }) as Box<dyn Source>)
         })
     }
@@ -107,6 +130,18 @@ impl FakeSources {
     /// Names of sources built so far, in order (restarts appear again).
     pub fn built(&self) -> Vec<String> {
         self.built.lock().unwrap().clone()
+    }
+
+    /// Names built while the previous instance of that source was still running: a restart
+    /// that did not wait for the old instance to stop.
+    pub fn overlaps(&self) -> Vec<String> {
+        self.overlaps.lock().unwrap().clone()
+    }
+
+    /// Makes the source's `run` return on its own, as a source that hit something it cannot
+    /// work around does; the daemon reports it as failed.
+    pub fn end(&self, source: &str) {
+        self.senders.lock().unwrap().remove(source);
     }
 }
 

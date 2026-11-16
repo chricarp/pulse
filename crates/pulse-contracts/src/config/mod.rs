@@ -10,6 +10,7 @@
 //! was expected; see [`ConfigError`].
 
 mod parse;
+mod schedule;
 mod values;
 
 use std::collections::BTreeMap;
@@ -23,6 +24,7 @@ use crate::time::Duration;
 pub use parse::{
     ConfigError, ConfigErrors, parse_config_file, resolve, validate_file, validate_name,
 };
+pub use schedule::{Cron, parse_time_zone};
 pub use values::{
     Rate, RateError, Scope, ScopeError, TypeGlob, TypeGlobs, WhereClause, WhereCondition,
     WhereField, WhereOps, WhereScalar,
@@ -324,6 +326,12 @@ pub struct ScheduleSourceSettings {
     pub timezone: Option<String>,
 }
 
+impl ScheduleSourceSettings {
+    /// The longest `every`. A longer one is almost certainly a typo, and the time arithmetic
+    /// stays far from overflow.
+    pub const MAX_EVERY: Duration = Duration::from_days(3650);
+}
+
 /// Exactly one of `url` and `path`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -341,6 +349,13 @@ pub struct CalendarSourceSettings {
     /// How long before an event `calendar.event.starting` fires. Default 10m.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead: Option<Duration>,
+}
+
+impl CalendarSourceSettings {
+    /// The longest `lead`: the source looks that far ahead, so it bounds the window it expands.
+    pub const MAX_LEAD: Duration = Duration::from_days(365);
+    /// The longest `refresh`.
+    pub const MAX_REFRESH: Duration = Duration::from_days(365);
 }
 
 // ---- [[agent]] ----

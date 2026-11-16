@@ -38,6 +38,11 @@ dialog is open, the button trusts nothing and the dialog shows the new content i
 - Changes you make through Pulse itself (the UI or `pulse rules add --project …`) re-bind the
   trust to the new content, since you made them. If the file changed underneath first, the change
   is refused instead, so nothing you did not review becomes trusted along with it.
+- A project's `pulse.toml` that is a symbolic link can be trusted (its content is what you
+  review and trust), but Pulse never writes through it: whoever can write the repository decides
+  where the link points. Changing its definitions from the UI or the CLI is refused, with a
+  message saying so; edit the file by hand and trust it again. (Your own `~/.pulse/pulse.toml`
+  may be a link, for example into a dotfiles repository, and Pulse edits it through the link.)
 - Runs of a project's agents that are still queued or waiting for approval when the project is
   untrusted or its file changes do not start (see [Rules](rules.md#when-a-definition-changes)).
 - Pulse keeps the text you trusted (files up to 64 KiB) to show what changed. Trust recorded

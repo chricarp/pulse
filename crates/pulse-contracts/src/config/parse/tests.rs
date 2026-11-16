@@ -176,6 +176,47 @@ fn errors_name_the_file_line_item_and_field() {
             "[[source]]\nname = \"s\"\nkind = \"git\"\npath = \"code/x\"",
             &["field `path`", "absolute"],
         ),
+        // Values a source refuses when it starts are config errors, with the field's line.
+        (
+            "[[source]]\nname = \"s\"\nkind = \"calendar\"\npath = \"/c.ics\"\nlead = \"366d\"",
+            &[":5", "source \"s\"", "field `lead`", "at most 365d"],
+        ),
+        (
+            "[[source]]\nname = \"s\"\nkind = \"calendar\"\nurl = \"https://x/c.ics\"\nrefresh = \"400d\"",
+            &[":5", "field `refresh`", "at most 365d"],
+        ),
+        (
+            "[[source]]\nname = \"s\"\nkind = \"schedule\"\nevery = \"3651d\"",
+            &[":4", "field `every`", "at most 3650d"],
+        ),
+        (
+            "[[source]]\nname = \"s\"\nkind = \"schedule\"\ncron = \"*/90 * * * *\"",
+            &[":4", "field `cron`", "the step must be at most 60", "use `every`"],
+        ),
+        (
+            "[[source]]\nname = \"s\"\nkind = \"schedule\"\ncron = \"61 * * * *\"",
+            &["field `cron`", "61 is outside 0-59"],
+        ),
+        (
+            "[[source]]\nname = \"s\"\nkind = \"schedule\"\ncron = \"0 0 30 2 *\"",
+            &["field `cron`", "never fires"],
+        ),
+        (
+            "[[source]]\nname = \"s\"\nkind = \"schedule\"\ncron = \"0 9 * * *\"\ntimezone = \"Mars/Olympus\"",
+            &[":5", "field `timezone`", "unknown time zone"],
+        ),
+        (
+            "[[source]]\nname = \"s\"\nkind = \"fs\"\npath = \"/x\"\nignore = [\"*.log\", \"build/../secret\"]",
+            &[":5", "field `ignore[1]`", "'..'"],
+        ),
+        (
+            "[[source]]\nname = \"s\"\nkind = \"fs\"\npath = \"/x\"\nignore = [\"~root/x\"]",
+            &["field `ignore[0]`", "~root"],
+        ),
+        (
+            "[[source]]\nname = \"s\"\nkind = \"fs\"\npath = \"/x\"\nignore = [\"/\"]",
+            &["field `ignore[0]`", "empty"],
+        ),
         ("[limits]\nmax_chain_depth = 0", &["[limits]", "field `max_chain_depth`", "from 1 to 32"]),
         ("[limits]\nmax_chain_dept = 3", &["[limits]", "unknown field `max_chain_dept`"]),
     ];

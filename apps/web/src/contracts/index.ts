@@ -356,7 +356,13 @@ export type GitMergeConflictedData = { repo: string,
  */
 files: Array<string>, };
 
-export type GitPushCompletedData = { repo: string, remote: string, branch: string, sha: string, };
+export type GitPushCompletedData = { repo: string, 
+/**
+ * The configured remote whose name is the longest prefix of the remote-tracking ref
+ * (names may contain `/`). Null when no remote in the repository's config file prefixes
+ * it; `branch` is then the whole name below `refs/remotes/`.
+ */
+remote?: string | null, branch: string, sha: string, };
 
 export type GitSourceSettings = { 
 /**
@@ -884,6 +890,7 @@ export type RpcMethods = {
   "sources.upsert": { params: SourceUpsertParams; result: SourceInfo };
   "sources.delete": { params: DeleteParams; result: Empty };
   "sources.set_enabled": { params: SetEnabledParams; result: SourceInfo };
+  "sources.restart": { params: NameParams; result: SourceInfo };
   "runs.list": { params: RunsListParams; result: RunPage };
   "runs.get": { params: RunIdParams; result: Run };
   "runs.resolve_id": { params: ResolveIdParams; result: RunIdParams };
@@ -938,6 +945,7 @@ export const RPC_METHOD_NAMES = [
   "sources.upsert",
   "sources.delete",
   "sources.set_enabled",
+  "sources.restart",
   "runs.list",
   "runs.get",
   "runs.resolve_id",

@@ -374,6 +374,9 @@ impl RpcHandler for RpcServer {
     async fn sources_set_enabled(&self, _: &Self::Context, p: SetEnabledParams) -> R<SourceInfo> {
         map(self.services.sources_set_enabled(&p.name, p.enabled).await)
     }
+    async fn sources_restart(&self, _: &Self::Context, p: NameParams) -> R<SourceInfo> {
+        map(self.services.sources_restart(&p.name).await)
+    }
 
     async fn runs_list(&self, _: &Self::Context, p: RunsListParams) -> R<RunPage> {
         map(self.services.runs_list(p.filter, p.cursor, p.limit).await)

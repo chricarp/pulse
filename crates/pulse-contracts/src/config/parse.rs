@@ -9,10 +9,12 @@ use ts_rs::TS;
 
 use super::{
     AdapterSettings, AgentConfig, AgentKind, CalendarSourceSettings, Config, ConfigFile,
-    ConfigOrigin, Limits, RuleConfig, ScheduleSourceSettings, SourceConfig, SourceSettings,
-    Sourced, WhereCondition, WhereField, WhereScalar,
+    ConfigOrigin, Cron, Limits, RuleConfig, ScheduleSourceSettings, SourceConfig, SourceSettings,
+    Sourced, WhereCondition, WhereField, WhereScalar, parse_time_zone,
 };
-use crate::pattern::{expand_path, looks_like_path, parse_path_glob, parse_text_glob};
+use crate::pattern::{
+    expand_path, looks_like_path, parse_ignore, parse_path_glob, parse_text_glob,
+};
 use crate::template::{Template, TemplateVar};
 
 /// One problem in a config file, located as precisely as we can.
@@ -316,6 +318,18 @@ impl Validator<'_> {
         }
     }
 
+    fn at_most(
+        &mut self,
+        item: &Option<String>,
+        field: &str,
+        d: Option<crate::time::Duration>,
+        max: crate::time::Duration,
+    ) {
+        if d.is_some_and(|d| d > max) {
+            self.push(item.clone(), Some(field), format!("must be at most {max}"));
+        }
+    }
+
     fn range(&mut self, item: &Option<String>, field: &str, value: u64, min: u64, max: u64) {
         if value < min || value > max {
             self.push(
@@ -352,8 +366,12 @@ impl Validator<'_> {
         match &s.settings {
             SourceSettings::Fs(fs) => {
                 self.path(&item, "path", &fs.path);
+                // Relative entries are checked against the real root when there is one; an
+                // invalid `path` is reported above.
+                let root = expand_path(&fs.path, self.home, self.base);
+                let root = root.as_deref().unwrap_or("/");
                 for (i, pat) in fs.ignore.iter().enumerate() {
-                    if let Err(e) = parse_text_glob(pat) {
+                    if let Err(e) = parse_ignore(pat, root, self.home) {
                         self.push(item.clone(), Some(&format!("ignore[{i}]")), e.to_string());
                     }
                 }
@@ -363,21 +381,23 @@ impl Validator<'_> {
                 }
             }
             SourceSettings::Git(g) => self.path(&item, "path", &g.path),
-            SourceSettings::Schedule(ScheduleSourceSettings { cron, every, timezone: _ }) => {
+            SourceSettings::Schedule(ScheduleSourceSettings { cron, every, timezone }) => {
                 match (cron, every) {
                     (Some(_), Some(_)) | (None, None) => {
                         self.push(item.clone(), None, "set exactly one of `cron` and `every`");
                     }
                     (Some(c), None) => {
-                        if !looks_like_cron(c) {
-                            self.push(
-                                item.clone(),
-                                Some("cron"),
-                                format!("expected five fields like \"0 9 * * 1-5\", got {c:?}"),
-                            );
+                        if let Err(e) = Cron::parse(c) {
+                            self.push(item.clone(), Some("cron"), e);
                         }
                     }
-                    (None, Some(_)) => self.positive(&item, "every", *every),
+                    (None, Some(_)) => {
+                        self.positive(&item, "every", *every);
+                        self.at_most(&item, "every", *every, ScheduleSourceSettings::MAX_EVERY);
+                    }
+                }
+                if let Some(Err(e)) = timezone.as_deref().map(parse_time_zone) {
+                    self.push(item.clone(), Some("timezone"), e);
                 }
             }
             SourceSettings::Calendar(CalendarSourceSettings { url, path, refresh, lead }) => {
@@ -397,7 +417,8 @@ impl Validator<'_> {
                     (None, Some(p)) => self.path(&item, "path", p),
                 }
                 self.positive(&item, "refresh", *refresh);
-                let _ = lead;
+                self.at_most(&item, "refresh", *refresh, CalendarSourceSettings::MAX_REFRESH);
+                self.at_most(&item, "lead", *lead, CalendarSourceSettings::MAX_LEAD);
             }
         }
     }
@@ -517,14 +538,6 @@ impl Validator<'_> {
             }
         }
     }
-}
-
-fn looks_like_cron(c: &str) -> bool {
-    let fields: Vec<&str> = c.split_whitespace().collect();
-    fields.len() == 5
-        && fields.iter().all(|f| {
-            f.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'*' | b'/' | b',' | b'-'))
-        })
 }
 
 /// Line-level knowledge of a TOML text, for pointing errors at the right place without a span

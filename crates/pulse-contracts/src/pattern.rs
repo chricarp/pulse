@@ -165,6 +165,34 @@ pub fn parse_path_glob(raw: &str, home: &Path) -> Result<Glob, PatternError> {
     Ok(Glob { pattern: expanded, alternatives })
 }
 
+/// One `ignore` entry of an `fs` source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IgnorePattern {
+    /// No `/`: a text glob matched against each name at any depth (`*.log`, `build`).
+    Name(Glob),
+    /// A path glob: absolute, `~/…`, or (containing a `/`) relative to the watched directory.
+    Path(Glob),
+}
+
+/// Parses an `ignore` entry of an `fs` source watching `root` (a clean absolute path). A
+/// trailing `/` is dropped. The validator and the source both read entries through this, so
+/// what loads is what the source accepts.
+pub fn parse_ignore(raw: &str, root: &str, home: &Path) -> Result<IgnorePattern, PatternError> {
+    let pat = raw.trim_end_matches('/');
+    if pat.is_empty() {
+        return Err(PatternError::Empty);
+    }
+    if pat.starts_with('/') || pat.starts_with('~') {
+        parse_path_glob(pat, home).map(IgnorePattern::Path)
+    } else if pat.contains('/') {
+        let rel = pat.strip_prefix("./").unwrap_or(pat);
+        let joined = if root == "/" { format!("/{rel}") } else { format!("{root}/{rel}") };
+        parse_path_glob(&joined, home).map(IgnorePattern::Path)
+    } else {
+        parse_text_glob(pat).map(IgnorePattern::Name)
+    }
+}
+
 /// Parses a text glob, where `*` crosses every character.
 pub fn parse_text_glob(raw: &str) -> Result<Glob, PatternError> {
     let alternatives = expand_braces(raw)?

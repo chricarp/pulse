@@ -16,7 +16,7 @@ tokio = { workspace = true, features = ["sync", "time", "net", "macros", "rt", "
 tokio-util.workspace = true
 
 chrono = { version = "0.4.39", default-features = false, features = ["clock", "std"] }
-chrono-tz = "0.10.1"
+chrono-tz.workspace = true
 miniz_oxide = "0.8"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 pty-process = { version = "0.5", features = ["async"] }

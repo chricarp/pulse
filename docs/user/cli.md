@@ -166,6 +166,7 @@ full id is used as it is.
 | `pulse sources` / `pulse sources list` | Sources with their health and event counts. |
 | `pulse sources add <KIND> <NAME> [TARGET] […] [--replace]` | Add a source (refused if the name exists, unless `--replace`): `fs NAME DIR [--ignore <GLOB>]…`, `git NAME REPO`, `schedule NAME --cron "0 9 * * 1-5" [--timezone <TZ>]` or `--every 1h`, `calendar NAME FILE.ics|URL [--lead <D>]`. `--project <P>` writes it to a trusted project's file. |
 | `pulse sources enable <NAME>` / `disable <NAME>` | Set `enabled` in its file: stop watching, keeping the definition, and back. |
+| `pulse sources restart <NAME>` | Stop the source and start it again as it is defined now: the way back from `failed` once the cause is fixed. Changes nothing in the file. Refused for a disabled source (enable it). |
 | `pulse sources remove <NAME>` | Delete it. |
 | `pulse project trust <DIR> [--name <NAME>] [--hash <HASH>]` | Without `--hash`: show what `DIR/pulse.toml` would load, what changed since it was trusted, and its content hash; trust nothing (exit status 1). With `--hash`: trust it only if it still has that content. `--name` is the prefix for its definitions (default: the directory's name). See [Projects](projects.md). |
 | `pulse project untrust <DIR>` | Make it inactive. |

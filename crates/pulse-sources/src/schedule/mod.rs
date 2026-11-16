@@ -15,25 +15,21 @@
 
 mod cron;
 
-use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use pulse_contracts::catalog::{BuiltinEvent, ScheduleFiredData};
-use pulse_contracts::config::ScheduleSourceSettings;
+use pulse_contracts::config::{ScheduleSourceSettings, parse_time_zone};
 use pulse_contracts::{Duration, SourceKind, SourceRef, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use self::cron::Cron;
+use self::cron::{Cron, NextFire};
 use crate::clock::{Clock, SystemClock};
 use crate::state::StateFile;
 use crate::{BoxFuture, Source, SourceContext, SourceEnv, SourceError};
 
 /// A fire this long after its scheduled time is reported as late.
 pub const LATE_AFTER: Duration = Duration::from_secs(60);
-/// The longest `every`: ten years. More is a typo (and near `i64::MAX` milliseconds, arithmetic
-/// on it overflows).
-const MAX_EVERY: Duration = Duration::from_days(3650);
 
 #[derive(Debug)]
 pub struct ScheduleSource {
@@ -131,23 +127,19 @@ impl ScheduleSource {
     ) -> Result<Self, SourceError> {
         let plan = match (&settings.cron, settings.every) {
             (Some(expr), None) => {
+                // Refuses one that never fires, too.
                 let cron = Cron::parse(expr).map_err(SourceError::Config)?;
                 let zone = match &settings.timezone {
                     None => Zone::Local,
-                    Some(name) => Zone::Named(chrono_tz::Tz::from_str(name).map_err(|_| {
-                        SourceError::Config(format!(
-                            "unknown time zone {name:?}; use an IANA name like \"Europe/Rome\""
-                        ))
-                    })?),
+                    Some(name) => Zone::Named(parse_time_zone(name).map_err(SourceError::Config)?),
                 };
-                let plan = Plan::Cron { cron, zone };
-                if plan.next_after(Timestamp::EPOCH, SystemClock.now()).is_none() {
-                    return Err(SourceError::Config(format!("cron {expr:?} never fires")));
-                }
-                plan
+                Plan::Cron { cron, zone }
             }
-            (None, Some(every)) if every > MAX_EVERY => {
-                return Err(SourceError::Config(format!("every must be at most {MAX_EVERY}")));
+            (None, Some(every)) if every > ScheduleSourceSettings::MAX_EVERY => {
+                return Err(SourceError::Config(format!(
+                    "every must be at most {}",
+                    ScheduleSourceSettings::MAX_EVERY
+                )));
             }
             (None, Some(every)) if !every.is_zero() => Plan::Every(every),
             _ => {

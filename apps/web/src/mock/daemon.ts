@@ -1374,6 +1374,18 @@ export class MockDaemon {
       this.broadcast(["sources", "config"]);
       return this.sourceInfo(def);
     },
+    "sources.restart": ({ name }) => {
+      const def = this.sourceFor(name);
+      if (!def) throw notFound("source", JSON.stringify(name));
+      if (!def.config.enabled) throw conflict(`the source ${JSON.stringify(name)} is disabled; enable it to start it`);
+      def.health = { ...def.health, state: "starting", since: iso(this.now()), message: null };
+      setTimeout(() => {
+        def.health = { ...def.health, state: "healthy", since: iso(this.now()), message: null };
+        this.broadcast(["sources"]);
+      }, 600);
+      this.broadcast(["sources"]);
+      return this.sourceInfo(def);
+    },
     "sources.delete": ({ name, expected }) => {
       const prev = this.sourceFor(name);
       if (!prev) throw expected?.kind === "revision" ? stale(`the source ${JSON.stringify(name)} was removed since it was read`, null) : notFound("source", JSON.stringify(name));

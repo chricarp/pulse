@@ -347,9 +347,13 @@ pub struct GitMergeConflictedData {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(optional_fields = nullable)]
 pub struct GitPushCompletedData {
     pub repo: String,
-    pub remote: String,
+    /// The configured remote whose name is the longest prefix of the remote-tracking ref
+    /// (names may contain `/`). Null when no remote in the repository's config file prefixes
+    /// it; `branch` is then the whole name below `refs/remotes/`.
+    pub remote: Option<String>,
     pub branch: String,
     pub sha: String,
 }
