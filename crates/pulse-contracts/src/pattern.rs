@@ -179,7 +179,9 @@ pub fn parse_type_glob(raw: &str) -> Result<Glob, PatternError> {
     let ok = !raw.is_empty()
         && raw.len() <= 200
         && raw.bytes().all(|b| {
-            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-' | b'*')
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(b, b'.' | b'_' | b'-' | b'*' | b'{' | b'}' | b',')
         });
     if !ok {
         return Err(PatternError::BadTypeGlob(raw.to_owned()));
@@ -351,7 +353,7 @@ mod tests {
 
     #[test]
     fn type_globs() {
-        for ok in ["fs.*", "fs.file.*", "*", "ext.ci.build-*", "git.commit.created"] {
+        for ok in ["fs.*", "fs.file.*", "*", "ext.ci.build-*", "git.commit.created", "{fs,git}.*"] {
             assert!(parse_type_glob(ok).is_ok(), "{ok}");
         }
         for bad in ["", "FS.*", "fs/*", "fs.{a,b", "fs file"] {
