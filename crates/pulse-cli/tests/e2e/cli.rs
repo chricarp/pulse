@@ -77,6 +77,17 @@ async fn adding_and_removing_definitions() {
     assert!(s["health"]["state"].is_string(), "{s}");
     let (code, _, err) = env.run(&["sources", "add", "schedule", "tick", "--every", "1h"]).await;
     assert_eq!(code, 0, "{err}");
+    // Enable and disable change only `enabled` in the file, from the CLI as from the UI.
+    let (code, out, err) = env.run(&["sources", "disable", "tick"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("Disabled source tick"), "{out}");
+    assert!(env.read_config().contains("every = \"1h\"\nenabled = false"), "{}", env.read_config());
+    let (code, _, err) = env.run(&["sources", "enable", "tick"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(!env.read_config().contains("enabled = false"), "{}", env.read_config());
+    let (code, _, err) = env.run(&["sources", "disable", "nope"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("nope"), "{err}");
     let (code, _, err) = env.run(&["sources", "add", "schedule", "bad"]).await;
     assert_eq!(code, 1);
     assert!(err.contains("cron") || err.contains("every"), "{err}");

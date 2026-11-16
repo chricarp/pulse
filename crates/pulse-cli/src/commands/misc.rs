@@ -97,10 +97,29 @@ pub async fn agents(ctx: &Ctx, args: AgentsArgs) -> Res {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `sources enable` / `disable`: one field of the source as it is in its file.
+async fn set_source_enabled(
+    ctx: &Ctx,
+    client: &pulse_daemon::client::Client,
+    name: String,
+    enabled: bool,
+) -> Res {
+    let s = client.call::<method::SourcesSetEnabled>(SetEnabledParams { name, enabled }).await?;
+    if ctx.json {
+        print_json(&s);
+    } else {
+        let done = if enabled { "Enabled" } else { "Disabled" };
+        print_line(&format!("{done} source {}{}.", s.config.name, origin(&s.origin)));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 pub async fn sources(ctx: &Ctx, args: SourcesArgs) -> Res {
     let client = ctx.client().await?;
     match args.cmd.unwrap_or(SourcesCmd::List) {
         SourcesCmd::List => {}
+        SourcesCmd::Enable { name } => return set_source_enabled(ctx, &client, name, true).await,
+        SourcesCmd::Disable { name } => return set_source_enabled(ctx, &client, name, false).await,
         SourcesCmd::Remove { name } => {
             let params = DeleteParams { name: name.clone(), expected: Expected::Any };
             client.call::<method::SourcesDelete>(params).await?;
