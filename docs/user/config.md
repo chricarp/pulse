@@ -13,7 +13,9 @@ CLI edit this same file: there is no second copy of a rule anywhere.
   lists every key the parser accepts; the authoritative schema is
   [`crates/pulse-contracts/src/config/mod.rs`](../../crates/pulse-contracts/src/config/mod.rs).
 - **Comments survive.** When the UI or CLI changes a definition, only the keys whose meaning
-  changed are rewritten; your comments and ordering stay.
+  changed are rewritten; your comments and ordering stay. A new definition is added at the end
+  of the file. Removing one removes the comments directly above and below it (with no blank line
+  in between); comments separated from it by a blank line, like the file's header, stay.
 - **Warnings** are for config that loads but cannot work: a rule whose `on` matches no event
   type, a `where` key no matching event has, a relative glob on a path field, scopes that can
   never cover the rule's events, an agent program that is not installed, a `cwd` that does not
