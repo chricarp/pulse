@@ -65,7 +65,7 @@ Pushes to a URL without a remote-tracking ref (`git push https://… branch`) le
 
 ## Schedule (`schedule`)
 
-Five-field cron (names, ranges, steps, lists; both day fields restricted means either matches) in the local zone or a configured IANA zone, or a fixed `every`. One timer for the next fire.
+Five-field cron (names, ranges, steps, lists; both day fields restricted means either matches) in the local zone or a configured IANA zone, or a fixed `every`. One timer for the next fire. A step larger than its field's range (`*/90` for minutes) is a config error: classic cron accepts it and matches only the range's start, which is never what was meant, and a huge one overflowed. `every` is at most ten years (more overflowed); the arithmetic on both is checked.
 
 **DST.** A local time skipped by a spring-forward fires at the first instant after the gap; a repeated local time fires once, at its first occurrence. So `30 2 * * *` fires at 03:00 on the spring-forward day and once on the fall-back day, and an hourly schedule neither fires twice at 03:00 nor twice in the repeated hour.
 

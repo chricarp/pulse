@@ -108,7 +108,8 @@ a new commit or push is reported whatever date it carries. A push to a URL with 
 ## `schedule`: a timer
 
 `schedule.fired` with `cron` or `every`, `scheduled_for`, and `late`. `cron` is five fields in
-your local zone or `timezone`. On a daylight-saving change, a skipped time fires right after the
+your local zone or `timezone`. A step must fit its field (`*/90` in the minute field is an error;
+for every 90 minutes use `every = "90m"`), and `every` is at most `3650d`. On a daylight-saving change, a skipped time fires right after the
 gap and a repeated time fires once. If the daemon was down (or the machine asleep) at a
 scheduled time, it fires **once** for the latest missed time, with `late: true`; never a backlog.
 

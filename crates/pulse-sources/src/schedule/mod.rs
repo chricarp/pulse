@@ -31,6 +31,9 @@ use crate::{BoxFuture, Source, SourceContext, SourceEnv, SourceError};
 
 /// A fire this long after its scheduled time is reported as late.
 pub const LATE_AFTER: Duration = Duration::from_secs(60);
+/// The longest `every`: ten years. More is a typo (and near `i64::MAX` milliseconds, arithmetic
+/// on it overflows).
+const MAX_EVERY: Duration = Duration::from_days(3650);
 
 #[derive(Debug)]
 pub struct ScheduleSource {
@@ -75,8 +78,10 @@ impl Plan {
         match self {
             Plan::Every(every) => {
                 let e = i64::try_from(every.as_millis()).ok()?.max(1);
-                let k = (t.as_millis() - anchor.as_millis()).div_euclid(e) + 1;
-                Some(Timestamp::from_millis(anchor.as_millis() + k.max(1) * e))
+                let k =
+                    t.as_millis().checked_sub(anchor.as_millis())?.div_euclid(e).checked_add(1)?;
+                let at = anchor.as_millis().checked_add(k.max(1).checked_mul(e)?)?;
+                Some(Timestamp::from_millis(at))
             }
             Plan::Cron { cron, zone } => {
                 let after = to_chrono(t)?;
@@ -97,8 +102,8 @@ impl Plan {
         }
         if let Plan::Every(every) = self {
             let e = i64::try_from(every.as_millis()).ok()?.max(1);
-            let k = (now.as_millis() - last.as_millis()).div_euclid(e);
-            return Some(Timestamp::from_millis(last.as_millis() + k * e));
+            let k = now.as_millis().checked_sub(last.as_millis())?.div_euclid(e);
+            return Some(Timestamp::from_millis(last.as_millis().checked_add(k.checked_mul(e)?)?));
         }
         // Walk forward; a schedule missed for months at one fire a minute is the worst case, so
         // after a bound, restart the walk close to `now`.
@@ -140,6 +145,9 @@ impl ScheduleSource {
                     return Err(SourceError::Config(format!("cron {expr:?} never fires")));
                 }
                 plan
+            }
+            (None, Some(every)) if every > MAX_EVERY => {
+                return Err(SourceError::Config(format!("every must be at most {MAX_EVERY}")));
             }
             (None, Some(every)) if !every.is_zero() => Plan::Every(every),
             _ => {
