@@ -159,21 +159,26 @@ fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ErrorData> 
     serde_json::from_value(params).map_err(|e| invalid_params(format!("invalid params: {e}")))
 }
 
-/// Streamable HTTP: `Mcp-Name` must equal `params.name` (SEP-2243 encoding). A mismatch is
-/// rejected with `HeaderMismatch`, which rmcp answers with HTTP 400. A missing header is
-/// accepted although the SEP says MUST reject: rmcp's client and, reportedly, the TypeScript
-/// SDK's do not send it for extension methods, so strictness would lock out the clients that
-/// exist today. stdio has no headers.
+/// Whether a missing `Mcp-Name` is rejected. The SEP says MUST, and the conformance suite
+/// grades it. rmcp's own client does not send the header for extension methods (and the
+/// TypeScript SDK's reportedly does not either); if a real client is locked out by this, set it
+/// to `false` and a mismatch is still rejected.
+const REQUIRE_MCP_NAME: bool = true;
+
+/// Streamable HTTP: `Mcp-Name` must be present and equal `params.name` (SEP-2243 encoding),
+/// else `HeaderMismatch`, which rmcp answers with HTTP 400. stdio has no headers.
 fn check_name_header(ctx: &RequestContext<RoleServer>, params: &Value) -> Result<(), ErrorData> {
     let Some(parts) = ctx.extensions.get::<http::request::Parts>() else { return Ok(()) };
-    let Some(raw) = parts.headers.get("mcp-name") else { return Ok(()) };
+    let mismatch = |what: &'static str| {
+        Err(ErrorData::header_mismatch(what, Some(json!({ "header": "Mcp-Name" }))))
+    };
+    let Some(raw) = parts.headers.get("mcp-name") else {
+        return if REQUIRE_MCP_NAME { mismatch("missing Mcp-Name header") } else { Ok(()) };
+    };
     let decoded = raw.to_str().ok().and_then(decode_header_value);
     let expected = params.get("name").and_then(Value::as_str);
     if decoded.is_none() || decoded.as_deref() != expected {
-        return Err(ErrorData::header_mismatch(
-            "Mcp-Name header does not match params.name",
-            Some(json!({ "header": "Mcp-Name" })),
-        ));
+        return mismatch("Mcp-Name header does not match params.name");
     }
     Ok(())
 }

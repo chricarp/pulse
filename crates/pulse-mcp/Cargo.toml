@@ -41,5 +41,9 @@ tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
 
+[[example]]
+name = "sep3415_fixture"
+required-features = ["sep3415"]
+
 [lints]
 workspace = true

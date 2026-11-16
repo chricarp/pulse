@@ -346,7 +346,7 @@ async fn http_disconnect_ends_the_stream() {
 }
 
 #[tokio::test]
-async fn mcp_name_must_match_when_present() {
+async fn mcp_name_is_required_and_must_match() {
     let fake = Fake::new();
     let router = pulse_mcp::router(fake.clone(), fake.config());
     let body = rpc(1, "events/poll", json!({ "name": "fs.file.created" }));
@@ -355,8 +355,7 @@ async fn mcp_name_must_match_when_present() {
         (Some("=?base64?ZnMuZmlsZS5jcmVhdGVk?="), StatusCode::OK),
         (Some("fs.file.deleted"), StatusCode::BAD_REQUEST),
         (Some("=?base64?not base64?="), StatusCode::BAD_REQUEST),
-        // Lenient on a missing header; see the module docs.
-        (None, StatusCode::OK),
+        (None, StatusCode::BAD_REQUEST),
     ];
     for (header, want) in cases {
         let r = router.clone().oneshot(http_request(ALICE_TOKEN, &body, header)).await.unwrap();

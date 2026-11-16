@@ -79,6 +79,13 @@ impl Fake {
         self.now_ms.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Sets the fake clock to the system clock (for the conformance fixture, which runs in
+    /// real time).
+    pub fn sync_clock(&self) {
+        let now = Timestamp::from_system_time(std::time::SystemTime::now());
+        self.now_ms.store(now.as_millis(), Ordering::SeqCst);
+    }
+
     pub fn emit(&self, type_: &str, subject: Option<&str>, data: Value) -> Event {
         let kind = match type_.split('.').next() {
             Some("git") => SourceKind::Git,

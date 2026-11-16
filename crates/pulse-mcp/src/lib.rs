@@ -44,7 +44,7 @@ mod tools;
 mod sep3415;
 
 pub use http::router;
-pub use server::serve_io;
+pub use server::{ServeError, serve_io};
 
 /// The agent an MCP session acts as.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

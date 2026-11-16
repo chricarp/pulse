@@ -4,7 +4,6 @@
 //! Every handler takes the caller's identity from the server (never from arguments; unknown
 //! arguments are rejected) and calls the backend or the subscription registry once.
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use pulse_contracts::config::TypeGlob;
@@ -256,7 +255,8 @@ async fn query_events<B: Backend>(
     let page = shared.backend.query_events(agent, query).await?;
     let rendered = render(&page.events, &shared.config.limits);
     let next_cursor = if rendered.included < page.events.len() {
-        page.events.get(rendered.included.wrapping_sub(1)).map(|e| e.id)
+        // `render` keeps at least one event, so `included >= 1` here.
+        page.events.get(rendered.included.saturating_sub(1)).map(|e| e.id)
     } else {
         page.next_cursor
     };
@@ -419,7 +419,7 @@ impl Progress {
         let mut param =
             ProgressNotificationParam::new(token.clone(), started.elapsed().as_secs_f64());
         param.total = Some(self.total);
-        param.message = Some(Cow::Borrowed("waiting for events").into_owned());
+        param.message = Some("waiting for events".to_owned());
         // A client that went away is noticed by the request's cancellation, not here.
         let _ = peer.notify_progress(param).await;
     }
