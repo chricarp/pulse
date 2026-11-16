@@ -102,7 +102,8 @@ for s in "${scenarios[@]}"; do
       ;;
     adopt) ;; # runs after main
     stale)
-      # A daemon.json left by a daemon that died: nothing listens on its port.
+      # A daemon.json left by a daemon that died. The harness points it at a port another
+      # program holds (it must be asked for a proof and never sent the token).
       printf '{"pid": 999999, "port": 9, "version": "0.1.0", "started_at": "2026-01-01T00:00:00Z"}' >"$home/daemon.json"
       code=$(run_app stale "$home" KDE)
       st=$("$bin" --home "$home" --json status >/dev/null 2>&1 && echo running || echo stopped)

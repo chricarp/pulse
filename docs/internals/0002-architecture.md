@@ -247,6 +247,8 @@ The same HTTP listener also serves `POST /ingest` (external events, JSON or JSON
 
 **The browser** gets the daemon token without it appearing in a URL: `pulse open` puts a single-use, two-minute **login code** in the URL fragment, and the UI exchanges it at `POST /auth/login` for the token (see [0004](0004-daemon-and-config.md)).
 
+**No client sends a credential to the port before whatever answers there has proven it knows it** (`GET /auth/proof`, see [0004](0004-daemon-and-config.md) and [0003](0003-threat-model.md)): the port is fixed, and while the daemon is stopped anyone can listen on it.
+
 ## MCP
 
 Tools: `list_event_types`, `query_events`, `subscribe`, `unsubscribe`, `wait_for_events`. All of them act as the agent the bearer token names, resolved on every request, and are scoped by its `allow` list: the catalog lists only the types the agent's scopes can match, and history is filtered by scope *while it is read*, so pages and cursors never name an event the agent cannot see. MCP cannot approve runs or change rules.
