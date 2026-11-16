@@ -259,7 +259,7 @@ The draft Events extension (SEP-3415) is implemented in **one module** behind th
 
 ## Persistence
 
-SQLite in WAL mode, one writer connection and one reader connection, each on its own thread behind a bounded channel (`pulse_store::StoreHandle`), so async code never blocks on SQLite. Migrations are numbered and append-only (`PRAGMA user_version`).
+SQLite in WAL mode with `synchronous=NORMAL`: a commit survives a crash of the daemon process; on an OS crash or power loss the last few commits can be lost, never half-applied or corrupted (see 0004, Engine). One writer connection and one reader connection, each on its own thread behind a bounded channel (`pulse_store::StoreHandle`), so async code never blocks on SQLite. Migrations are numbered and append-only (`PRAGMA user_version`).
 
 | Table | Purpose |
 |---|---|

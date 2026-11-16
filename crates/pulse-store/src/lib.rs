@@ -16,6 +16,10 @@
 //!
 //! - [`Store::commit`] writes events, deliveries, runs, outbox rows and rule state in **one
 //!   transaction**: a routing result is all there or not at all.
+//! - **Durability** (`synchronous=NORMAL` in WAL mode): a commit that returned survives a crash
+//!   of the process. On an OS crash or power loss the last commits before it can be rolled back
+//!   (the WAL is synced at checkpoints, not per commit); the database is never corrupted, and
+//!   a commit is still lost whole or kept whole. Callers must not promise more.
 //! - Events become visible in id order: a commit whose events are not in increasing id order,
 //!   or not all after the newest event already stored, is refused (`OutOfOrder`). Readers that
 //!   follow the log by cursor (MCP subscriptions) never look below a cursor again, so an event
@@ -128,6 +132,8 @@ impl Store {
             .map_err(|source| StoreError::Private { path: path.display().to_string(), source })?;
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Survives a process crash, may lose the newest commits on power loss, never corrupts.
+        // FULL would cost an fsync per commit; see the module docs.
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         Store::init(conn)
     }
