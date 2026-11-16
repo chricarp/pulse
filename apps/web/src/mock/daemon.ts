@@ -1139,8 +1139,11 @@ export class MockDaemon {
         const full = rule.project ? `${rule.project}/${rule.rule.name}` : rule.rule.name;
         def = { config: { ...ruleDefaults(rule.rule), name: full, archived: false }, origin };
       }
-      const decision = this.decide(def, e, this.now(), { ignoreState: ignore_runtime_state });
-      return { matched: decision !== null, decision };
+      const now = this.now();
+      const decision = this.decide(def, e, now, { ignoreState: ignore_runtime_state });
+      // Like the daemon: a debounced decision comes with what fires once it elapses.
+      const after_debounce = decision?.outcome.kind === "debounced" ? this.decide(def, e, now, { ignoreState: ignore_runtime_state, debounceElapsed: true }) : null;
+      return { matched: decision !== null, decision, after_debounce };
     },
     "rules.history": ({ name, outcomes, cursor, limit }) => {
       const lim = Math.min(Math.max(limit ?? 100, 1), 500);

@@ -408,7 +408,7 @@ export type ProjectList = { projects: Array<Project>, };
 
 export type ProjectTrustParams = { 
 /**
- * The directory containing `pulse.toml`.
+ * The directory containing `pulse.toml`. Absolute, or starting with `~`.
  */
 dir: string, 
 /**
@@ -684,8 +684,8 @@ paused: boolean, pulse_home: string,
  */
 user_home: string, port: number, sources: SourceCounts, runs: RunCounts, rules: number, agents: number, 
 /**
- * Problems in config files; see `system.config_errors`. Definitions from a file with errors
- * are not loaded.
+ * Problems in config files; see `system.config_errors`. While the user's file has errors,
+ * its last good version stays in effect; a project file with errors is inactive.
  */
 config_errors: number, };
 

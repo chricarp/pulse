@@ -95,8 +95,8 @@ pub struct SystemStatus {
     pub runs: RunCounts,
     pub rules: u32,
     pub agents: u32,
-    /// Problems in config files; see `system.config_errors`. Definitions from a file with errors
-    /// are not loaded.
+    /// Problems in config files; see `system.config_errors`. While the user's file has errors,
+    /// its last good version stays in effect; a project file with errors is inactive.
     pub config_errors: u32,
 }
 

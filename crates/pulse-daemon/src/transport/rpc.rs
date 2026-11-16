@@ -434,10 +434,10 @@ impl RpcHandler for RpcServer {
         Ok(ProjectList { projects: self.services.projects_list() })
     }
     async fn projects_trust(&self, _: &Self::Context, p: ProjectTrustParams) -> R<Project> {
-        map(self.services.projects_trust(p.dir.as_ref(), p.name.as_deref()).await)
+        map(self.services.projects_trust(&p.dir, p.name.as_deref()).await)
     }
     async fn projects_untrust(&self, _: &Self::Context, p: ProjectDirParams) -> R<Project> {
-        map(self.services.projects_untrust(p.dir.as_ref()).await)
+        map(self.services.projects_untrust(&p.dir).await)
     }
 
     async fn system_status(&self, _: &Self::Context, _: Empty) -> R<SystemStatus> {

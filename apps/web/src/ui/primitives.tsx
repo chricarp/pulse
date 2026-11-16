@@ -1,7 +1,9 @@
 // The app's controls. Untrusted strings only ever reach the DOM as text, through `visible()`.
 
 import {
+  createContext,
   forwardRef,
+  useContext,
   useEffect,
   useId,
   useRef,
@@ -223,6 +225,9 @@ export function Notice({ tone, title, children, actions }: { tone: Tone; title: 
 
 // ---- fields ----
 
+/** The id a `Field`'s control takes when it has none, so the label names it. */
+const FieldControlId = createContext<string | undefined>(undefined);
+
 export function Field({
   label,
   hint,
@@ -238,12 +243,16 @@ export function Field({
   htmlFor?: string;
   wide?: boolean;
 }) {
+  const auto = useId();
+  const id = htmlFor ?? auto;
   return (
     <div className={cx("field", wide && "field-wide", error && "field-invalid")}>
-      <label className="field-label" htmlFor={htmlFor}>
+      <label className="field-label" htmlFor={id}>
         {label}
       </label>
-      <div className="field-control">{children}</div>
+      <div className="field-control">
+        <FieldControlId.Provider value={htmlFor ? undefined : id}>{children}</FieldControlId.Provider>
+      </div>
       {error ? (
         <p className="field-error" role="alert">
           {error}
@@ -259,19 +268,22 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
   { className, mono, ...rest },
   ref,
 ) {
-  return <input ref={ref} className={cx("input", mono && "mono", className)} spellCheck={false} autoComplete="off" {...rest} />;
+  const fieldId = useContext(FieldControlId);
+  return <input ref={ref} className={cx("input", mono && "mono", className)} spellCheck={false} autoComplete="off" {...rest} id={rest.id ?? fieldId} />;
 });
 
 export const TextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement> & { mono?: boolean }>(function TextArea(
   { className, mono, ...rest },
   ref,
 ) {
-  return <textarea ref={ref} className={cx("input", "textarea", mono && "mono", className)} spellCheck={false} {...rest} />;
+  const fieldId = useContext(FieldControlId);
+  return <textarea ref={ref} className={cx("input", "textarea", mono && "mono", className)} spellCheck={false} {...rest} id={rest.id ?? fieldId} />;
 });
 
 export function Select({ className, children, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
+  const fieldId = useContext(FieldControlId);
   return (
-    <select className={cx("input", "select", className)} {...rest}>
+    <select className={cx("input", "select", className)} {...rest} id={rest.id ?? fieldId}>
       {children}
     </select>
   );

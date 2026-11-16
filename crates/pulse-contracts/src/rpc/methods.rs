@@ -514,7 +514,7 @@ pub struct ProjectList {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(optional_fields)]
 pub struct ProjectTrustParams {
-    /// The directory containing `pulse.toml`.
+    /// The directory containing `pulse.toml`. Absolute, or starting with `~`.
     pub dir: String,
     /// The prefix for its definitions. Default: the directory's name.
     #[serde(default)]

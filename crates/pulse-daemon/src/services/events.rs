@@ -219,16 +219,7 @@ impl Services {
 
 /// `~` in a filter's `path` and `subject` means the user's home directory, as in config.
 fn expand_home(filter: &mut EventFilter, user_home: &std::path::Path) {
-    let home = user_home.display().to_string();
-    let expand = |v: &mut Option<String>| {
-        if let Some(s) = v.as_mut() {
-            if s == "~" {
-                *s = home.clone();
-            } else if let Some(rest) = s.strip_prefix("~/") {
-                *s = format!("{}/{rest}", home.trim_end_matches('/'));
-            }
-        }
-    };
-    expand(&mut filter.path);
-    expand(&mut filter.subject);
+    for v in [&mut filter.path, &mut filter.subject].into_iter().flatten() {
+        *v = super::expand_tilde(v, user_home);
+    }
 }
