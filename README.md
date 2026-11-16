@@ -200,8 +200,18 @@ and run programs. The full threat model is
 - **Loop protection** stops a rule from being triggered by its own run, limits chains of runs,
   and backs both with cooldowns, rate limits and a circuit breaker. Attributing a file to a run is
   partly a guess; see [Loop protection](docs/user/loop-protection.md).
-- **Local only.** The daemon listens on `127.0.0.1`, every endpoint needs a token (`token`, mode
-  0600), and it checks `Host` and `Origin` against DNS rebinding and other web pages.
+- **Local only.** The daemon listens on `127.0.0.1`, every endpoint needs a token, and it checks
+  `Host` and `Origin` against DNS rebinding and other web pages. The Pulse home is private to
+  your account (directories `0700`; the token, log and database `0600`), made so at every start.
+- **Other accounts on the machine.** While the daemon is stopped, anyone can listen on its port.
+  So every client (CLI, web UI, desktop app, the `pulse mcp` bridge) first asks whatever answers
+  there to prove it knows the secret, and sends nothing if it cannot. `pulse open` hands the
+  browser its single-use login code through a private file, never on a command line, where other
+  accounts could read it. If you suspect the token leaked: `pulse stop`, delete
+  `$PULSE_HOME/token`, `pulse start`.
+- **Edits never overwrite silently.** Every rule, agent and source has a revision; saving over a
+  definition that changed meanwhile (in the file, the CLI or another window) is refused and shows
+  what changed.
 - **Project files** in repositories do nothing until you have reviewed what they define and
   trusted that exact content (`pulse project trust`), and stop again whenever it changes.
 
@@ -216,6 +226,12 @@ What is **not** a safety boundary:
   hostile agent.
 - Any program running as your user is fully trusted. The event log is not encrypted; treat
   `$PULSE_HOME` as sensitive.
+- The checks against other local accounts have gaps, listed in the
+  [threat model](docs/internals/0003-threat-model.md): a browser and the desktop app send the
+  proof request and the token on separate connections, milliseconds apart; an MCP client you
+  configure with the HTTP URL sends its agent token without asking for a proof (the `pulse mcp`
+  bridge does ask); and any local process can keep the daemon's 512 connection slots busy, which
+  blocks the CLI and UI while it does.
 - The Linux AppImage runs without Chromium's OS sandbox on Ubuntu 23.10 and later (see below).
 
 ## Status and honest limits
@@ -232,6 +248,9 @@ What is **not** a safety boundary:
   **without Chromium's OS sandbox** (`--no-sandbox`), because the AppImage cannot use Chromium's
   setuid helper and Ubuntu restricts the unprivileged user namespaces the sandbox needs; the app
   says so in its menus. The browser UI (`pulse open`) is the alternative.
+- **`pulse open` and sandboxed browsers.** A browser installed as a snap or flatpak (stock
+  Ubuntu Firefox is one) usually cannot read files under `~/.pulse`, so the login page
+  `pulse open` hands it may not load. `pulse open --print` prints the address to paste instead.
 - **MCP events extension (SEP-3415)** is experimental, **off by default**, and tracks a draft
   that will change; no mainstream client uses it yet. The plain MCP tools are what works today.
 - **Loop protection partly guesses.** Filesystems do not say which process wrote a file. For
@@ -247,7 +266,10 @@ What is **not** a safety boundary:
 - **Sources.** A slow trickle of many files is reported file by file, not folded into one event.
   After an inotify overflow, deletions in the lost window are not reported. A git push to a URL
   without a remote-tracking branch is not seen. A calendar fire more than 15 minutes late (after
-  a long suspend) is dropped.
+  a long suspend) is dropped. Calendar URLs are fetched directly and ignore `HTTP_PROXY` and
+  `HTTPS_PROXY`, because a feed's redirects cannot be checked through a proxy; behind a
+  proxy-only network, use a local `.ics` file. Calendars have a size and recurrence budget; the
+  source's health says when one is hit.
 - **Measured** on the development machine (release build): about 17 MB of memory and zero CPU
   when idle; unzipping 10,000 files into a watched folder produced one event and peaked at 18 MB.
   Details in [0009](docs/internals/0009-end-to-end.md#measurements).
