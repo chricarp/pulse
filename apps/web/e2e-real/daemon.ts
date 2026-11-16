@@ -117,13 +117,24 @@ export async function startDaemon(config?: (home: string) => string): Promise<Da
 
   const pulse = (...args: string[]) => execFileSync(pulseBin, args, { env }).toString().trim();
 
-  await start();
-  const served = await (await fetch(`http://127.0.0.1:${port}/`)).text();
-  const built = readFileSync(resolve(import.meta.dirname, "../dist/index.html"), "utf8");
+  // Read the build before starting anything: a missing `dist` must not leave a daemon behind.
+  const stale = `Run \`pnpm build\`, then \`cargo clean -p pulse-daemon && cargo build -p pulse-cli\`.`;
+  let built: string;
+  try {
+    built = readFileSync(resolve(import.meta.dirname, "../dist/index.html"), "utf8");
+  } catch {
+    throw new Error(`apps/web/dist is missing. ${stale}`);
+  }
   const asset = (html: string) => /assets\/index-[^"]+\.js/.exec(html)?.[0];
-  if (asset(served) !== asset(built)) {
+  await start();
+  try {
+    const served = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+    if (asset(served) !== asset(built)) {
+      throw new Error(`${pulseBin} serves a different UI build than apps/web/dist. ${stale}`);
+    }
+  } catch (e) {
     await stop();
-    throw new Error(`${pulseBin} serves a different UI build than apps/web/dist. Run \`pnpm build\`, then \`cargo build -p pulse-cli\`.`);
+    throw e;
   }
 
   return {
