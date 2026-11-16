@@ -1,15 +1,51 @@
-//! The daemon: engine wiring, services, the effect worker, config load/watch/write-back,
-//! project trust, and transports (RPC over WebSocket, `POST /ingest`, `/mcp`, the static UI).
+//! The daemon: the engine that ties sources, routing, the store and agents together, the
+//! services that are its API, and the transports in front of them.
 //!
-//! Not built yet. The pieces it wires together are ready:
-//! - `pulse_contracts::config::{parse_config_file, resolve}` and `pulse_core::Routing::compile`
-//!   for config; `pulse_contracts::rpc::{Request, RpcHandler, dispatch}` for the RPC server;
-//! - `pulse_core::{attribute, route, RouterState}` and `pulse_core::dedupe::Dedupe` for the
-//!   engine loop; `pulse_store::StoreHandle` and `Store::commit` for persistence;
-//! - `pulse_sources::{build, context}`, `pulse_agents::{adapter_for, supervise}` and
-//!   `pulse_mcp::Backend` for the edges.
+//! ```text
+//! sources ─▶ engine ─(one transaction)─▶ store ◀─ effect worker ─▶ adapter ─▶ supervisor
+//!   ingest/report/replay ─┘   │                     │
+//!                            hub ◀──────────────────┘   (live events, run changes, output)
+//!                             │
+//!   services ◀── transports: /ws (JSON-RPC), /ingest, /auth/login, /mcp, / (UI)
+//! ```
 //!
-//! Transports decode, call one service method, and map the error. Logic goes in services.
+//! - [`daemon`]: start and graceful shutdown; [`Daemon`] is what `pulse start` runs.
+//! - `engine`: dedupe, attribution, batching, `route()`, the atomic commit, the one debounce
+//!   timer. `worker`: outbox effects, concurrency, supervision, output, approvals, cancel.
+//! - [`Services`]: `events`, `rules`, `agents`, `runs`, `sources`, `projects`, `system` as plain
+//!   Rust methods. Transports call exactly one of them per request.
+//! - `config`: loading, last-good, hot reload, project trust, format-preserving write-back.
+//! - `hub`: bounded, rate-limited fan-out to subscribers.
+//! - [`wiring`]: the injected edges (source builder, adapters, supervisor, MCP router).
+//! - [`client`]: the typed RPC client the CLI uses.
+//! - [`auth`]: daemon token, per-agent MCP tokens, UI login codes.
+//!
+//! Decisions and their reasons: `docs/internals/0004-daemon-and-config.md`.
+
+pub mod auth;
+pub mod client;
+pub mod clock;
+mod config;
+pub mod daemon;
+mod engine;
+mod error;
+pub mod home;
+mod hub;
+pub mod logging;
+mod services;
+mod shared;
+mod sources;
+mod transport;
+pub mod wiring;
+mod worker;
+
+pub use clock::Clock;
+pub use daemon::{Daemon, DaemonOptions, StartError};
+pub use error::{ServiceError, ServiceResult};
+pub use home::PulseHome;
+pub use services::Services;
+pub use transport::{McpBackend, WS_PROTOCOL, WS_TOKEN_PROTOCOL_PREFIX};
+pub use wiring::{RealSupervisor, Supervisor, Wiring};
 
 /// The daemon's version, reported by `system.status`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
