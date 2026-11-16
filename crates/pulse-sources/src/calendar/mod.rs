@@ -12,8 +12,9 @@
 //! (`minutes_until` then says how late); older ones are dropped, never replayed as a backlog. What
 //! fired is kept in a state file in the Pulse home, so a restart does not repeat it.
 //!
-//! **Untrusted input:** the download is capped at [`MAX_ICS_BYTES`] with a 30 s timeout, the
-//! number of events and instances is capped, and titles and locations are cut to 1 KiB. Parsing
+//! **Untrusted input:** the download is capped at [`MAX_ICS_BYTES`] with a 30 s timeout for the
+//! whole fetch, a URL may not lead the daemon to local addresses (see [`http`]), the number of
+//! events and instances is capped, and titles and locations are cut to 1 KiB. Parsing
 //! and expansion run on the blocking pool, and an expansion's cost is bounded whatever the file
 //! says (see [`expand`] and [`recur`]): when a budget is reached, health says which event and
 //! which limit, and everything within budget still fires.
@@ -24,6 +25,7 @@
 //! a fire costs one pass of the planner over the occurrences, not a new expansion.
 
 mod expand;
+mod http;
 mod ics;
 mod recur;
 
@@ -37,6 +39,7 @@ use pulse_contracts::{Duration, SourceKind, SourceRef, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use self::expand::{Expanded, Occurrence, Zone};
+use self::http::{UrlPolicy, fetch_url};
 use self::ics::Calendar;
 use crate::clock::{Clock, SystemClock};
 use crate::state::StateFile;
@@ -150,6 +153,8 @@ pub struct CalendarSource {
     zone: Zone,
     state: StateFile,
     clock: Arc<dyn Clock>,
+    /// What a URL's fetches may reach (see [`http`]).
+    policy: UrlPolicy,
     /// Expansions done, so tests can check a fire does not cause one.
     #[cfg(test)]
     expansions: Arc<std::sync::atomic::AtomicUsize>,
@@ -194,6 +199,7 @@ impl CalendarSource {
             lead,
             zone: Zone::System,
             clock: Arc::new(SystemClock),
+            policy: UrlPolicy::default(),
             #[cfg(test)]
             expansions: Arc::default(),
         })
@@ -270,57 +276,6 @@ fn read_limited(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> {
     Ok((bytes.len() as u64 <= MAX_ICS_BYTES).then_some(bytes))
 }
 
-/// One HTTP GET with conditional headers, a size cap and a timeout. Blocking; run it off the
-/// async threads.
-fn fetch_url(
-    url: &str,
-    etag: Option<&str>,
-    last_modified: Option<&str>,
-    timeout: std::time::Duration,
-) -> Result<Fetched, String> {
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(timeout))
-        .http_status_as_error(false)
-        .max_redirects(5)
-        .user_agent(concat!("pulse/", env!("CARGO_PKG_VERSION")))
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                .build(),
-        )
-        .build();
-    let agent: ureq::Agent = config.into();
-    let mut req = agent.get(url);
-    if let Some(e) = etag {
-        req = req.header("If-None-Match", e);
-    }
-    if let Some(m) = last_modified {
-        req = req.header("If-Modified-Since", m);
-    }
-    let mut resp = req.call().map_err(|e| format!("cannot fetch {url}: {e}"))?;
-    let status = resp.status().as_u16();
-    if status == 304 {
-        return Ok(Fetched::Unchanged);
-    }
-    if !(200..300).contains(&status) {
-        return Err(format!("cannot fetch {url}: HTTP {status}"));
-    }
-    let header = |name: &str| {
-        resp.headers()
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.chars().take(256).collect::<String>())
-    };
-    let (etag, last_modified) = (header("etag"), header("last-modified"));
-    let text = resp
-        .body_mut()
-        .with_config()
-        .limit(MAX_ICS_BYTES)
-        .read_to_string()
-        .map_err(|e| format!("cannot read {url}: {e} (the limit is {MAX_ICS_BYTES} bytes)"))?;
-    Ok(Fetched::Body { text, etag, last_modified })
-}
-
 /// Runs `f` on the blocking pool. `None` if the source is stopped meanwhile (the job finishes
 /// on its own, within its budget). A panic there ends the source: it would repeat on the same
 /// input.
@@ -351,6 +306,7 @@ fn hash_text(text: &str) -> u64 {
 /// the validators for the next read. Blocking.
 fn read_and_parse(
     origin: &Origin,
+    policy: &UrlPolicy,
     v: &mut Validators,
     last_hash: Option<u64>,
     cache: &std::path::Path,
@@ -362,7 +318,7 @@ fn read_and_parse(
             f
         }
         Origin::Url(u) => {
-            fetch_url(u, v.etag.as_deref(), v.last_modified.as_deref(), FETCH_TIMEOUT)?
+            fetch_url(u, v.etag.as_deref(), v.last_modified.as_deref(), FETCH_TIMEOUT, policy)?
         }
     };
     let Fetched::Body { text, etag, last_modified } = fetched else { return Ok((None, None)) };
@@ -451,8 +407,9 @@ async fn run(src: CalendarSource, cx: &SourceContext) -> Result<(), SourceError>
         if now >= next_fetch {
             let (origin, mut v, cache) =
                 (src.origin.clone(), validators.clone(), body_cache.clone());
+            let policy = src.policy.clone();
             let job = blocking(cx, move || {
-                let r = read_and_parse(&origin, &mut v, last_hash, &cache);
+                let r = read_and_parse(&origin, &policy, &mut v, last_hash, &cache);
                 (r, v)
             });
             let Some((result, v)) = job.await? else { return Ok(()) };

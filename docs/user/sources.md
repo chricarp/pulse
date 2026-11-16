@@ -119,7 +119,10 @@ exceptions, cancellations and time zones (IANA, Outlook's Windows names) are han
 occurrence fires at most once per kind, even if it is moved; a fire up to 15 minutes late (after
 a suspend or restart) still happens and `minutes_until` shows how late. A URL is re-fetched every
 `refresh` (default 15 minutes) with caching headers; failures retry with backoff and show in the
-source's health.
+source's health. A feed may redirect (up to 5 times), but not from https to http, and not to an
+address on your machine or your local network unless the URL you configured is itself one (a
+calendar on your NAS); the source's health then says which address was refused. Calendar URLs
+are fetched directly: proxy settings from the environment (`HTTPS_PROXY`) are not used.
 
 A calendar can come from someone else (a subscribed feed, an invitation), so the work Pulse does
 for it is limited whatever it contains: at most 2,000 occurrences of one recurring event and

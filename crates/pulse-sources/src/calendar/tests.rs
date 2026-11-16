@@ -285,15 +285,20 @@ fn http_fetch_is_conditional_bounded_and_times_out() {
         (calendar(&[vevent("a", "A", "20261116T100000Z", "20261116T110000Z")]), "\"v1\"".into());
     let url = format!("{}/cal.ics", server.url);
     let timeout = std::time::Duration::from_secs(5);
-    let Fetched::Body { text, etag, .. } = fetch_url(&url, None, None, timeout).unwrap() else {
+    let Fetched::Body { text, etag, .. } =
+        fetch_url(&url, None, None, timeout, &UrlPolicy::default()).unwrap()
+    else {
         panic!()
     };
     assert!(text.contains("SUMMARY:A"));
     assert_eq!(etag.as_deref(), Some("\"v1\""));
-    assert!(matches!(fetch_url(&url, etag.as_deref(), None, timeout).unwrap(), Fetched::Unchanged));
+    assert!(matches!(
+        fetch_url(&url, etag.as_deref(), None, timeout, &UrlPolicy::default()).unwrap(),
+        Fetched::Unchanged
+    ));
     server.body.lock().unwrap().1 = "\"v2\"".into();
     assert!(matches!(
-        fetch_url(&url, Some("\"v1\""), None, timeout).unwrap(),
+        fetch_url(&url, Some("\"v1\""), None, timeout, &UrlPolicy::default()).unwrap(),
         Fetched::Body { .. }
     ));
     assert_eq!(
@@ -301,15 +306,19 @@ fn http_fetch_is_conditional_bounded_and_times_out() {
         vec![None, Some("\"v1\"".into()), Some("\"v1\"".into())]
     );
 
-    let err = fetch_url(&format!("{}/error", server.url), None, None, timeout).unwrap_err();
+    let err =
+        fetch_url(&format!("{}/error", server.url), None, None, timeout, &UrlPolicy::default())
+            .unwrap_err();
     assert!(err.contains("HTTP 500"), "{err}");
-    let err = fetch_url(&format!("{}/big", server.url), None, None, timeout).unwrap_err();
+    let err = fetch_url(&format!("{}/big", server.url), None, None, timeout, &UrlPolicy::default())
+        .unwrap_err();
     assert!(err.contains("limit"), "{err}");
     let err = fetch_url(
         &format!("{}/slow", server.url),
         None,
         None,
         std::time::Duration::from_millis(300),
+        &UrlPolicy::default(),
     )
     .unwrap_err();
     assert!(
@@ -441,4 +450,101 @@ async fn fires_reuse_the_expansion_and_a_budget_reached_shows_in_health() {
     let h = health.wait_for(|h| h.state == pulse_contracts::status::SourceState::Degraded).await;
     let message = h.unwrap().message.clone().unwrap();
     assert!(message.contains("\"Every second\" has more than 2000 occurrences"), "{message}");
+}
+
+/// A server on 127.0.0.1 that answers each request with `respond(path)`, until dropped.
+fn serve(respond: impl Fn(&str) -> String + Send + 'static) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut first = String::new();
+            if reader.read_line(&mut first).is_err() {
+                continue;
+            }
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let path = first.split_whitespace().nth(1).unwrap_or("/").to_owned();
+            let _ = stream.write_all(respond(&path).as_bytes());
+        }
+    });
+    url
+}
+
+fn redirect(to: &str) -> String {
+    format!(
+        "HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+}
+
+/// A "local service": a listener nobody should connect to. Whether anyone did is read without
+/// waiting: a completed connection is in the backlog before `fetch_url` returns.
+fn local_service() -> (TcpListener, u16) {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    l.set_nonblocking(true).unwrap();
+    let port = l.local_addr().unwrap().port();
+    (l, port)
+}
+
+fn was_reached(l: &TcpListener) -> bool {
+    match l.accept() {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => false,
+        Err(e) => panic!("{e}"),
+    }
+}
+
+#[test]
+fn a_feed_cannot_lead_the_daemon_to_a_local_address() {
+    let timeout = std::time::Duration::from_secs(5);
+    let cal = calendar(&[vevent("a", "A", "20261116T100000Z", "20261116T110000Z")]);
+    let ok = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{cal}",
+        cal.len()
+    );
+    // Every server here is on 127.0.0.1; the policy counts only the "local service"'s port as
+    // local, so the feed stands for a server on the internet.
+    let (service, port) = local_service();
+    let policy = || UrlPolicy::with_local(move |a| a.port() == port);
+    let feed = serve(move |path| match path {
+        "/to-ip" => redirect(&format!("http://127.0.0.1:{port}/admin")),
+        "/to-name" => redirect(&format!("http://localhost:{port}/admin")),
+        "/loop" => redirect("/loop"),
+        _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+    });
+    for path in ["/to-ip", "/to-name"] {
+        let err = fetch_url(&format!("{feed}{path}"), None, None, timeout, &policy()).unwrap_err();
+        assert!(err.contains("local or private address"), "{path}: {err}");
+        assert!(!was_reached(&service), "{path}: the redirect reached the local service");
+    }
+    let err = fetch_url(&format!("{feed}/loop"), None, None, timeout, &policy()).unwrap_err();
+    assert!(err.to_lowercase().contains("redirect"), "{err}");
+
+    // The configured host turning local later (DNS rebinding) is refused too.
+    let rebound = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = rebound.clone();
+    let body = ok.clone();
+    let feed = serve(move |_| body.clone());
+    let feed_port: u16 = feed.rsplit(':').next().unwrap().parse().unwrap();
+    let policy = UrlPolicy::with_local(move |a| {
+        a.port() == feed_port && flag.load(std::sync::atomic::Ordering::Relaxed)
+    });
+    let url = format!("{feed}/cal.ics");
+    assert!(matches!(fetch_url(&url, None, None, timeout, &policy), Ok(Fetched::Body { .. })));
+    rebound.store(true, std::sync::atomic::Ordering::Relaxed);
+    let err = fetch_url(&url, None, None, timeout, &policy).unwrap_err();
+    assert!(err.contains("now resolves to a local"), "{err}");
+
+    // A calendar the user keeps on a local address may redirect locally.
+    let body = ok.clone();
+    let local_feed = serve(move |_| body.clone());
+    let front = serve(move |_| redirect(&format!("{local_feed}/cal.ics")));
+    let got = fetch_url(&format!("{front}/x"), None, None, timeout, &UrlPolicy::default());
+    assert!(matches!(got, Ok(Fetched::Body { .. })), "{:?}", got.err());
 }

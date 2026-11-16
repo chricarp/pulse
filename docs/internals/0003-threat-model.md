@@ -90,6 +90,8 @@ A directory with a million files, an agent writing in a tight loop, a chatty ext
 
 A calendar is input other people control: a subscribed feed, or an invitation that lands in one. Its cost is bounded whatever it says, by budgets stated in [0005](0005-sources.md#calendar-calendar): parsing is linear in the (10 MiB) input, and one expansion takes at most 2,000,000 steps and 20,000 occurrences (100,000 steps and 2,000 occurrences per recurring event), with one-off events read first. Parsing and expansion run on the blocking pool, only when the calendar changed or once a day. A budget reached shows in the source's health, naming the event and the limit, and everything within budget still fires. What this does not bound: a feed can still fill the occurrences it is allowed with events that wake agents, which is what rules, rate limits and the per-agent scopes are for.
 
+A calendar URL is a request the daemon makes on behalf of someone else's server. Redirects may not lead it to loopback, private, link-local or similar addresses (unless the configured URL is itself on one: a calendar on the user's NAS), and this is checked on the address each connection goes to, so DNS that points a public name at `127.0.0.1` is refused too. Redirects are capped at 5, may not downgrade https to http, and the whole fetch has a 30 s timeout and a 10 MiB body. Environment proxies are not used for calendars, because through one none of this could be checked. Not a boundary: the request is a GET whose response is only parsed as ICS, so this limits reach, not what a reachable server is told (the URL, a User-Agent, and validators from earlier responses).
+
 ## Out of scope for v1
 
 - Defending against malware already running as the user.
