@@ -4,22 +4,10 @@
 
 use pulse_contracts::rpc::{EventFilter, method};
 use pulse_contracts::status::SourceState;
-use pulse_contracts::{DeliveryOutcome, OutputKind, RunStatus};
+use pulse_contracts::{Causation, DeliveryOutcome, OutputKind, RunStatus};
+use serde_json::json;
 
 use crate::support::*;
-
-fn fake_claude(text: &str, env: &[(&str, String)]) -> String {
-    let env: Vec<String> = env.iter().map(|(k, v)| format!("{k} = {v:?}")).collect();
-    replace(
-        text,
-        "adapter = \"claude-code\"\n",
-        &format!(
-            "adapter = \"claude-code\"\nprogram = {:?}\nenv = {{ {} }}\n",
-            fixture("fake-claude"),
-            env.join(", ")
-        ),
-    )
-}
 
 /// Definition of done: a PDF dropped into the watched folder runs the study agent, and its
 /// output reaches a subscriber while the run is still running.
@@ -99,6 +87,76 @@ async fn a_dropped_pdf_runs_the_study_agent_and_output_streams_while_it_runs() {
     let outcomes: Vec<&str> = detail.deliveries.iter().map(|d| d.outcome.kind_str()).collect();
     assert_eq!(outcomes, ["debounced", "fired"]);
     assert_eq!(watch.all_runs().await.len(), 1);
+    daemon.stop().await;
+}
+
+/// The lecture case: a PDF the user saves while the first one is being summarized is the
+/// user's, so it gets its own run. The agent's own files are attributed to its run from the
+/// paths its `Write` calls named (`reported`), so the agent still cannot trigger itself.
+/// (Under inference alone, the second PDF was skipped as a self-trigger.)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pdf_saved_while_another_is_summarized_gets_its_own_run() {
+    let env = Env::new();
+    let university = env.mkdir("University/Architettura");
+    let mut stream = Fifo::new(env.dir.path(), "stream");
+    let config = template("lecture-notes");
+    let config = replace(&config, "debounce = \"10s\"", "debounce = \"200ms\"");
+    let config = replace(
+        &config,
+        "path = \"~/University\"\n",
+        "path = \"~/University\"\nquiet = \"100ms\"\n",
+    );
+    let config = fake_claude(&config, &[("FAKE_AGENT_STREAM", stream.path.display().to_string())]);
+    env.write_config(&config);
+    let daemon = env.start().await;
+    let mut watch = daemon.watch().await;
+    watch.sources(SourceState::Healthy).await;
+
+    let path = |name: &str| university.join(name).display().to_string();
+    std::fs::write(path("lecture-07.pdf"), b"%PDF-1.4\n").unwrap();
+    let first = watch.run_in("the first run", |r| r.rule.as_deref() == Some("lecture-notes")).await;
+    stream.open().await;
+    let cwd = env.user_path("University").display().to_string();
+    stream.write(&format!("{}\n", claude::init(&cwd)));
+    stream.write(&format!(
+        "{}\n",
+        claude::tool_use("Read", json!({"file_path": path("lecture-07.pdf")}))
+    ));
+    watch.output_line(first.id, "Read ").await;
+
+    // The user saves the next lecture while the first is still being summarized.
+    std::fs::write(path("lecture-08.pdf"), b"%PDF-1.4\n").unwrap();
+    let (second_pdf, delivery) = watch
+        .delivery("lecture-08 to be routed past its debounce", |e, d| {
+            e.subject.as_deref() == Some(path("lecture-08.pdf").as_str())
+                && !matches!(d.outcome, DeliveryOutcome::Debounced { .. })
+        })
+        .await;
+    assert_eq!(delivery.outcome, DeliveryOutcome::Fired, "{delivery:?}");
+    assert_eq!((second_pdf.causation_run, second_pdf.causation), (None, None));
+    assert_eq!(watch.get_run(first.id).await.status, RunStatus::Running);
+
+    // The agent writes its summary: attributed to its run, from the tool call.
+    stream.write(&format!("{}\n", claude::write(&path("lecture-07.summary.md"))));
+    let summary = watch
+        .event("the summary's event", |e| {
+            e.subject.as_deref() == Some(path("lecture-07.summary.md").as_str())
+        })
+        .await;
+    assert_eq!(
+        (summary.causation_run, summary.causation),
+        (Some(first.id), Some(Causation::Inferred))
+    );
+    stream.write(&format!("{}\n", claude::result("done")));
+    stream.close();
+    assert_eq!(watch.run_terminal(first.id).await.status, RunStatus::Succeeded);
+
+    let second = delivery.run.expect("the fired delivery names its run");
+    stream.open().await;
+    stream.write(&format!("{}\n", claude::result("done")));
+    stream.close();
+    assert_eq!(watch.run_terminal(second).await.status, RunStatus::Succeeded);
+    assert_eq!(watch.all_runs().await.len(), 2);
     daemon.stop().await;
 }
 
