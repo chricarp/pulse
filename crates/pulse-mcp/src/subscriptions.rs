@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use crate::{AgentIdentity, Backend, BackendError, Limits};
+use crate::{AgentIdentity, Backend, BackendError, Clock, Limits};
 
 /// Pages of out-of-scope rows one read follows before handing back an advanced cursor.
 const MAX_EMPTY_PAGES: u32 = 8;
@@ -71,6 +71,22 @@ pub(crate) async fn read_after<B: Backend>(
         cursor = advanced;
     }
     Ok(Read { events: Vec::new(), cursor, has_more: true })
+}
+
+/// A cursor at the current end of the log as `agent` sees it: "from now". The newest row the
+/// backend examined (visible or not), so nothing already logged counts as new. On an empty log,
+/// the clock: every later event sorts after it.
+pub(crate) async fn head<B: Backend>(
+    backend: &B,
+    agent: &AgentIdentity,
+    clock: &Clock,
+) -> Result<EventId, BackendError> {
+    // Read before the query: an event logged after the query sorts after both.
+    let now = clock.now_cursor();
+    let query = EventQuery { limit: Some(1), order: Order::NewestFirst, ..EventQuery::default() };
+    let page = backend.query_events(agent, query).await?;
+    let newest = page.events.first().map(|e| e.id).into_iter().chain(page.next_cursor).max();
+    Ok(newest.unwrap_or(now))
 }
 
 #[derive(Debug, thiserror::Error)]

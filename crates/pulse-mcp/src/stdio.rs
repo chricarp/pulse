@@ -127,6 +127,10 @@ where
                         proxy.reply(&error(Value::Null, -32700, "parse error")).await;
                         continue;
                     };
+                    if !message.is_object() {
+                        proxy.reply(&error(Value::Null, -32600, "invalid request")).await;
+                        continue;
+                    }
                     if message.get("method").and_then(Value::as_str) == Some("notifications/cancelled") {
                         let target = message.pointer("/params/requestId").map(Value::to_string);
                         if let Some(handle) = target.and_then(|k| by_id.remove(&k)) {

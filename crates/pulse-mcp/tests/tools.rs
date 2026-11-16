@@ -133,6 +133,8 @@ async fn subscribe(client: &Client, filter: Value) -> (Value, Value) {
 async fn wait_returns_at_once_on_arrival_or_empty_at_the_deadline() {
     let fake = Fake::new();
     let (client, _) = connect(&fake, fake.config(), alice()).await;
+    // Logged in the same millisecond as the subscription, but before it: not new.
+    fake.file("/home/me/University/0-before.pdf");
     let (sub, cursor) = subscribe(&client, json!({ "types": ["fs.*"] })).await;
 
     // Already queued: no time passes.

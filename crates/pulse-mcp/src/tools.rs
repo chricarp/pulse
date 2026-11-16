@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use crate::present::render;
-use crate::subscriptions::{SubscribeError, read_after};
+use crate::subscriptions::{SubscribeError, head, read_after};
 use crate::{AgentIdentity, Backend, BackendError, Shared};
 
 const LIST_EVENT_TYPES: &str = "List the kinds of events Pulse can deliver to you: for each type, what it means, what its `subject` holds, which fields carry file paths, and an example `data` payload. Only types your permissions cover are listed. Call this first to learn the type names to use with `query_events` and `subscribe`. Takes no arguments.";
@@ -275,8 +275,8 @@ async fn subscribe<B: Backend>(
     a: SubscribeArgs,
 ) -> ToolResult {
     let filter = filter(a.types, a.sources, a.path, a.subject, a.text)?;
-    // Taken before subscribing, so nothing between the two is missed.
-    let cursor = shared.config.clock.now_cursor();
+    // Taken before subscribing; reads go by cursor, so nothing between the two is missed.
+    let cursor = head(shared.backend.as_ref(), agent, &shared.config.clock).await?;
     let id = shared.subscriptions.subscribe(shared.backend.as_ref(), agent, filter).await.map_err(
         |e| match e {
             SubscribeError::Backend(e) => e.into(),

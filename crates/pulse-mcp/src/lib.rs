@@ -101,8 +101,8 @@ pub trait Backend: Send + Sync + 'static {
     ) -> impl Future<Output = Result<AgentSubscription, BackendError>> + Send;
 }
 
-/// Wall-clock time, as a parameter so tests can fix it. Used only to turn "now" into a cursor
-/// and for SEP-3415 `maxAgeMs`; timers use tokio's clock.
+/// Wall-clock time, as a parameter so tests can fix it. Used for SEP-3415 `maxAgeMs` and as the
+/// "from now" cursor of an empty log; timers use tokio's clock.
 #[derive(Clone)]
 pub struct Clock(Arc<dyn Fn() -> Timestamp + Send + Sync>);
 
@@ -120,8 +120,7 @@ impl Clock {
     }
 
     /// A cursor positioned at "now": every event created from this millisecond on sorts after
-    /// it. Events from earlier in the same millisecond may also sort after it, so a "from now"
-    /// read can include one or two just-earlier events (at-least-once, never a loss).
+    /// it (events from earlier in the same millisecond may too).
     pub(crate) fn now_cursor(&self) -> EventId {
         let ms = u64::try_from(self.now().as_millis()).unwrap_or(0);
         EventId::from_ulid(Ulid::from_parts(ms, 0))

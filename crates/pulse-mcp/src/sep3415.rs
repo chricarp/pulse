@@ -29,14 +29,14 @@ use pulse_core::prompt::bounded_data_json;
 use rmcp::RoleServer;
 use rmcp::model::{
     CustomNotification, CustomRequest, CustomResult, ErrorCode, ErrorData, ExtensionCapabilities,
-    ServerNotification,
+    MetaObject, NotificationMetaObject, ServerNotification,
 };
 use rmcp::service::RequestContext;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 
-use crate::subscriptions::read_after;
+use crate::subscriptions::{head, read_after};
 use crate::{AgentIdentity, Backend, BackendError, Shared};
 
 pub(crate) const EXTENSION: &str = "io.modelcontextprotocol/events";
@@ -290,10 +290,10 @@ struct StreamParams {
     heartbeat_ms: Option<u64>,
 }
 
-/// A validated subscription: what to read, and where to start.
+/// A validated subscription: what to read, and where to start (`None`: from now).
 struct Subscription {
     filter: EventFilter,
-    start: EventId,
+    start: Option<EventId>,
     truncated: bool,
 }
 
@@ -340,7 +340,7 @@ fn resolve<B: Backend>(
     let clock = &shared.config.clock;
     // `null` and absent both mean "from now", and `maxAgeMs` is then ignored.
     let Some(cursor) = cursor else {
-        return Ok(Subscription { filter, start: clock.now_cursor(), truncated: false });
+        return Ok(Subscription { filter, start: None, truncated: false });
     };
     let cursor: EventId = cursor.parse().map_err(|_| invalid_params("unrecognized cursor"))?;
     let floor = max_age_ms.map(|age| {
@@ -348,8 +348,10 @@ fn resolve<B: Backend>(
         EventId::from_ulid(Ulid::from_parts(now.saturating_sub(age), 0))
     });
     Ok(match floor {
-        Some(floor) if floor > cursor => Subscription { filter, start: floor, truncated: true },
-        _ => Subscription { filter, start: cursor, truncated: false },
+        Some(floor) if floor > cursor => {
+            Subscription { filter, start: Some(floor), truncated: true }
+        }
+        _ => Subscription { filter, start: Some(cursor), truncated: false },
     })
 }
 
@@ -406,17 +408,17 @@ async fn poll<B: Backend>(
     agent: &AgentIdentity,
     p: PollParams,
 ) -> Result<Value, ErrorData> {
-    let bootstrap = p.cursor.is_none();
     let sub = resolve(shared, agent, &p.name, p.arguments, p.cursor, p.max_age_ms)?;
     let field_max = shared.config.limits.field_max_bytes;
-    if bootstrap {
+    let Some(start) = sub.start else {
+        let now = head(shared.backend.as_ref(), agent, &shared.config.clock).await?;
         return Ok(json!({
-            "resultType": "complete", "events": [], "cursor": sub.start,
+            "resultType": "complete", "events": [], "cursor": now,
             "truncated": false, "hasMore": false, "nextPollMs": NEXT_POLL_MS,
         }));
-    }
+    };
     let max = p.max_events.unwrap_or(DEFAULT_POLL_EVENTS).clamp(1, MAX_POLL_EVENTS);
-    let read = read_after(shared.backend.as_ref(), agent, &sub.filter, sub.start, max).await?;
+    let read = read_after(shared.backend.as_ref(), agent, &sub.filter, start, max).await?;
     let events: Vec<Value> = read.events.iter().map(|e| occurrence(e, field_max)).collect();
     Ok(json!({
         "resultType": "complete",
@@ -437,22 +439,21 @@ struct Stream<'a> {
 }
 
 impl Stream<'_> {
-    /// Sends one `notifications/events/*`. `Err` when the client is gone.
+    /// Sends one `notifications/events/*`, tagged with the stream's subscription id. `Err` when
+    /// the client is gone.
     async fn send(&mut self, method: &'static str, mut params: Value) -> Result<(), ErrorData> {
-        params["_meta"] = match params.get("_meta") {
-            Some(Value::Object(m)) => {
-                let mut m = m.clone();
-                m.insert(SUBSCRIPTION_ID.into(), self.meta.clone());
-                Value::Object(m)
-            }
-            _ => json!({ SUBSCRIPTION_ID: self.meta }),
+        // rmcp writes `_meta` from the notification's meta, not from `params`: move any
+        // occurrence `_meta` there, next to the subscription id.
+        let mut meta = match params.as_object_mut().and_then(|p| p.remove("_meta")) {
+            Some(Value::Object(m)) => m,
+            _ => Map::new(),
         };
+        meta.insert(SUBSCRIPTION_ID.into(), self.meta.clone());
+        let mut notification = CustomNotification::new(method, Some(params));
+        notification.extensions.insert(NotificationMetaObject(MetaObject(meta)));
         self.ctx
             .peer
-            .send_notification(ServerNotification::CustomNotification(CustomNotification::new(
-                method,
-                Some(params),
-            )))
+            .send_notification(ServerNotification::CustomNotification(notification))
             .await
             .map_err(|e| ErrorData::internal_error(format!("stream closed: {e}"), None))?;
         self.last_sent = Instant::now();
@@ -492,7 +493,10 @@ async fn stream<B: Backend>(
         meta: serde_json::to_value(&ctx.id).unwrap_or(Value::Null),
         last_sent: Instant::now(),
     };
-    let mut cursor = sub.start;
+    let mut cursor = match sub.start {
+        Some(c) => c,
+        None => head(shared.backend.as_ref(), agent, &shared.config.clock).await?,
+    };
     out.send(
         "notifications/events/active",
         json!({

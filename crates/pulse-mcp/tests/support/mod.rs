@@ -12,7 +12,7 @@ use pulse_contracts::{
 use pulse_mcp::{AgentIdentity, AgentSubscription, Backend, BackendError, Clock, McpConfig};
 use rmcp::model::{
     CallToolRequestParams, ClientRequest, CustomNotification, CustomRequest,
-    ProgressNotificationParam, ProtocolVersion, ServerResult,
+    NotificationMetaObject, ProgressNotificationParam, ProtocolVersion, ServerResult,
 };
 use rmcp::service::{ClientLifecycleMode, NotificationContext, RunningService};
 use rmcp::{ClientHandler, RoleClient, serve_client_with_lifecycle};
@@ -141,6 +141,22 @@ impl Fake {
         }
     }
 
+    /// Resolves when every live subscription whose filter satisfies `f` has been dropped.
+    pub async fn closed_where(&self, f: impl Fn(&EventFilter) -> bool) {
+        let senders: Vec<_> = self
+            .subs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| f(&s.filter))
+            .map(|s| s.tx.clone())
+            .collect();
+        assert!(!senders.is_empty(), "no such subscription");
+        for tx in senders {
+            tx.closed().await;
+        }
+    }
+
     /// Takes `agent`'s access away and ends its live subscriptions, as the daemon would when an
     /// agent is deleted.
     pub fn revoke(&self, agent: &AgentIdentity) {
@@ -179,6 +195,10 @@ fn visible(agent: &AgentIdentity, e: &Event) -> bool {
 fn matches(f: &EventFilter, e: &Event) -> bool {
     (f.types.is_empty() || f.types.iter().any(|t| type_matches(t.as_str(), e.type_.as_str())))
         && f.path.as_deref().is_none_or(|p| e.paths().iter().any(|x| x.starts_with(p)))
+        && f.subject.as_deref().is_none_or(|g| {
+            let s = e.subject.as_deref().unwrap_or("");
+            g.strip_suffix('*').map_or(s == g, |prefix| s.starts_with(prefix))
+        })
         && f.text.as_deref().is_none_or(|t| {
             let t = t.to_lowercase();
             e.subject.as_deref().is_some_and(|s| s.to_lowercase().contains(&t))
@@ -278,11 +298,22 @@ pub enum Note {
 pub struct Recorder(pub mpsc::UnboundedSender<Note>);
 
 impl ClientHandler for Recorder {
+    /// rmcp hands a notification's `_meta` to the handler separately (for custom notifications,
+    /// inside `ctx.extensions`); put it back where it was on the wire, so tests read params as
+    /// sent.
     async fn on_custom_notification(
         &self,
-        n: CustomNotification,
-        _ctx: NotificationContext<RoleClient>,
+        mut n: CustomNotification,
+        ctx: NotificationContext<RoleClient>,
     ) {
+        let meta = ctx
+            .extensions
+            .get::<NotificationMetaObject>()
+            .map(|m| m.0.0.clone())
+            .unwrap_or_else(|| ctx.meta.0.0.clone());
+        if let Some(Value::Object(p)) = n.params.as_mut() {
+            p.insert("_meta".into(), Value::Object(meta));
+        }
         let _ = self.0.send(Note::Custom(n));
     }
 
@@ -360,16 +391,18 @@ pub fn ids(events: &[Value]) -> Vec<String> {
     events.iter().map(|e| e["id"].as_str().unwrap().to_owned()).collect()
 }
 
-/// Sends an extension request and returns its result.
-pub async fn custom(client: &Client, method: &'static str, params: Value) -> Result<Value, String> {
-    match client
-        .peer()
-        .send_request(ClientRequest::CustomRequest(CustomRequest::new(method, Some(params))))
-        .await
-    {
+/// Sends an extension request and returns its result or its error.
+pub async fn custom(
+    client: &Client,
+    method: &'static str,
+    params: Value,
+) -> Result<Value, rmcp::model::ErrorData> {
+    let request = ClientRequest::CustomRequest(CustomRequest::new(method, Some(params)));
+    match client.peer().send_request(request).await {
         Ok(ServerResult::CustomResult(r)) => Ok(r.0),
-        Ok(other) => Err(format!("unexpected result {other:?}")),
-        Err(e) => Err(e.to_string()),
+        Ok(other) => panic!("unexpected result {other:?}"),
+        Err(rmcp::ServiceError::McpError(e)) => Err(e),
+        Err(e) => panic!("{e}"),
     }
 }
 
