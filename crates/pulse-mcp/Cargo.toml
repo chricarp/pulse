@@ -6,7 +6,15 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+# The draft MCP Events extension, in one module. Also gated at runtime by
+# `[daemon] mcp_events_extension`.
+sep3415 = []
+
 [dependencies]
+pulse-contracts.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

@@ -29,8 +29,8 @@ pub mod typescript;
 pub use event::{Attribution, Causation, Event, EventType, NewEvent, SourceKind, SourceRef};
 pub use ids::{DeliveryId, EventId, RunId, SubscriptionId, Ulid};
 pub use run::{
-    BlockReason, Decision, Delivery, DeliveryOutcome, Outcome, RenderedPrompt, Run, RunOutput,
-    RunStatus,
+    BlockReason, Decision, Delivery, DeliveryOutcome, Outcome, OutputKind, RenderedPrompt, Run,
+    RunOutput, RunStatus, RunSummary,
 };
 pub use time::{Duration, Timestamp};
 

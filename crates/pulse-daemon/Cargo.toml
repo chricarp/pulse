@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+# Add pulse-core, pulse-store, pulse-sources, pulse-agents and pulse-mcp (all declared in the
+# workspace) as the wiring lands.
 [dependencies]
 
 [lints]

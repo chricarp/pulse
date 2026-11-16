@@ -6,7 +6,12 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "pulse"
+path = "src/main.rs"
+
 [dependencies]
+pulse-daemon.workspace = true
 
 [lints]
 workspace = true
