@@ -89,6 +89,24 @@ The log is the queue: nothing is buffered per subscription, so a slow agent is b
 dropped. Pass back the last cursor to continue; after a restart, subscribe again and keep the old
 cursor. Subscriptions are limited to 16 per agent and expire after 30 minutes without a wait.
 
+## Limits
+
+An agent's token can only take its own share of Pulse, so a client stuck in a loop cannot make
+Pulse unreachable for the CLI, the UI or other agents. The limits are fixed, far above what one
+or a dozen clients need, and per agent: clients sharing an agent share them.
+
+| Limit | What the client sees past it |
+|---|---|
+| 32 requests in flight per agent, counting open streams and long waits (256 for all agents) | HTTP 429 (503 for the total) with a JSON-RPC error saying why and `Retry-After: 5`. Finish or close a request, then retry. |
+| 4 `wait_for_events` at once per subscription, 16 per agent | A tool error. Wait for one to return; the cursor keeps your place, so nothing is lost. |
+| 16 subscriptions per agent | A tool error listing yours. Subscribing with the same filter reuses one. |
+| 48 sessions per agent, for clients on protocol versions before 2026-07-28 | Nothing: the agent's least recently used idle session is closed instead. If that was yours, your next request gets HTTP 404 and your client opens a new session. |
+| 64 KiB per request | HTTP 413. |
+| 24 KiB of events per result | Fewer events, with `has_more` (or `next_cursor`) set: call again to get the rest. |
+
+Pulse closes the connection after each response (`Connection: close`); HTTP clients reconnect on
+their own.
+
 Event content in tool results is fenced as untrusted data, with a notice that receiving an event
 is not permission to act. As with prompts, this lowers the odds of injection; it does not make a
 model immune.
@@ -105,5 +123,7 @@ are what works today. To try it:
 mcp_events_extension = true
 ```
 
-then restart the daemon (`pulse stop`, `pulse start`). Details:
+then restart the daemon (`pulse stop`, `pulse start`). A poll result holds at most 24 KiB of
+events (`hasMore` then says to poll again), and an agent can have 8 push streams open; the
+ninth is refused with `ResourceExhausted`. Details:
 [docs/internals/0007-mcp-and-sep-3415.md](../internals/0007-mcp-and-sep-3415.md).
