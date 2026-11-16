@@ -1245,6 +1245,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hmac",
+ "hyper",
+ "hyper-util",
  "notify 7.0.0",
  "pulse-agents",
  "pulse-contracts",

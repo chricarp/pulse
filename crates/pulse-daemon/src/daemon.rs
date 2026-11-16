@@ -5,7 +5,7 @@
 //! start the engine, the worker, the sources and the listener, then write `daemon.json`.
 //!
 //! Stop (SIGTERM/SIGINT, `system.shutdown`, or [`Daemon::shutdown`]): stop the listener and
-//! close connections, stop sources, stop the engine, cancel every run and wait until the
+//! close connections (those still open after a few seconds are dropped: see `server`), stop sources, stop the engine, cancel every run and wait until the
 //! supervisor has reaped each one, checkpoint the database, remove `daemon.json`, release the
 //! lock.
 
@@ -163,12 +163,7 @@ impl Daemon {
         let _ = shared.port.set(port);
         let app = crate::transport::router(services.clone());
         let stop = shared.shutdown.clone();
-        let server = tokio::spawn(async move {
-            let serve = axum::serve(listener, app).with_graceful_shutdown(stop.cancelled_owned());
-            if let Err(e) = serve.await {
-                tracing::error!("the HTTP server stopped: {e}");
-            }
-        });
+        let server = tokio::spawn(crate::server::serve(listener, app, stop, crate::server::LIMITS));
 
         shared.clear_pending_state();
         let mut tasks = vec![tokio::spawn(shared.clone().run_state_notifier(services.clone()))];

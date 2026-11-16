@@ -57,6 +57,7 @@ An agent's output triggers the agent again. See "Loop protection" in [0002](0002
 ### 4. Another local user or a web page reaching the daemon
 
 - The listener binds to `127.0.0.1` only.
+- Without a token, a local process can still open connections. Headers must arrive within 30 s, at most 512 connections are served at once, and shutdown closes what is left after 3 s, so it cannot hold the daemon open or exhaust its file descriptors. **Honest limit:** it can keep all 512 slots busy and deny the listener (CLI, UI, ingest) while it does; loopback TCP does not say which local user is calling, so there is nothing cheap to ration by.
 - Every endpoint requires a token (WebSocket, ingest, MCP). The token file is mode `0600`. Token comparisons are constant time.
 - The server checks the `Host` header (DNS rebinding) and, for browsers, the `Origin`. `/mcp` refuses every request that carries an `Origin`.
 - MCP history is filtered by the agent's scope while it is read, so neither results nor cursors reveal that an out-of-scope event matched a search. Past a scan budget of 4096 hidden matching rows, a cursor does point at a hidden row: that reveals only that so many hidden events matched, and when.
