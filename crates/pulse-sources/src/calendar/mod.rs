@@ -220,14 +220,18 @@ fn read_file(
         std::io::ErrorKind::NotFound => format!("{} does not exist", path.display()),
         _ => format!("cannot read {}: {e}", path.display()),
     })?;
-    if meta.len() > MAX_ICS_BYTES {
-        return Err(format!("{} is larger than {MAX_ICS_BYTES} bytes", path.display()));
+    // Not a pipe or a device: reading one could block or never end.
+    if !meta.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
     }
     let stamp = meta.modified().ok().map(|m| (m, meta.len()));
     if stamp.is_some() && stamp == v.file_stamp {
         return Ok((Fetched::Unchanged, stamp));
     }
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    // The size is checked on what is read, not on the metadata: the file may grow meanwhile.
+    let bytes = read_limited(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?
+        .ok_or_else(|| format!("{} is larger than {MAX_ICS_BYTES} bytes", path.display()))?;
     Ok((
         Fetched::Body {
             text: String::from_utf8_lossy(&bytes).into_owned(),
@@ -236,6 +240,14 @@ fn read_file(
         },
         stamp,
     ))
+}
+
+/// A file's contents, or `None` if it is larger than [`MAX_ICS_BYTES`].
+fn read_limited(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(MAX_ICS_BYTES + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= MAX_ICS_BYTES).then_some(bytes))
 }
 
 /// One HTTP GET with conditional headers, a size cap and a timeout. Blocking; run it off the
@@ -301,7 +313,10 @@ async fn run(src: CalendarSource, cx: &SourceContext) -> Result<(), SourceError>
         Validators { etag: saved.etag, last_modified: saved.last_modified, file_stamp: None };
     // A URL answered with 304 needs the body from last time.
     let mut calendar = match &src.origin {
-        Origin::Url(_) => std::fs::read_to_string(&body_cache).ok().map(|t| ics::parse(&t)),
+        Origin::Url(_) => read_limited(&body_cache)
+            .ok()
+            .flatten()
+            .map(|b| ics::parse(&String::from_utf8_lossy(&b))),
         Origin::File(_) => None,
     };
     if calendar.is_none() {

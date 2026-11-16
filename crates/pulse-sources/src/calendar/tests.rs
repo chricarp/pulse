@@ -372,3 +372,14 @@ fn absurd_lead_or_refresh_is_a_config_error() {
         assert!(matches!(err, SourceError::Config(_)), "{err}");
     }
 }
+
+#[test]
+fn a_file_is_read_through_its_limit_and_must_be_a_regular_file() {
+    let err = read_file(std::path::Path::new("/dev/zero"), &Validators::default()).unwrap_err();
+    assert!(err.contains("not a regular file"), "{err}");
+    let dir = tempfile::tempdir().unwrap();
+    let big = dir.path().join("big.ics");
+    std::fs::write(&big, vec![b'x'; MAX_ICS_BYTES as usize + 1]).unwrap();
+    let err = read_file(&big, &Validators::default()).unwrap_err();
+    assert!(err.contains("larger than"), "{err}");
+}

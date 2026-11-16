@@ -1,8 +1,10 @@
 //! iCalendar (RFC 5545) reading: content lines, components, and the `VEVENT` properties we use.
 //!
 //! Lenient where real exports are sloppy (LF instead of CRLF, unknown properties, missing
-//! `VCALENDAR`), strict about bounds: the input, the number of events, and every string kept
-//! from it are capped, because calendar content is untrusted.
+//! `VCALENDAR`), strict about bounds: the input, the number of events, the nesting depth, the
+//! number of time zones, and every string kept from it are capped, because calendar content is
+//! untrusted. Every content line costs a bounded number of steps (`Calendar::steps` counts
+//! them), so parsing is linear in the input.
 
 use std::collections::BTreeMap;
 
@@ -10,6 +12,10 @@ pub(crate) const MAX_EVENTS: usize = 20_000;
 pub(crate) const MAX_TEXT: usize = 1024;
 const MAX_LINE: usize = 64 * 1024;
 const MAX_LIST: usize = 1_000;
+/// Components nest at most this deep (real calendars use 3: `VCALENDAR`, `VEVENT`, `VALARM`).
+/// Deeper ones are skipped whole.
+pub(crate) const MAX_DEPTH: usize = 8;
+const MAX_ZONES: usize = 1_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Prop {
@@ -48,26 +54,46 @@ pub(crate) struct Calendar {
     /// `X-WR-TIMEZONE` (Google): the calendar's zone, used for floating times.
     pub default_tz: Option<String>,
     pub warnings: Vec<String>,
+    /// Parser steps: one per content line plus the open components an `END` was compared
+    /// with (at most [`MAX_DEPTH`]).
+    pub steps: usize,
 }
 
-/// Unfolds content lines (a line starting with a space or tab continues the previous one).
-fn unfold(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// Calls `f` with each unfolded content line (a line starting with a space or tab continues the
+/// previous one), at most [`MAX_LINE`] bytes; what is past that is dropped. One line is held at
+/// a time.
+fn unfold(text: &str, mut f: impl FnMut(&str)) {
+    let mut current = String::new();
     for raw in text.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw);
         if let Some(rest) = line.strip_prefix([' ', '\t']) {
-            if let Some(last) = out.last_mut() {
-                if last.len() + rest.len() <= MAX_LINE {
-                    last.push_str(rest);
-                }
+            if !current.is_empty() {
+                push_bounded(&mut current, rest);
                 continue;
             }
         }
-        if !line.is_empty() {
-            out.push(line.chars().take(MAX_LINE).collect());
+        if !current.is_empty() {
+            f(&current);
+            current.clear();
         }
+        push_bounded(&mut current, line);
     }
-    out
+    if !current.is_empty() {
+        f(&current);
+    }
+}
+
+fn push_bounded(out: &mut String, s: &str) {
+    let room = MAX_LINE.saturating_sub(out.len());
+    if s.len() <= room {
+        out.push_str(s);
+    } else {
+        let mut end = room;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.push_str(&s[..end]);
+    }
 }
 
 /// `NAME;P1=v;P2="quoted;value":value`.
@@ -143,54 +169,113 @@ pub(crate) fn text(value: &str) -> String {
 }
 
 pub(crate) fn parse(input: &str) -> Calendar {
-    let mut cal = Calendar::default();
-    // The component stack, innermost last.
-    let mut stack: Vec<String> = Vec::new();
-    let mut event: Option<VEvent> = None;
-    let mut tz: Option<String> = None;
-    let mut skipped_events = 0usize;
-    for line in unfold(input) {
-        let Some(prop) = parse_line(&line) else { continue };
+    let mut p = Parser::default();
+    unfold(input, |line| p.line(line));
+    let mut cal = p.cal;
+    if p.skipped_events > 0 {
+        cal.warnings.push(format!(
+            "the calendar has more than {MAX_EVENTS} events; {} were ignored",
+            p.skipped_events
+        ));
+    }
+    if p.too_deep > 0 {
+        cal.warnings.push(format!(
+            "{} components are nested deeper than {MAX_DEPTH} levels and were ignored",
+            p.too_deep
+        ));
+    }
+    if p.skipped_zones > 0 {
+        cal.warnings.push(format!(
+            "the calendar defines more than {MAX_ZONES} time zones; {} were ignored",
+            p.skipped_zones
+        ));
+    }
+    cal
+}
+
+#[derive(Default)]
+struct Parser {
+    cal: Calendar,
+    /// The open components, innermost last; at most [`MAX_DEPTH`].
+    stack: Vec<String>,
+    /// Open components past [`MAX_DEPTH`]: only counted, and everything in them is ignored.
+    overflow: usize,
+    event: Option<VEvent>,
+    tz: Option<String>,
+    skipped_events: usize,
+    skipped_zones: usize,
+    too_deep: usize,
+}
+
+impl Parser {
+    fn line(&mut self, line: &str) {
+        self.cal.steps += 1;
+        let Some(prop) = parse_line(line) else { return };
+        let (stack, cal) = (&mut self.stack, &mut self.cal);
         match prop.name.as_str() {
             "BEGIN" => {
+                if self.overflow > 0 || stack.len() == MAX_DEPTH {
+                    self.overflow += 1;
+                    self.too_deep += 1;
+                    return;
+                }
                 let comp = prop.value.trim().to_ascii_uppercase();
-                if comp == "VEVENT" && stack.last().map(String::as_str) != Some("VEVENT") {
+                cal.steps += stack.len();
+                if comp == "VEVENT" && !stack.iter().any(|c| c == "VEVENT") {
                     if cal.events.len() < MAX_EVENTS {
-                        event = Some(VEvent::default());
+                        self.event = Some(VEvent::default());
                     } else {
-                        skipped_events += 1;
+                        self.skipped_events += 1;
                     }
                 }
                 stack.push(comp);
-                continue;
+                return;
             }
             "END" => {
+                // Closes the innermost skipped component, whatever its name: they are not
+                // tracked.
+                if self.overflow > 0 {
+                    self.overflow -= 1;
+                    return;
+                }
                 let comp = prop.value.trim().to_ascii_uppercase();
+                cal.steps += stack.len();
                 if let Some(i) = stack.iter().rposition(|c| *c == comp) {
                     stack.truncate(i);
                 }
                 if comp == "VEVENT" && !stack.iter().any(|c| c == "VEVENT") {
-                    cal.events.extend(event.take());
+                    cal.events.extend(self.event.take());
                 }
                 if comp == "VTIMEZONE" {
-                    tz = None;
+                    self.tz = None;
                 }
-                continue;
+                return;
             }
             _ => {}
         }
+        if self.overflow > 0 {
+            return;
+        }
         match stack.last().map(String::as_str) {
             Some("VEVENT") => {
-                if let Some(ev) = event.as_mut() {
+                if let Some(ev) = self.event.as_mut() {
                     event_prop(ev, prop);
                 }
             }
-            Some("VTIMEZONE") if prop.name == "TZID" => tz = Some(prop.value.trim().to_owned()),
+            Some("VTIMEZONE") if prop.name == "TZID" => {
+                self.tz = Some(prop.value.trim().to_owned());
+            }
             Some("STANDARD") if prop.name == "TZOFFSETTO" => {
-                if let Some(id) = &tz {
-                    cal.tz_offsets
-                        .entry(id.clone())
-                        .or_insert_with(|| prop.value.trim().to_owned());
+                if let Some(id) = &self.tz {
+                    if cal.tz_offsets.len() < MAX_ZONES || cal.tz_offsets.contains_key(id) {
+                        cal.tz_offsets
+                            .entry(id.clone())
+                            .or_insert_with(|| prop.value.trim().to_owned());
+                    } else {
+                        self.skipped_zones += 1;
+                        // Once per zone.
+                        self.tz = None;
+                    }
                 }
             }
             Some("VCALENDAR") | None if prop.name == "X-WR-TIMEZONE" => {
@@ -199,12 +284,6 @@ pub(crate) fn parse(input: &str) -> Calendar {
             _ => {}
         }
     }
-    if skipped_events > 0 {
-        cal.warnings.push(format!(
-            "the calendar has more than {MAX_EVENTS} events; {skipped_events} were ignored"
-        ));
-    }
-    cal
 }
 
 fn event_prop(ev: &mut VEvent, prop: Prop) {
@@ -242,6 +321,30 @@ mod tests {
         assert_eq!(text("bell\u{7}\u{1b}[31m red"), "bell[31m red");
         assert_eq!(text(&"é".repeat(2000)).len(), MAX_TEXT);
         assert!(parse_line("no colon here").is_none());
+    }
+
+    #[test]
+    fn nesting_is_capped_and_every_line_costs_a_bounded_number_of_steps() {
+        // Unmatched BEGIN/END pairs: each END used to scan the whole stack.
+        let n = 5_000;
+        let mut junk =
+            "BEGIN:VEVENT\nUID:before\nDTSTART:20261116T100000Z\nEND:VEVENT\n".to_owned();
+        junk.push_str(&"BEGIN:A\n".repeat(n));
+        junk.push_str("SUMMARY:inside the junk\n");
+        junk.push_str(&"END:B\n".repeat(n));
+        let cal = parse(&junk);
+        let lines = junk.lines().count();
+        assert!(cal.steps <= lines * (MAX_DEPTH + 2), "{} steps for {lines} lines", cal.steps);
+        assert_eq!(cal.events.len(), 1);
+        assert_eq!(cal.events[0].uid.as_deref(), Some("before"));
+        assert!(cal.warnings.iter().any(|w| w.contains("nested")), "{:?}", cal.warnings);
+        // Properties of components past the cap are not taken for an outer component's.
+        let deep = format!(
+            "BEGIN:VEVENT\nUID:e\n{}SUMMARY:from deep inside\n{}SUMMARY:the event\nEND:VEVENT\n",
+            "BEGIN:X\n".repeat(MAX_DEPTH + 3),
+            "END:X\n".repeat(MAX_DEPTH + 3)
+        );
+        assert_eq!(parse(&deep).events[0].summary.as_deref(), Some("the event"));
     }
 
     #[test]

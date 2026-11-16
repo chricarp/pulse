@@ -80,6 +80,8 @@ An own ICS reader (folding, parameters with quoting, escaping, nesting; lenient 
 
 **Bounds.** 20,000 events, 2,000 instances per event per window, 1 KiB per title or location; the expansion window is about a day around now plus the refresh and lead.
 
+**Parsing is linear in the input.** Each content line costs a bounded number of steps: components nest at most 8 deep (deeper ones are skipped whole, and health says how many), so closing one compares at most 8 open components; unfolded lines are cut at 64 KiB and only one is held at a time; at most 1,000 `VTIMEZONE`s are kept. A file must be a regular file (not a pipe or device) and is read through the 10 MiB limit rather than trusting its size, which can change between the check and the read.
+
 ## Process wrapper (`process::run_wrapped`)
 
 When stdout and stderr are terminals the command runs on a pseudo-terminal (`pty-process`): it sees a TTY (colours, line buffering), its two streams arrive in their real order, and the window size follows ours. If stdin is a terminal too, it is put in raw mode and forwarded, so Ctrl-C, Ctrl-Z and `/dev/tty` prompts (sudo, ssh) reach the command through its own terminal. Otherwise the command gets pipes, passed through chunk by chunk. SIGINT, SIGTERM, SIGHUP and SIGQUIT sent to the wrapper are forwarded; when wrapper and command share the terminal's foreground group (pipes with an interactive stdin), SIGINT and SIGQUIT already reached both and are not doubled. After the command exits, output is drained for at most 200 ms, so a background process holding the pipes cannot keep the wrapper alive.
