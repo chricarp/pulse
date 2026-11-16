@@ -29,6 +29,7 @@
 //! on from there; one that no longer has it (expired to nothing, or a different repository
 //! copied or cloned in at the same path) is read from its end.
 
+mod config;
 mod reflog;
 mod repo;
 
@@ -240,26 +241,51 @@ impl Tracker {
         }
         // HEAD is the truth for the branch going into the next batch.
         self.branch = self.layout.head_branch();
-        let remotes = self.remotes_dir();
+        let remotes_dir = self.remotes_dir();
+        // Read only when there is a push to name, at most once per scan.
+        let mut configured: Option<Vec<String>> = None;
         for file in self.reflog_files().into_iter().skip(1) {
-            let Ok(rel) = file.strip_prefix(&remotes) else { continue };
+            let Ok(rel) = file.strip_prefix(&remotes_dir) else { continue };
             let Some(rel) = rel.to_str().map(str::to_owned) else { continue };
-            let Some((remote, branch)) = rel.split_once('/') else { continue };
-            let (remote, branch) = (bounded(remote, MAX_NAME), bounded(branch, MAX_NAME));
-            for line in self.new_lines(&file) {
-                let Some(l) = reflog::parse(&line) else { continue };
-                if self.news(l.time)
-                    && reflog::is_push(l.message)
-                    && !reflog::is_zero(l.new)
-                    && branch != "HEAD"
-                {
-                    out.push(BuiltinEvent::GitPushCompleted(GitPushCompletedData {
-                        repo: self.work.clone(),
-                        remote: remote.clone(),
-                        branch: branch.clone(),
-                        sha: l.new.to_owned(),
-                    }));
-                }
+            let pushes: Vec<String> = self
+                .new_lines(&file)
+                .into_iter()
+                .filter_map(|line| {
+                    let l = reflog::parse(&line)?;
+                    (self.news(l.time) && reflog::is_push(l.message) && !reflog::is_zero(l.new))
+                        .then(|| l.new.to_owned())
+                })
+                .collect();
+            if pushes.is_empty() {
+                continue;
+            }
+            let configured = configured.get_or_insert_with(|| {
+                config::read_remotes(&self.layout.common_dir.join("config")).unwrap_or_else(|e| {
+                    self.warnings.push(format!("remote names unknown: {e}"));
+                    Vec::new()
+                })
+            });
+            // A remote's name may contain `/`; a ref no configured remote prefixes is reported
+            // with no remote rather than split at a guess.
+            let (remote, branch) = match config::split_remote(configured, &rel) {
+                Some((remote, branch)) => (Some(bounded(remote, MAX_NAME)), branch),
+                None => (None, rel.as_str()),
+            };
+            // `refs/remotes/<remote>/HEAD` names the remote's default branch; it is not pushed.
+            let default_branch = match remote {
+                Some(_) => branch == "HEAD",
+                None => branch.rsplit('/').next() == Some("HEAD"),
+            };
+            if default_branch {
+                continue;
+            }
+            for sha in pushes {
+                out.push(BuiltinEvent::GitPushCompleted(GitPushCompletedData {
+                    repo: self.work.clone(),
+                    remote: remote.clone(),
+                    branch: bounded(branch, MAX_NAME),
+                    sha,
+                }));
             }
         }
         if let Some(files) = self.read_conflicts() {

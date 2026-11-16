@@ -126,6 +126,12 @@ and commits have `branch: null`. Worktrees and submodules are followed. History 
 at startup, and is not replayed when git rewrites a reflog (`gc`) or the repository is replaced;
 a new commit or push is reported whatever date it carries. A push to a URL with no remote-tracking branch leaves no trace and is not seen.
 
+A push's `remote` is the remote as configured in the repository (`git remote -v`), and may contain
+a slash: a push to remote `team/fork`, branch `main`, is `remote: "team/fork", branch: "main"`.
+If a remote-tracking branch belongs to no remote in the repository's own config file (one
+defined through an `include`, which Pulse does not read, or one removed by hand), `remote` is
+`null` and `branch` is the whole name under `refs/remotes/`, for example `"ghost/main"`.
+
 ## `schedule`: a timer
 
 `schedule.fired` with `cron` or `every`, `scheduled_for`, and `late`. `cron` is five fields in

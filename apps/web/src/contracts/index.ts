@@ -351,7 +351,13 @@ export type GitMergeConflictedData = { repo: string,
  */
 files: Array<string>, };
 
-export type GitPushCompletedData = { repo: string, remote: string, branch: string, sha: string, };
+export type GitPushCompletedData = { repo: string, 
+/**
+ * The configured remote whose name is the longest prefix of the remote-tracking ref
+ * (names may contain `/`). Null when no remote in the repository's config file prefixes
+ * it; `branch` is then the whole name below `refs/remotes/`.
+ */
+remote?: string | null, branch: string, sha: string, };
 
 export type GitSourceSettings = { 
 /**
