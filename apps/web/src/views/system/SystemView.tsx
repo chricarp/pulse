@@ -4,7 +4,7 @@ import { useApp, useDaemon } from "../../app/context";
 import { setTheme, useTheme, type ThemeChoice } from "../../app/theme";
 import { attempt } from "../../app/toasts";
 import { count, dayAndTime, span } from "../../lib/format";
-import { Button, Confirm, Dl, Empty, Notice, Section, useNow } from "../../ui/primitives";
+import { Button, Confirm, Dl, Empty, Notice, Section, Trunc, useNow } from "../../ui/primitives";
 import { ShortcutList } from "../../shell/HelpOverlay";
 import { useTogglePause } from "../../shell/Shell";
 import { ConfigErrors } from "../rules/RulesView";
@@ -46,7 +46,7 @@ export function SystemView() {
                 <Dl
                   items={[
                     ["Daemon", <span key="v" className="num">version {status.version} · up {span(now - Date.parse(status.started_at))} (since {dayAndTime(status.started_at, now)})</span>],
-                    ["Pulse home", <span key="h" className="mono">{status.pulse_home}</span>],
+                    ["Pulse home", <Trunc key="h" text={status.pulse_home} copy />],
                     ["Listening", <span key="p" className="mono">127.0.0.1:{status.port}</span>],
                     ["Sources", <span key="s" className="num">{status.sources.healthy} healthy · {status.sources.degraded} degraded · {status.sources.failed} failed · {status.sources.other} other</span>],
                     ["Runs", <span key="r" className="num">{status.runs.running} running · {status.runs.queued} queued · {status.runs.pending_approval} awaiting approval</span>],

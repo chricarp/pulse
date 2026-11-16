@@ -128,3 +128,11 @@ export function sourceKind(uri: string): string {
 export function shortId(id: string): string {
   return id.length > 10 ? id.slice(-8) : id;
 }
+
+/** `/home/ada/University/x.pdf` as `~/University/x.pdf`, given the daemon's `user_home`. */
+export function tildify(path: string, home: string | null | undefined): string {
+  if (!home || home === "/") return path;
+  const h = home.replace(/\/+$/, "");
+  if (path === h) return "~";
+  return path.startsWith(`${h}/`) ? `~${path.slice(h.length)}` : path;
+}

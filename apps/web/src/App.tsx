@@ -1,4 +1,5 @@
 import { useDaemon } from "./app/context";
+import type { NoAccessReason } from "./rpc/login";
 import { useLocation, useRoute } from "./app/router";
 import { Shell } from "./shell/Shell";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
@@ -13,7 +14,7 @@ import { SystemView } from "./views/system/SystemView";
 
 export function App() {
   const connection = useDaemon((s) => s.connection);
-  if (connection.kind === "unauthorized") return <NoAccess reason={connection.reason} />;
+  if (connection.kind === "unauthorized") return <NoAccess reason="token-rejected" />;
   return (
     <Shell>
       <Bounded />
@@ -50,13 +51,33 @@ function View() {
   }
 }
 
-export function NoAccess({ reason }: { reason?: string }) {
+const NO_ACCESS: Record<NoAccessReason, { title: string; body: string }> = {
+  "no-code": {
+    title: "Open Pulse from the command line",
+    body: "This window has no access to the daemon yet. Pulse gives a window a one-time login code when you open it with the command below. If you typed this address or used a bookmark, run it instead.",
+  },
+  "code-refused": {
+    title: "This login link has expired",
+    body: "Login links work once, for two minutes. Run the command below for a new one.",
+  },
+  unreachable: {
+    title: "The daemon did not answer",
+    body: "This page could not reach the daemon to log in. Check that it is running (pulse status, or pulse start), then open the UI again.",
+  },
+  "token-rejected": {
+    title: "The daemon no longer accepts this window",
+    body: "Its token changed (it was rotated, or another Pulse home is running on this port). This window stopped trying to connect. Log in again with the command below.",
+  },
+};
+
+export function NoAccess({ reason }: { reason: NoAccessReason }) {
+  const text = NO_ACCESS[reason];
   return (
-    <div className="no-access">
-      <Empty title="This window cannot talk to the daemon" tone="error">
-        <p>{reason ? `${reason} ` : ""}Pulse needs the daemon's token, which it hands to the window when you open it with:</p>
+    <div className="no-access" data-reason={reason}>
+      <Empty title={text.title} tone="error">
+        <p>{text.body}</p>
         <pre className="code">pulse open</pre>
-        <p className="faint">The token is passed in the address fragment, read once, and removed from the address bar. If you opened this page by typing its address, run the command above instead.</p>
+        <p className="faint">The command opens a link with a one-time code. The page exchanges it for access and removes it from the address bar; a reload of this tab keeps working, a new tab needs the command again.</p>
       </Empty>
     </div>
   );

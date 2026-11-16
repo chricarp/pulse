@@ -4,14 +4,15 @@ import type { MockControls } from "../mock";
 import type { RpcClient } from "../rpc/client";
 import { useStore } from "../store/store";
 import type { Daemon, DaemonState } from "./daemon";
-import type { DeliveryCache } from "./deliveries";
 import type { FeedController } from "./feed";
+import type { OutcomeStore } from "./outcomes";
 
 export interface App {
   client: RpcClient;
   daemon: Daemon;
   feed: FeedController;
-  deliveries: DeliveryCache;
+  /** What each event caused, as the daemon sent it with the events. */
+  outcomes: OutcomeStore;
   /** Present only in `--mode mock` builds. */
   mock: MockControls | null;
 }

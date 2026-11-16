@@ -1,15 +1,16 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-// Before anything else: take the token out of the address bar.
-import { takeToken } from "./rpc/token";
-const token = takeToken();
+// Before anything else: take the login code out of the address bar.
+import { forgetToken, login, takeLoginCode } from "./rpc/login";
+const loginCode = takeLoginCode();
 
 import { App, NoAccess } from "./App";
 import { AppProvider, type App as AppHandle } from "./app/context";
 import { Daemon } from "./app/daemon";
-import { DeliveryCache } from "./app/deliveries";
 import { FeedController } from "./app/feed";
+import { userHome } from "./app/home";
+import { OutcomeStore } from "./app/outcomes";
 import type { MockControls } from "./mock";
 import { RpcClient, type SocketFactory } from "./rpc/client";
 import { socketUrl, webSocketFactory } from "./rpc/socket";
@@ -27,28 +28,26 @@ async function boot(): Promise<void> {
     connect = created.connect;
     mock = created.controls;
   } else {
-    if (!token) {
-      root.render(<NoAccess />);
+    const access = await login(loginCode);
+    if (access.kind === "none") {
+      root.render(<NoAccess reason={access.reason} />);
       return;
     }
-    connect = webSocketFactory(socketUrl(), token);
+    connect = webSocketFactory(socketUrl(), access.token);
   }
 
   const client = new RpcClient({ connect });
+  // A token the daemon refuses (4401) will not start working again; only `pulse open` helps.
+  client.onStateChange((s) => {
+    if (s.kind === "unauthorized") forgetToken();
+  });
   const daemon = new Daemon(client);
-  const deliveries = new DeliveryCache(client);
-  const feed = new FeedController(client);
-  // Row markers only ask about events some rule listens to; runs changing can change them.
-  daemon.store.subscribe(() => {
-    const rules = daemon.store.get().rules;
-    deliveries.setRuleTypes((rules ?? []).filter((r) => !r.config.archived).flatMap((r) => r.config.on));
-  });
-  daemon.onRunsChanged((runs) => {
-    for (const r of runs) deliveries.invalidate(r.event);
-  });
+  daemon.store.subscribe(() => userHome.set(daemon.store.get().status?.user_home ?? null));
+  const outcomes = new OutcomeStore();
+  const feed = new FeedController(client, outcomes);
   client.start();
 
-  const app: AppHandle = { client, daemon, feed, deliveries, mock };
+  const app: AppHandle = { client, daemon, feed, outcomes, mock };
   root.render(
     <StrictMode>
       <AppProvider app={app}>

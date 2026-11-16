@@ -8,13 +8,14 @@
 // - A notification for a subscription id the client has not learned yet (the response to the
 //   subscribe call is still in flight) is held briefly and delivered once the id is known.
 
-import type {
-  EventsBatch,
-  RpcMethodName,
-  RpcMethods,
-  RunsChanged,
-  RunsOutput,
-  StateChanged,
+import {
+  WS_CLOSE_UNAUTHORIZED,
+  type EventsBatchWithOutcomes,
+  type RpcMethodName,
+  type RpcMethods,
+  type RunsChanged,
+  type RunsOutput,
+  type StateChanged,
 } from "../contracts";
 
 /** The minimum a transport has to offer. A browser WebSocket and the mock both fit. */
@@ -29,7 +30,7 @@ export interface Socket {
 export type SocketFactory = () => Socket;
 
 /** The daemon closes with this code when the token is missing or wrong. Retrying will not help. */
-export const CLOSE_UNAUTHORIZED = 4401;
+export const CLOSE_UNAUTHORIZED = WS_CLOSE_UNAUTHORIZED;
 
 export type ConnectionState =
   | { kind: "connecting"; attempt: number }
@@ -69,7 +70,7 @@ export const ErrorCodes = {
 } as const;
 
 type SubscribeMap = {
-  "events.subscribe": { notification: "events.batch"; payload: EventsBatch };
+  "events.subscribe": { notification: "events.batch"; payload: EventsBatchWithOutcomes };
   "runs.subscribe": { notification: "runs.changed"; payload: RunsChanged };
   "runs.subscribe_output": { notification: "runs.output"; payload: RunsOutput };
 };

@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { EventsBatch } from "../contracts";
+import type { EventsBatchWithOutcomes as EventsBatch } from "../contracts";
 import { RpcClient } from "../rpc/client";
 import { MockDaemon } from "./daemon";
 import { mockSocketFactory } from "./transport";
@@ -77,7 +77,7 @@ describe("mock daemon", () => {
       }, { onSubscribed: () => daemon.storm(2000, 0.5) });
     });
     expect(total).toBe(2000);
-    expect(batches.every((b) => b.events.length <= 100)).toBe(true);
+    expect(batches.every((b) => b.events.length <= 200)).toBe(true);
     expect(batches.some((b) => b.dropped > 0)).toBe(true);
     // Oldest first within a batch.
     const ids = batches[0]?.events.map((e) => e.id) ?? [];
