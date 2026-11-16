@@ -57,7 +57,7 @@ Dependency direction: `contracts ← core ← store, sources, agents, mcp ← da
 
 ## Data directory
 
-`$PULSE_HOME`, default `~/.pulse/`. Everything lives here:
+`$PULSE_HOME`, default `~/.pulse/`, mode `0700` with its subdirectories (files `0600`), enforced at every start ([0003](0003-threat-model.md)). Everything lives here:
 
 ```
 pulse.toml      user config (source of truth for definitions)

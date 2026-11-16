@@ -58,7 +58,8 @@ An agent's output triggers the agent again. See "Loop protection" in [0002](0002
 
 - The listener binds to `127.0.0.1` only.
 - Without a token, a local process can still open connections. Headers must arrive within 30 s, at most 512 connections are served at once, and shutdown closes what is left after 3 s, so it cannot hold the daemon open or exhaust its file descriptors. **Honest limit:** it can keep all 512 slots busy and deny the listener (CLI, UI, ingest) while it does; loopback TCP does not say which local user is calling, so there is nothing cheap to ration by.
-- Every endpoint requires a token (WebSocket, ingest, MCP). The token file is mode `0600`. Token comparisons are constant time.
+- Every endpoint requires a token (WebSocket, ingest, MCP). Token comparisons are constant time.
+- **The Pulse home is private.** At every start the daemon makes `$PULSE_HOME` and its `logs/`, `runs/` and `sources/` mode `0700`, and the token, `pulse.db`, `pulse.db-wal`, `pulse.db-shm`, `daemon.json` and the log files `0600`. The database file is created `0600` before SQLite opens it, so the `-wal` and `-shm` SQLite creates follow it. Before this, only a home Pulse created itself was `0700`; one that already existed kept its mode (often `0755`) and SQLite created the database `0644`, so other users could read every path, commit message, prompt and output (found in review). A home owned by another user is refused rather than used. A home that is a symbolic link is the directory it points to; a subdirectory that is a link to somewhere else, and the home's parent directories, are not changed. **Not covered:** the agents' own files. A run's default working directory is inside `runs/` (private), but a run with a configured `cwd` writes wherever that is, with the agent's own umask; Pulse does not set a umask for the processes it starts, because it would change the modes of the files agents write into the user's projects.
 - The server checks the `Host` header (DNS rebinding) and, for browsers, the `Origin`. `/mcp` refuses every request that carries an `Origin`.
 - MCP history is filtered by the agent's scope while it is read, so neither results nor cursors reveal that an out-of-scope event matched a search. Past a scan budget of 4096 hidden matching rows, a cursor does point at a hidden row: that reveals only that so many hidden events matched, and when.
 - External events live in the `ext.` namespace. `POST /ingest` and `pulse ingest` both **refuse** an event that claims a built-in type (they do not rename it), so an external source cannot impersonate "a build failed" or "a file appeared in ~/University".
@@ -86,5 +87,5 @@ A directory with a million files, an agent writing in a tight loop, a chatty ext
 ## Out of scope for v1
 
 - Defending against malware already running as the user.
-- Encrypting the event log at rest. It contains paths, commit messages and process output; treat `$PULSE_HOME` as sensitive.
+- Encrypting the event log at rest. It contains paths, commit messages and process output; file modes keep it from other users, not from root, backups or the user's own processes.
 - Remote access. When it arrives it needs its own review; the local token model is not sufficient for it.

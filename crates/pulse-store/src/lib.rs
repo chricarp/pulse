@@ -70,6 +70,8 @@ pub enum StoreError {
     Corrupt(String),
     #[error("the store has shut down")]
     Closed,
+    #[error("cannot make {path} private: {source}")]
+    Private { path: String, source: std::io::Error },
 }
 
 impl From<serde_json::Error> for StoreError {
@@ -86,6 +88,30 @@ fn configure(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn make_private(path: &Path) -> std::io::Result<()> {
+    use std::fs::{OpenOptions, Permissions};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    match OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    for suffix in ["", "-wal", "-shm"] {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        // Not followed: a link here is not a file this store made.
+        match std::fs::symlink_metadata(&file) {
+            Ok(m) if m.is_file() && m.permissions().mode() & 0o077 != 0 => {
+                std::fs::set_permissions(&file, Permissions::from_mode(0o600))?;
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// The writer.
 #[derive(Debug)]
 pub struct Store {
@@ -94,7 +120,12 @@ pub struct Store {
 
 impl Store {
     /// Opens (creating if needed) the database at `path`, switches it to WAL and migrates it.
+    /// The database file is created mode 0600 before SQLite opens it, so the `-wal` and `-shm`
+    /// files SQLite creates next to it get the same mode; all three are tightened to 0600 if
+    /// they exist with a looser one (left by an older Pulse, or created under a loose umask).
     pub fn open(path: &Path) -> Result<Store> {
+        make_private(path)
+            .map_err(|source| StoreError::Private { path: path.display().to_string(), source })?;
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
