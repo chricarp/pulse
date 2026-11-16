@@ -1041,6 +1041,7 @@ dependencies = [
  "pulse-mcp",
  "pulse-sources",
  "pulse-store",
+ "rmcp",
  "rusqlite",
  "rust-embed",
  "rustix",

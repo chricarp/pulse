@@ -1,4 +1,11 @@
-//! Test harness: a daemon on port 0 in a temp `PULSE_HOME`, fake sources, and supervisors.
+//! Test harness: a daemon on port 0 in a temp `PULSE_HOME`, fake sources, the real supervisor
+//! with the fake agents from `pulse-agents/tests/fixtures`, and an MCP client.
+//!
+//! Real processes only run on real time. Under `tokio::time::pause()` an idle runtime jumps past
+//! the supervisor's grace period while a sibling test's fork still holds a copy of a pipe, and a
+//! run would end with a spurious "pipe still open" marker (see the fixtures README). So the one
+//! paused test uses [`InstantSupervisor`], which spawns nothing, and every test that runs an
+//! agent uses the multi-thread runtime and real time.
 
 #![allow(dead_code)]
 
@@ -8,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pulse_agents::{
-    Invocation, OutputParser, RunEnd, Stream, SuperviseError, SuperviseOptions, SupervisorEvent,
+    Invocation, OutputParser, RunEnd, SuperviseError, SuperviseOptions, SupervisorEvent,
 };
 use pulse_contracts::catalog::{BuiltinEvent, FsFileData};
 use pulse_contracts::config::SourceConfig;
@@ -17,10 +24,9 @@ use pulse_contracts::{
     NewEvent, OutputKind, RunId, RunOutput, RunStatus, RunSummary, SourceKind, SourceRef, Timestamp,
 };
 use pulse_daemon::client::Client;
-use pulse_daemon::wiring::{SourceBuilder, Supervisor, Wiring};
+use pulse_daemon::wiring::{RealSupervisor, SourceBuilder, Supervisor, Wiring};
 use pulse_daemon::{Clock, Daemon, DaemonOptions};
 use pulse_sources::{BoxFuture, Source, SourceContext, SourceError};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -119,106 +125,6 @@ pub fn file_created(source: &str, path: &str) -> NewEvent {
     )
 }
 
-/// Runs invocations as real child processes in their own process group, streaming stdout and
-/// stderr lines, and terminates the group on cancel or timeout. A small stand-in for
-/// `pulse_agents::supervise` until that lands.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ChildSupervisor;
-
-fn kill_group(pid: u32, signal: rustix::process::Signal) {
-    if let Some(pid) = rustix::process::Pid::from_raw(pid as i32) {
-        let _ = rustix::process::kill_process_group(pid, signal);
-    }
-}
-
-impl Supervisor for ChildSupervisor {
-    fn supervise(
-        &self,
-        inv: Invocation,
-        mut parser: Box<dyn OutputParser>,
-        events: mpsc::Sender<SupervisorEvent>,
-        options: SuperviseOptions,
-        cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<RunEnd, SuperviseError>> {
-        Box::pin(async move {
-            let mut cmd = tokio::process::Command::new(&inv.program);
-            cmd.args(&inv.args)
-                .current_dir(&inv.cwd)
-                .envs(inv.env.iter().cloned())
-                .process_group(0)
-                .kill_on_drop(true)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .stdin(if inv.stdin.is_some() {
-                    std::process::Stdio::piped()
-                } else {
-                    std::process::Stdio::null()
-                });
-            let mut child = cmd
-                .spawn()
-                .map_err(|source| SuperviseError::Spawn { program: inv.program.clone(), source })?;
-            let pid = child.id().unwrap_or(0);
-            let _ = events.send(SupervisorEvent::Started { pid }).await;
-            if let (Some(text), Some(mut stdin)) = (inv.stdin, child.stdin.take()) {
-                let _ = stdin.write_all(text.as_bytes()).await;
-            }
-            let mut out = BufReader::new(child.stdout.take().unwrap()).lines();
-            let mut err = BufReader::new(child.stderr.take().unwrap()).lines();
-            let (mut out_open, mut err_open) = (true, true);
-            let deadline = tokio::time::sleep(options.timeout);
-            tokio::pin!(deadline);
-            let mut ended = None;
-            let mut parsed = Vec::new();
-            while out_open || err_open {
-                tokio::select! {
-                    line = out.next_line(), if out_open => match line? {
-                        Some(l) => parser.line(Stream::Stdout, &l, &mut parsed),
-                        None => out_open = false,
-                    },
-                    line = err.next_line(), if err_open => match line? {
-                        Some(l) => parser.line(Stream::Stderr, &l, &mut parsed),
-                        None => err_open = false,
-                    },
-                    _ = cancel.cancelled(), if ended.is_none() => {
-                        ended = Some(RunEnd::Cancelled);
-                        kill_group(pid, rustix::process::Signal::TERM);
-                    }
-                    _ = &mut deadline, if ended.is_none() => {
-                        ended = Some(RunEnd::TimedOut);
-                        kill_group(pid, rustix::process::Signal::TERM);
-                    }
-                }
-                for o in parsed.drain(..) {
-                    let _ = events
-                        .send(SupervisorEvent::Output {
-                            at: Timestamp::from_system_time(std::time::SystemTime::now()),
-                            output: o,
-                        })
-                        .await;
-                }
-            }
-            parser.finish(&mut parsed);
-            for o in parsed.drain(..) {
-                let _ = events
-                    .send(SupervisorEvent::Output {
-                        at: Timestamp::from_system_time(std::time::SystemTime::now()),
-                        output: o,
-                    })
-                    .await;
-            }
-            let status = tokio::select! {
-                s = child.wait() => s?,
-                _ = tokio::time::sleep(options.grace) => {
-                    kill_group(pid, rustix::process::Signal::KILL);
-                    child.wait().await?
-                }
-            };
-            use std::os::unix::process::ExitStatusExt;
-            Ok(ended.unwrap_or(RunEnd::Exited { code: status.code(), signal: status.signal() }))
-        })
-    }
-}
-
 /// Ends every run at once: `Started`, one output line per argument, exit 0. No process, no
 /// timer, so it is safe under `tokio::time::pause()`.
 #[derive(Clone, Copy, Debug, Default)]
@@ -260,17 +166,11 @@ pub struct Setup {
     pub supervisor: Arc<dyn Supervisor>,
     pub clock: Clock,
     pub watch_config: bool,
-    pub mcp: Option<pulse_daemon::wiring::McpMount>,
 }
 
 impl Default for Setup {
     fn default() -> Self {
-        Setup {
-            supervisor: Arc::new(ChildSupervisor),
-            clock: Clock::System,
-            watch_config: true,
-            mcp: None,
-        }
+        Setup { supervisor: Arc::new(RealSupervisor), clock: Clock::System, watch_config: true }
     }
 }
 
@@ -299,7 +199,6 @@ impl TestDaemon {
         let wiring = Wiring {
             sources: self.sources.builder(),
             supervisor: setup.supervisor,
-            mcp: setup.mcp,
             ..Wiring::real()
         };
         let opts = DaemonOptions {
@@ -411,3 +310,12 @@ name = "fake"
 kind = "schedule"
 every = "1h"
 "#;
+
+/// The fake agents (`fake-agent`, `fake-claude`, `fake-codex`) and recorded streams.
+pub fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../pulse-agents/tests/fixtures")
+}
+
+pub fn fixture(name: &str) -> String {
+    fixtures().join(name).display().to_string()
+}

@@ -247,7 +247,6 @@ run = { agent = "sh" }
             supervisor: Arc::new(InstantSupervisor),
             clock: Clock::tokio(1_700_000_000_000),
             watch_config: false,
-            mcp: None,
         },
     )
     .await;

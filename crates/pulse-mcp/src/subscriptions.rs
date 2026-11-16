@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use pulse_contracts::rpc::{EventFilter, EventQuery, EventsBatch, Order};
+use pulse_contracts::rpc::{EventFilter, EventQuery, Order};
 use pulse_contracts::{Event, EventId, SubscriptionId};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -73,9 +73,9 @@ pub(crate) async fn read_after<B: Backend>(
     Ok(Read { events: Vec::new(), cursor, has_more: true })
 }
 
-/// A cursor at the current end of the log as `agent` sees it: "from now". The newest row the
-/// backend examined (visible or not), so nothing already logged counts as new. On an empty log,
-/// the clock: every later event sorts after it.
+/// A cursor at the current end of the log as `agent` sees it: "from now". The newest event the
+/// agent can see, or a later row the backend examined, so nothing already logged counts as new.
+/// On an empty log, the clock: every later event sorts after it.
 pub(crate) async fn head<B: Backend>(
     backend: &B,
     agent: &AgentIdentity,
@@ -112,8 +112,8 @@ pub(crate) struct Registry {
 struct Entry {
     owner: AgentIdentity,
     filter: EventFilter,
-    /// Bumped once per live batch. The sender lives in the pump; when the backend closes the
-    /// subscription the pump ends and waiters see the channel close.
+    /// Bumped once per backend wakeup. The sender lives in the pump; when the backend closes
+    /// the subscription the pump ends and waiters see the channel close.
     wake: watch::Receiver<u64>,
     last_used: Instant,
     waiting: u32,
@@ -180,7 +180,7 @@ impl Registry {
         let pump = tokio::spawn(pump(
             Arc::downgrade(&self.inner),
             live.id,
-            live.events,
+            live.wake,
             wake_tx,
             self.limits.subscription_idle_ttl,
         ));
@@ -280,12 +280,12 @@ fn check_limits(
     Ok(())
 }
 
-/// Turns live batches into wakeups, and removes the entry when it has been idle for `ttl` or
-/// the backend closes it.
+/// Passes backend wakeups on to waiters, and removes the entry when it has been idle for `ttl`
+/// or the backend closes it.
 async fn pump(
     registry: Weak<Mutex<HashMap<SubscriptionId, Entry>>>,
     id: SubscriptionId,
-    mut events: mpsc::Receiver<EventsBatch>,
+    mut backend_wake: mpsc::Receiver<()>,
     wake: watch::Sender<u64>,
     ttl: std::time::Duration,
 ) {
@@ -304,7 +304,7 @@ async fn pump(
             if e.waiting > 0 { now + ttl } else { e.last_used + ttl }
         };
         tokio::select! {
-            batch = events.recv() => match batch {
+            woken = backend_wake.recv() => match woken {
                 Some(_) => wake.send_modify(|n| *n = n.wrapping_add(1)),
                 // The backend ended it. Waiters see `wake` close when this returns.
                 None => {

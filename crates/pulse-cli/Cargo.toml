@@ -10,6 +10,12 @@ rust-version.workspace = true
 name = "pulse"
 path = "src/main.rs"
 
+[features]
+# The shipped binary compiles SEP-3415 in, off at runtime by default (one config line turns it
+# on). `--no-default-features` builds without it.
+default = ["sep3415"]
+sep3415 = ["pulse-daemon/sep3415"]
+
 [dependencies]
 pulse-contracts.workspace = true
 pulse-daemon.workspace = true

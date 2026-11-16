@@ -88,10 +88,52 @@ async fn tokens_hosts_and_origins() {
             format!("POST /ingest?source=ci HTTP/1.1\r\n{host}\r\nContent-Type: application/json"),
             401,
         ),
+        (
+            format!(
+                "POST /ingest?source=ci HTTP/1.1\r\n{host}\r\nAuthorization: Bearer {agent_token}\r\nContent-Type: application/json"
+            ),
+            401,
+        ),
+        // `/mcp` is the real MCP router: the token is checked before rmcp sees the request, and
+        // only an agent token of a configured agent passes. The daemon token is not one.
+        (format!("GET /mcp HTTP/1.1\r\n{host}"), 401),
+        (
+            format!(
+                "POST /mcp HTTP/1.1\r\n{host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream"
+            ),
+            401,
+        ),
         (format!("GET /mcp HTTP/1.1\r\n{host}\r\nAuthorization: Bearer {token}"), 401),
+        (format!("GET /mcp/x HTTP/1.1\r\n{host}\r\nAuthorization: Bearer {token}"), 401),
         (format!("GET /mcp HTTP/1.1\r\n{host}\r\nAuthorization: Bearer pa.ghost.00"), 401),
-        // Past auth; no MCP server is mounted in this build.
-        (format!("GET /mcp HTTP/1.1\r\n{host}\r\nAuthorization: Bearer {agent_token}"), 501),
+        (format!("GET /mcp HTTP/1.1\r\n{host}\r\nAuthorization: Bearer {agent_token}x"), 401),
+        // A forged tag for an agent that exists.
+        (
+            format!(
+                "GET /mcp HTTP/1.1\r\n{host}\r\nAuthorization: Bearer pa.sh.{}",
+                "0".repeat(64)
+            ),
+            401,
+        ),
+        // No browser may call /mcp, not even a page served by this daemon.
+        (
+            format!(
+                "GET /mcp HTTP/1.1\r\n{host}\r\nOrigin: http://evil.example\r\nAuthorization: Bearer {agent_token}"
+            ),
+            403,
+        ),
+        (
+            format!(
+                "GET /mcp HTTP/1.1\r\n{host}\r\nOrigin: http://127.0.0.1:{port}\r\nAuthorization: Bearer {agent_token}"
+            ),
+            403,
+        ),
+        (
+            format!(
+                "GET /mcp HTTP/1.1\r\nHost: evil.example:{port}\r\nAuthorization: Bearer {agent_token}"
+            ),
+            403,
+        ),
         (format!("GET / HTTP/1.1\r\n{host}"), 200),
         (format!("GET /rules/ci HTTP/1.1\r\n{host}"), 200),
         ("GET / HTTP/1.1\r\nHost: attacker.example".to_owned(), 403),
@@ -100,6 +142,14 @@ async fn tokens_hosts_and_origins() {
         let (status, _) = http(port, &head, "").await;
         assert_eq!(status, want, "{head}");
     }
+    // The agent token gets past auth on /mcp (rmcp then answers the bare GET as it likes).
+    let (status, _) = http(
+        port,
+        &format!("GET /mcp HTTP/1.1\r\n{host}\r\nAuthorization: Bearer {agent_token}"),
+        "",
+    )
+    .await;
+    assert!(![401, 403, 501].contains(&status), "{status}");
     // Ingest with the token gets past auth (what it does next is the parser's business).
     let (status, _) = http(port, &format!("POST /ingest?source=ci HTTP/1.1\r\n{host}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json"), "{\"type\":\"x\"}").await;
     assert!(status != 401 && status != 403, "{status}");
@@ -121,77 +171,5 @@ async fn tokens_hosts_and_origins() {
     // The typed client authenticates with the token file.
     let client = Client::connect(&t.home).await.unwrap();
     client.call::<method::SystemStatusGet>(Empty {}).await.unwrap();
-    t.stop().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_mcp_backend_sees_only_what_the_agent_may() {
-    use std::sync::{Arc, Mutex};
-
-    use pulse_contracts::rpc::{EventFilter, EventQuery, IngestEvent, IngestParams, NameParams};
-    use pulse_daemon::McpBackend;
-    use pulse_mcp::{AgentIdentity, Backend};
-
-    // The seam the MCP server plugs into: it is handed the backend and returns a router.
-    let handed: Arc<Mutex<Option<McpBackend>>> = Arc::default();
-    let keep = handed.clone();
-    let mount: pulse_daemon::wiring::McpMount = Arc::new(move |backend| {
-        *keep.lock().unwrap() = Some(backend);
-        axum::Router::new().route("/", axum::routing::get(|| async { "mcp here" }))
-    });
-    let config = r#"
-[[agent]]
-name = "client"
-adapter = "mcp"
-allow = ["ext.b.*"]
-"#;
-    let mut t =
-        TestDaemon::start_with(config, Setup { mcp: Some(mount), ..Setup::default() }).await;
-    let backend = handed.lock().unwrap().clone().unwrap();
-    let client = t.client().await;
-    let token = client
-        .call::<method::AgentsMcpCredentials>(NameParams { name: "client".into() })
-        .await
-        .unwrap()
-        .token;
-    let me = AgentIdentity { name: "client".into() };
-    assert_eq!(backend.resolve_agent(&token).await, Some(me.clone()));
-    assert_eq!(
-        backend.resolve_agent(&t.token()).await,
-        None,
-        "the daemon token is not an MCP identity"
-    );
-    assert_eq!(backend.resolve_agent("pa.client.0000").await, None);
-
-    let ingest = |source: &str, kind: &str| IngestParams {
-        source: source.into(),
-        events: vec![IngestEvent {
-            type_: kind.into(),
-            subject: None,
-            time: None,
-            data: serde_json::json!({}),
-            dedupe_key: None,
-            causation_run: None,
-        }],
-    };
-    let mut sub = backend.subscribe(&me, EventFilter::default()).await.unwrap();
-    client.call::<method::EventsIngest>(ingest("a", "secret")).await.unwrap();
-    client.call::<method::EventsIngest>(ingest("b", "visible")).await.unwrap();
-    let page = backend.query_events(&me, EventQuery::default()).await.unwrap();
-    let types: Vec<String> = page.events.iter().map(|e| e.type_.to_string()).collect();
-    assert_eq!(types, ["ext.b.visible"]);
-    let batch = within("a scoped batch", sub.events.recv()).await.unwrap();
-    assert_eq!(batch.events.len(), 1);
-    assert_eq!(batch.events[0].type_.as_str(), "ext.b.visible");
-
-    // The mounted router is reached through the daemon's guard with the agent token.
-    let host = format!("Host: 127.0.0.1:{}", t.port());
-    let (status, body) = http(
-        t.port(),
-        &format!("GET /mcp HTTP/1.1\r\n{host}\r\nAuthorization: Bearer {token}"),
-        "",
-    )
-    .await;
-    assert_eq!((status, body.as_str()), (200, "mcp here"));
     t.stop().await;
 }
