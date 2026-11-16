@@ -10,8 +10,10 @@
 // to it. Waits are on events, with one ceiling per wait.
 
 import { execFile, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { readFileSync, writeFileSync } from "node:fs";
+import { type AddressInfo, createServer } from "node:net";
 import { join } from "node:path";
 
 import electron, { type BrowserWindow, type MenuItem, type Notification, app } from "electron";
@@ -79,16 +81,25 @@ async function until<T>(what: string, check: () => T | null | undefined | false 
       reject(new Error(`timed out waiting for ${what}`));
     }, CEILING);
     let busy = false;
+    // A tick during a check may come with the change the check just missed: check again.
+    let again = false;
     const on = async () => {
-      if (busy) return;
+      if (busy) {
+        again = true;
+        return;
+      }
       busy = true;
       try {
-        const v = await check();
-        if (v) {
-          clearTimeout(timer);
-          tick.off("tick", on);
-          resolve(v);
-        }
+        do {
+          again = false;
+          const v = await check();
+          if (v) {
+            clearTimeout(timer);
+            tick.off("tick", on);
+            resolve(v);
+            return;
+          }
+        } while (again);
       } finally {
         busy = false;
       }
@@ -199,7 +210,31 @@ function uiConnected(win: BrowserWindow): Promise<string> {
   );
 }
 
+/**
+ * For `stale`: a program on the port a stale `daemon.json` names. It records what it receives,
+ * answers every request with a 404, and must never see the token.
+ */
+async function squat(): Promise<{ port: number; received: () => string }> {
+  let received = "";
+  const server = createServer((socket) => {
+    socket.on("data", (d: Buffer) => {
+      received += d.toString("latin1");
+      if (received.includes("\r\n\r\n")) socket.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+    });
+    socket.on("error", () => {});
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as AddressInfo).port;
+  // A home that has had a daemon has a token; without one the shell has nothing to send.
+  writeFileSync(join(HOME, "token"), randomBytes(32).toString("hex"), { mode: 0o600 });
+  writeFileSync(join(HOME, "daemon.json"), JSON.stringify({ pid: 999999, port, version: "0.1.0", started_at: "2026-01-01T00:00:00Z" }));
+  return { port, received: () => received };
+}
+
+const token = () => readFileSync(join(HOME, "token"), "utf8").trim();
+
 async function main(): Promise<void> {
+  const squatter = scenario === "stale" ? await squat() : null;
   const booted = await boot();
   if (booted === null) {
     record("second_instance", "exited: another instance holds the lock");
@@ -240,10 +275,13 @@ async function main(): Promise<void> {
       // The UI signs in by itself: it takes the login code from the fragment, removes it from
       // the address bar, exchanges it at /auth/login and keeps the token for this window.
       record("ui_connection_on_load", await uiConnected(win()));
-      record(
-        "login_by_the_page",
-        await inPage(win(), `({ fragment_left: location.hash, token_kept: (sessionStorage.getItem("pulse.token") || "").length > 0, no_access_screen: document.querySelector(".no-access") !== null })`),
+      const storage = `JSON.stringify({ ...sessionStorage }) + JSON.stringify({ ...localStorage })`;
+      const login = await inPage<{ fragment_left: string; stored: string; no_access_screen: boolean }>(
+        win(),
+        `({ fragment_left: location.hash, stored: ${storage}, no_access_screen: document.querySelector(".no-access") !== null })`,
       );
+      // The page keeps the token in memory only.
+      record("login_by_the_page", { fragment_left: login.fragment_left, token_in_storage: login.stored.includes(token()), no_access_screen: login.no_access_screen });
       await screenshot(win(), "1-ui-signed-in");
       // A reload of the window keeps working without a new code.
       lastFinished = "";
@@ -273,10 +311,16 @@ async function main(): Promise<void> {
       const popup = await inPage(win(), `String(window.open("https://example.com/popup"))`);
       await until("the popup link to be handed to the browser", () => opened.includes("https://example.com/popup"));
       await inPage(win(), `window.open("javascript:alert(1)"); window.open("file:///etc/passwd"); 1`);
+      // The daemon's Content-Security-Policy refuses the frame before the shell's own
+      // navigation lock would see it; either layer must stop it.
       const framed: string[] = [];
-      win().webContents.on("will-frame-navigate", (d) => framed.push(d.url));
+      win().webContents.on("will-frame-navigate", (d) => framed.push(`shell ${d.url}`));
+      win().webContents.on("did-fail-load", (_e, _code, desc, url) => {
+        framed.push(`${desc === "ERR_BLOCKED_BY_CSP" ? "csp" : desc} ${url}`);
+        tick.emit("tick");
+      });
       await inPage(win(), `const f = document.createElement("iframe"); f.src = "https://example.com/frame"; document.body.appendChild(f); 1`);
-      await until("the frame navigation to be seen", () => framed.includes("https://example.com/frame"));
+      const frameBlockedBy = await until("the frame navigation to be stopped", () => framed.find((f) => f.endsWith(" https://example.com/frame"))?.split(" ")[0]);
       const permissions = await inPage(
         win(),
         `(async () => {
@@ -295,6 +339,7 @@ async function main(): Promise<void> {
         windows: electron.BrowserWindow.getAllWindows().length,
         window_open_returned: popup,
         sent_to_browser: [...opened],
+        frame_blocked_by: frameBlockedBy,
         frame_blocked: await inPage(win(), `document.querySelector("iframe").contentDocument !== null && document.querySelector("iframe").contentDocument.location.href`),
         permissions,
       });
@@ -400,6 +445,13 @@ async function main(): Promise<void> {
     case "stale": {
       const c = await until("a daemon", connected);
       record("daemon", { owned: c.daemon.owned, pid: c.daemon.info.pid, port: c.daemon.info.port });
+      const seen = squatter?.received() ?? "";
+      record("program_on_the_stale_port", {
+        port: squatter?.port,
+        asked_for_proof: seen.includes("GET /auth/proof?nonce="),
+        received_token: seen.includes(token()),
+        received_websocket: /upgrade/i.test(seen),
+      });
       click("Quit Pulse and stop the daemon");
       break;
     }
