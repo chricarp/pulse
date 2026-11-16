@@ -411,11 +411,16 @@ pub struct ClaudeCodeSettings {
     pub program: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Passed through as `--permission-mode`. Pulse never widens it.
+    /// Passed as `--permission-mode`. Default `dontAsk`: anything not pre-approved is denied,
+    /// since nobody can answer a prompt in an unattended run. Pulse never widens it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// Each passed as `--allowedTools=<rule>`, like `"Edit"` or `"Bash(git diff:*)"`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
+    /// Each passed as `--disallowedTools=<rule>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
 }
@@ -429,9 +434,13 @@ pub struct CodexSettings {
     pub program: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Passed through as `--sandbox`. Pulse never widens it.
+    /// Passed as `--sandbox`. Default `read-only`. Pulse never widens it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
+    /// Passed as `approval_policy` (`-c`). Default `never`: nothing waits for an approval nobody
+    /// can give; a command that needs one fails and the model is told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
 }

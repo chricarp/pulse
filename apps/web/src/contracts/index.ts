@@ -64,9 +64,18 @@ export type ClaudeCodeSettings = {
  */
 program?: string, model?: string, 
 /**
- * Passed through as `--permission-mode`. Pulse never widens it.
+ * Passed as `--permission-mode`. Default `dontAsk`: anything not pre-approved is denied,
+ * since nobody can answer a prompt in an unattended run. Pulse never widens it.
  */
-permission_mode?: string, allowed_tools: Array<string>, extra_args: Array<string>, };
+permission_mode?: string, 
+/**
+ * Each passed as `--allowedTools=<rule>`, like `"Edit"` or `"Bash(git diff:*)"`.
+ */
+allowed_tools: Array<string>, 
+/**
+ * Each passed as `--disallowedTools=<rule>`.
+ */
+disallowed_tools: Array<string>, extra_args: Array<string>, };
 
 export type CodexSettings = { 
 /**
@@ -74,9 +83,14 @@ export type CodexSettings = {
  */
 program?: string, model?: string, 
 /**
- * Passed through as `--sandbox`. Pulse never widens it.
+ * Passed as `--sandbox`. Default `read-only`. Pulse never widens it.
  */
-sandbox?: string, extra_args: Array<string>, };
+sandbox?: string, 
+/**
+ * Passed as `approval_policy` (`-c`). Default `never`: nothing waits for an approval nobody
+ * can give; a command that needs one fails and the model is told.
+ */
+approval_policy?: string, extra_args: Array<string>, };
 
 export type CommandSettings = { 
 /**
