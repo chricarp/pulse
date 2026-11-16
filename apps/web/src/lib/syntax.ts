@@ -118,12 +118,23 @@ function escapeRe(s: string): string {
   return s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
 }
 
+// Compiled globs, bounded: callers pass config values (a small set), not event content.
+const compiled = new Map<string, RegExp[]>();
+function cached(key: string, build: () => RegExp[]): RegExp[] {
+  let res = compiled.get(key);
+  if (!res) {
+    if (compiled.size > 500) compiled.clear();
+    res = build();
+    compiled.set(key, res);
+  }
+  return res;
+}
+
 /** Type globs: `*` crosses `.`, so `fs.*` matches `fs.file.created`. */
 export function typeGlobMatches(glob: string, type: string): boolean {
-  return expand(glob).some((alt) => {
-    const re = new RegExp(`^${alt.split("*").map(escapeRe).join(".*")}$`);
-    return re.test(type);
-  });
+  return cached(`t:${glob}`, () =>
+    expand(glob).map((alt) => new RegExp(`^${alt.split("*").map(escapeRe).join(".*")}$`)),
+  ).some((re) => re.test(type));
 }
 
 /**
@@ -147,19 +158,32 @@ function pathSegmentRe(seg: string): string {
 /** Path globs: `*` stays inside a segment, `**` is any depth (and `/a/**` matches `/a`). */
 export function pathGlobMatches(glob: string, path: string, home: string): boolean {
   const g = glob === "~" ? home : glob.startsWith("~/") ? home + glob.slice(1) : glob;
-  return expand(g).some((alt) => {
-    const segs = alt.split("/");
-    let re = "";
-    for (let i = 0; i < segs.length; i++) {
-      const s = segs[i] ?? "";
-      if (s === "**") {
-        re += i === segs.length - 1 ? "(?:/.*)?" : "(?:/[^/]+)*";
-      } else {
-        re += (i === 0 ? "" : "/") + pathSegmentRe(s);
+  return cached(`p:${g}`, () =>
+    expand(g).map((alt) => {
+      const segs = alt.split("/");
+      let re = "";
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i] ?? "";
+        if (s === "**") {
+          re += i === segs.length - 1 ? "(?:/.*)?" : "(?:/[^/]+)*";
+        } else {
+          re += (i === 0 ? "" : "/") + pathSegmentRe(s);
+        }
       }
-    }
-    return new RegExp(`^${re}$`).test(path);
-  });
+      return new RegExp(`^${re}$`);
+    }),
+  ).some((re) => re.test(path));
+}
+
+/** Text globs (`where` strings that are not paths): `*` matches anything. */
+export function textGlobMatches(glob: string, text: string): boolean {
+  return cached(`x:${glob}`, () =>
+    expand(glob).map((alt) => {
+      let re = "";
+      for (const ch of alt) re += ch === "*" ? ".*" : ch === "?" ? "." : escapeRe(ch);
+      return new RegExp(`^${re}$`, "s");
+    }),
+  ).some((re) => re.test(text));
 }
 
 const TEMPLATE_VARS = ["id", "type", "source", "subject", "time", "rule", "agent", "prompt"];
