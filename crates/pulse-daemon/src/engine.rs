@@ -8,8 +8,10 @@
 //! only thing it waits on is the store, which is the backpressure path: while a commit is in
 //! flight, sources' bounded channels fill and their sends wait.
 //!
-//! Control messages (config, snooze, pause, run starts and ends) have their own channel and are
-//! handled before events, so attribution sees a run as soon as it starts.
+//! Control messages (config, snooze, pause, run starts, writes and ends) have their own channel
+//! and are all handled before the next batch of events, so attribution sees a run as soon as it
+//! starts and a write its agent reported before the file event that write causes (which waits
+//! out the fs source's quiet period).
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -24,8 +26,8 @@ use pulse_contracts::{
 use pulse_core::dedupe::Dedupe;
 use pulse_core::limits::{FireHistory, history_capacity};
 use pulse_core::{
-    Cause, NonceSource, RecentRun, RouteContext, RouteMode, RouterState, RuleRuntime, attribute,
-    route,
+    Cause, NonceSource, RecentRun, RouteContext, RouteMode, RouterState, RuleRuntime, RunWrites,
+    attribute, route,
 };
 use pulse_store::{Commit, Effect, NewRun, RuleStateRow};
 use tokio::sync::{mpsc, oneshot};
@@ -62,6 +64,11 @@ pub(crate) enum Control {
     },
     Paused(bool),
     RunStarted(RecentRun),
+    /// What the run's adapter has reported about its writes so far (replaces the old state).
+    RunWrites {
+        id: RunId,
+        writes: RunWrites,
+    },
     RunEnded {
         id: RunId,
         at: Timestamp,
@@ -187,7 +194,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Runs that ended within the grace period still attribute events. A run that was running
+    /// Runs that ended within the grace period still attribute events, by inference only (their
+    /// output is no longer read, so their writes are opaque). A run that was running
     /// when the daemon died may still be running (its agent is in its own process group and
     /// was not killed), and nothing enforces its timeout any more; it is treated as active
     /// until its timeout would have ended it, so an orphan's late writes are still its own.
@@ -212,6 +220,8 @@ impl Engine {
                 started_at,
                 ended_at,
                 chain_depth: run.chain_depth,
+                // Nobody reads its output any more.
+                writes: RunWrites::opaque(),
             });
         }
         Ok(())
@@ -344,6 +354,11 @@ impl Engine {
                 }
                 self.recent.push(run);
             }
+            Control::RunWrites { id, writes } => {
+                if let Some(r) = self.recent.iter_mut().find(|r| r.id == id) {
+                    r.writes = writes;
+                }
+            }
             Control::RunEnded { id, at } => {
                 if let Some(r) = self.recent.iter_mut().find(|r| r.id == id) {
                     r.ended_at = Some(at);
@@ -389,6 +404,8 @@ impl Engine {
             started_at: run.started_at.unwrap_or(run.created_at),
             ended_at: run.ended_at,
             chain_depth: run.chain_depth,
+            // Only used as an exact cause.
+            writes: RunWrites::opaque(),
         })
     }
 

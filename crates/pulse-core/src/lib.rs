@@ -26,7 +26,7 @@ pub mod prompt;
 pub mod routing;
 pub mod scope;
 
-pub use causation::{RecentRun, attribute, infer_cause};
+pub use causation::{RecentRun, RunWrites, attribute, cause_of_change};
 pub use prompt::{NonceSource, RenderInput, event_env, render_args, render_prompt};
 pub use routing::{
     Cause, DebounceKey, DueDebounce, RouteContext, RouteMode, RouterState, Routing, RuleRuntime,

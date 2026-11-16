@@ -7,6 +7,7 @@
 
 import type {
   AgentConfig,
+  Causation,
   AgentInfo,
   ConfigError,
   ConfigOrigin,
@@ -380,7 +381,7 @@ export class MockDaemon {
       subject?: string | null;
       data: unknown;
       causationRun?: string;
-      causation?: "exact" | "inferred";
+      causation?: Causation;
       coalesced?: number;
       replayOf?: string;
       only?: string[];
@@ -834,6 +835,18 @@ export class MockDaemon {
         const go = () => this.emit({ type: "fs.file.modified", source: "pulse://fs/site", subject: data.path, data: { ...data, size: ((data as { size?: number }).size ?? 1000) + 12 }, causationRun: run.id, causation: "inferred" }, this.seeding ? after : this.now());
         if (this.seeding) go();
         else setTimeout(go, 120);
+      }
+    }
+    // Claude Code's Write call named the cards file, so its event is the run's (reported).
+    if (run.snapshot.agent.adapter === "claude-code" && script.outcome === "succeeded") {
+      const e = this.eventById.get(run.event);
+      const data = e?.data as { path?: string; dir?: string } | undefined;
+      if (e && data?.path?.endsWith(".pdf")) {
+        const path = `${data.path}.cards.md`;
+        const name = path.split("/").pop() ?? path;
+        const go = () => this.emit({ type: "fs.file.created", source: e.source, subject: path, data: { path, dir: data.dir ?? "", name, ext: "md", size: 3100 }, causationRun: run.id, causation: "reported" }, this.seeding ? at + 80 : this.now());
+        if (this.seeding) go();
+        else setTimeout(go, 80);
       }
     }
     this.pump(run.agent, at);

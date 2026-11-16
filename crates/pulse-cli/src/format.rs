@@ -38,11 +38,14 @@ pub fn event_line(e: &Event) -> String {
     let subject = e.subject.as_deref().map_or_else(|| "-".to_owned(), one_line);
     let mut line = format!("{}  {:<24} {subject}", e.time, e.type_);
     if let Some(run) = e.causation_run {
+        // Exact: the run said so itself. Reported: its agent's tool call named the path.
+        // Inferred: it happened in the run's folder while the run's writes were not visible.
         let how = e.causation.map_or("", |c| match c {
             pulse_contracts::Causation::Exact => "",
-            pulse_contracts::Causation::Inferred => "~",
+            pulse_contracts::Causation::Reported => ", reported",
+            pulse_contracts::Causation::Inferred => ", inferred",
         });
-        line.push_str(&format!("  (from run {how}{run})"));
+        line.push_str(&format!("  (from run {run}{how})"));
     }
     if let Some(orig) = e.replay_of {
         line.push_str(&format!("  (replay of {orig})"));
@@ -123,8 +126,9 @@ pub fn delivery_line(d: &Delivery) -> String {
         delivery_outcome(&d.outcome),
         d.event
     );
-    // Attribution can be inferred (a file appeared in the run's working directory while it
-    // ran), and then a change the user made is taken for the agent's: say how to undo that.
+    // Attribution can be inferred (a file appeared in the working directory of a run whose
+    // writes Pulse could not see), and then a change the user made is taken for the agent's:
+    // say how to undo that.
     if matches!(
         &d.outcome,
         DeliveryOutcome::Blocked { reason: BlockReason::LoopSelfTrigger { .. } }

@@ -34,6 +34,23 @@
 //! | `user` tool_result | `tool_result` (preview; `data.is_error`) |
 //! | `result` | `result`: final text; `data`: cost, usage, turns, denials; then `error` for denials |
 //! | anything else, non-JSON, stderr | `stdout` / `stderr`, unchanged |
+//!
+//! **Writes** ([`WriteFact`], for loop protection). Claude Code prints each tool call before it
+//! runs it (measured on 2.1.325: the `Write` line was read 30 to 50 ms before the file's mtime),
+//! so a write is reported before the file event exists.
+//!
+//! | Tool call | Fact |
+//! |---|---|
+//! | `Write`, `Edit`, `MultiEdit` (`file_path`), `NotebookEdit` (`notebook_path`) | `Wrote(path)` |
+//! | `Read`, `Glob`, `Grep`, `LS`, `NotebookRead`, `WebFetch`, `WebSearch`, `TodoWrite`, `ToolSearch` | none: they write nothing a source watches |
+//! | anything else: `Bash`, `Task`/`Agent` (a subagent), `mcp__*`, tools added later | `Opaque` |
+//! | a write tool without its path, a `hook*` system event, a stdout line not understood | `Opaque` |
+//!
+//! A call counts when it is seen, even if it is then refused (`dontAsk` refusing `Bash` still
+//! makes the run opaque): the refusal arrives later, and over-attributing is the safe side. A
+//! subagent's own calls are in the stream (`parent_tool_use_id`), but the `Task` call that
+//! starts it is already opaque. Not seen at all: hooks from the user's or the project's settings
+//! that do not print, and Claude Code's own bookkeeping under `~/.claude`.
 
 use std::collections::HashMap;
 
@@ -44,7 +61,9 @@ use serde_json::{Value, json};
 use crate::json::{
     PREVIEW_CHARS, SUMMARY_CHARS, cut, one_line, output, pick, raw, str_at, tool_summary,
 };
-use crate::{AdapterError, AgentAdapter, Invocation, OutputParser, RunRequest, Stream, run_env};
+use crate::{
+    AdapterError, AgentAdapter, Invocation, OutputParser, RunRequest, Stream, WriteFact, run_env,
+};
 
 /// The permission mode when the agent does not set one.
 pub const DEFAULT_PERMISSION_MODE: &str = "dontAsk";
@@ -100,7 +119,45 @@ impl AgentAdapter for ClaudeCodeAdapter {
     fn parser(&self) -> Box<dyn OutputParser> {
         Box::new(ClaudeCodeParser::default())
     }
+
+    fn reports_writes(&self) -> bool {
+        true
+    }
 }
+
+/// Tools that write nothing a source watches. Anything not here and not in [`write_path`]
+/// makes a run opaque.
+const READ_ONLY_TOOLS: [&str; 9] = [
+    "Read",
+    "Glob",
+    "Grep",
+    "LS",
+    "NotebookRead",
+    "WebFetch",
+    "WebSearch",
+    // Claude Code keeps todos in its own state under ~/.claude.
+    "TodoWrite",
+    "ToolSearch",
+];
+
+/// What a tool call says about writes: `None` for a read-only tool.
+fn write_fact(name: &str, input: &Value) -> Option<WriteFact> {
+    if READ_ONLY_TOOLS.contains(&name) {
+        return None;
+    }
+    let field = match name {
+        "Write" | "Edit" | "MultiEdit" => "file_path",
+        "NotebookEdit" => "notebook_path",
+        _ => return Some(WriteFact::Opaque(one_line(name, OPAQUE_REASON_CHARS))),
+    };
+    Some(match str_at(input, field) {
+        Some(path) => WriteFact::Wrote(path.to_owned()),
+        None => WriteFact::Opaque(format!("{name} without a {field}")),
+    })
+}
+
+/// A reason names a tool, which is the agent's text: kept short.
+const OPAQUE_REASON_CHARS: usize = 80;
 
 /// Tool names by call id, so results can say which tool they belong to. Bounded: cleared when
 /// full (a result then just lacks the name).
@@ -109,6 +166,8 @@ const TOOL_NAMES_MAX: usize = 256;
 #[derive(Debug, Default)]
 pub struct ClaudeCodeParser {
     tool_names: HashMap<String, String>,
+    /// Since the last `take_facts`: one line's worth.
+    facts: Vec<WriteFact>,
 }
 
 impl OutputParser for ClaudeCodeParser {
@@ -121,10 +180,12 @@ impl OutputParser for ClaudeCodeParser {
             return;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else {
+            self.not_understood();
             out.push(raw(stream, line));
             return;
         };
         let before = out.len();
+        let facts = self.facts.len();
         let known = match str_at(&v, "type") {
             Some("system") => {
                 self.system(&v, out);
@@ -145,14 +206,26 @@ impl OutputParser for ClaudeCodeParser {
         };
         if !known {
             out.truncate(before);
+            self.facts.truncate(facts);
+            self.not_understood();
             out.push(raw(stream, line));
         }
     }
 
     fn finish(&mut self, _: &mut Vec<RunOutput>) {}
+
+    fn take_facts(&mut self, out: &mut Vec<WriteFact>) {
+        out.append(&mut self.facts);
+    }
 }
 
 impl ClaudeCodeParser {
+    /// A stdout line this parser cannot read could be a tool call in a format it does not
+    /// know, so the run's writes are no longer known.
+    fn not_understood(&mut self) {
+        self.facts.push(WriteFact::Opaque("output Pulse does not recognize".to_owned()));
+    }
+
     fn system(&mut self, v: &Value, out: &mut Vec<RunOutput>) {
         match str_at(v, "subtype") {
             Some("init") => {
@@ -193,6 +266,10 @@ impl ClaudeCodeParser {
             }
             Some("thinking_tokens") => {}
             other => {
+                if other.is_some_and(|o| o.starts_with("hook")) {
+                    // A hook is a command from the user's or the project's settings.
+                    self.facts.push(WriteFact::Opaque("a hook".to_owned()));
+                }
                 let detail = ["message", "status", "content"]
                     .iter()
                     .find_map(|k| str_at(v, k))
@@ -254,9 +331,11 @@ impl ClaudeCodeParser {
                     data["id"] = block.get("id").cloned().unwrap_or(Value::Null);
                     data["name"] = json!(name);
                     data["input"] = input.clone();
+                    self.facts.extend(write_fact(name, &input));
                     out.push(output(OutputKind::ToolUse, tool_summary(name, &input), data));
                 }
                 other => {
+                    self.not_understood();
                     let mut data = base.clone();
                     data["block"] = block.clone();
                     out.push(output(

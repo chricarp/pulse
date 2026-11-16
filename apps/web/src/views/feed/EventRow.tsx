@@ -2,7 +2,7 @@ import { memo, useSyncExternalStore } from "react";
 
 import { useApp } from "../../app/context";
 import type { Event, EventOutcome } from "../../contracts";
-import { deliveryLabel, deliveryTone } from "../../lib/explain";
+import { CAUSATION, deliveryLabel, deliveryTone } from "../../lib/explain";
 import { clockTime, count, sourceName } from "../../lib/format";
 import { Icon } from "../../ui/icons";
 import { Trunc, cx } from "../../ui/primitives";
@@ -75,10 +75,10 @@ export const EventRow = memo(function EventRow({ event, selected, onSelect }: { 
         {event.pulsecausationrun && (
           <span
             className={cx("flag", "flag-caused")}
-            title={`Caused by an agent run (${event.pulsecausation === "exact" ? "reported by the run itself" : "inferred: it happened in the run's working directory"}). Chain depth ${event.pulsechaindepth}.`}
+            title={`Caused by an agent run (${CAUSATION[event.pulsecausation ?? "inferred"].label}). Chain depth ${event.pulsechaindepth}.`}
           >
             <Icon name="agents" size={11} />
-            {event.pulsecausation === "exact" ? "by agent" : "by agent?"}
+            {CAUSATION[event.pulsecausation ?? "inferred"].flag}
           </span>
         )}
         {event.pulsereplayof && (

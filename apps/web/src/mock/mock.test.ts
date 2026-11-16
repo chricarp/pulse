@@ -34,6 +34,9 @@ describe("mock daemon", () => {
     expect(looped?.pulsecausation).toBe("inferred");
     const detail = await client.call("events.get", { id: looped?.id ?? "" });
     expect(detail.deliveries.map((d) => d.outcome)).toContainEqual({ kind: "blocked", reason: { reason: "loop_self_trigger", run: looped?.pulsecausationrun } });
+    // The study agent's cards file, attributed from its Write call.
+    const created = await client.call("events.query", { filter: { types: ["fs.file.created"], sources: [] }, order: "newest_first", limit: 500 });
+    expect(created.events.some((e) => e.pulsecausation === "reported" && e.subject?.endsWith(".cards.md"))).toBe(true);
 
     const rules = await client.call("rules.list", { include_archived: true });
     const byName = new Map(rules.rules.map((r) => [r.config.name, r]));

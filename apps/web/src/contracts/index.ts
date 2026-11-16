@@ -56,7 +56,7 @@ refresh?: Duration,
  */
 lead?: Duration, };
 
-export type Causation = "exact" | "inferred";
+export type Causation = "exact" | "reported" | "inferred";
 
 export type ClaudeCodeSettings = { 
 /**

@@ -17,8 +17,8 @@ exercised as users run them.
 
 | Module | What it proves |
 |---|---|
-| `templates` | Both shipped templates as shipped (only durations shortened and `program` added): a PDF runs the study agent with output reaching a subscriber while the run is running; `pulse run -- <failing>` runs the diagnosis and a passing command does not |
-| `loops` | Self-trigger by inference (written at once, through a debounced rule, by a process that left the group and writes after the run ended), exact causation via `pulse run` and `pulse ingest`, the chain-depth limit with two rules that trigger each other, the circuit breaker when attribution fails, a replay |
+| `templates` | Both shipped templates as shipped (only durations shortened and `program` added): a PDF runs the study agent with output reaching a subscriber while the run is running; a second PDF saved during that run gets its own run, and the agent's summary is attributed `reported`; `pulse run -- <failing>` runs the diagnosis and a passing command does not |
+| `loops` | Self-trigger by inference (written at once, through a debounced rule, by a process that left the group and writes after the run ended), by a reported `Write` (in the agent's `cwd` and outside it), inference again after a `Bash` call, an unreported write taken for the user's, exact causation via `pulse run` and `pulse ingest`, the chain-depth limit with two rules that trigger each other, the circuit breaker when attribution fails, a replay |
 | `restart` | A crash with runs running and queued and limits in force; a graceful stop; an agent orphaned by a crash that writes after the restart |
 | `storm` | 10,000 files unzipped (events, runs, live batches, `system.status` latency during the storm); a real `git clone` and `git checkout` in a folder with an fs and a git source |
 | `sources` | A git commit and branch switch, a schedule and a calendar event fire rules |
@@ -34,6 +34,9 @@ learnt the hard way:
 
 - **Read before you wait.** A source can fire within milliseconds of startup, and a fast run can
   finish before the test subscribes; `run_in` and `run_status` read the log first, then wait.
+- **Agents that write print the tool call first.** `fake-claude` replays a stream, and a line
+  `#write PATH` in it makes `fake-agent` write the file after printing the line before, as
+  Claude Code prints a call and then runs it (`support::claude` builds the lines).
 - **Agents that must wait for the test block on a fifo** (`support::Fifo`), never on a sleep:
   the agent makes a fifo named after its run, prints `ready`, and reads it; the test waits for
   `ready` in the run's output and writes a line when it wants the agent to go on. The fifo's
@@ -55,15 +58,22 @@ when its handle drops. Run `cargo test -p pulse-cli --test e2e` several times, u
 
 ## Loop protection, as observed
 
-Every way we tried to get a loop through, with an agent that really writes:
+Every way we tried to get a loop through, with an agent that really writes. "Command agent" is
+the `command` adapter (opaque: inference); "Claude agent" is `fake-claude` through the
+`claude-code` adapter (reported writes):
 
 | Attempt | Result |
 |---|---|
-| Agent writes into the folder its rule watches, at once, cwd = that folder | Blocked, `loop_self_trigger` (inferred). Before the fix in the worker, a write in the first milliseconds could predate the run's recorded start and **fire again** under load |
+| Claude agent's `Write` into the folder its rule watches, cwd = that folder | Blocked, `loop_self_trigger` (reported) |
+| The same with the agent's cwd elsewhere (its per-run directory) | Blocked (reported). Under inference alone this was not attributed and looped until the circuit breaker |
+| Claude agent calls `Bash`, then a file appears in its cwd (written without a tool call) | Inferred, blocked; the run's output has a marker saying it is now opaque and why |
+| Claude agent writes a file without printing the call (stands in for a fact that arrives late) | Taken for the user's: the rule fires once more, as a new chain (depth 1); that run's rewrite is a `modified` and matches nothing |
+| The user saves a second PDF while a `lecture-notes` run reads the first | Was **skipped** as a self-trigger (inferred). Now fires its own run: the run is observed (only `Read` so far), so the PDF is not its |
+| Command agent writes into the folder its rule watches, at once, cwd = that folder | Blocked, `loop_self_trigger` (inferred). Before the fix in the worker, a write in the first milliseconds could predate the run's recorded start and **fire again** under load |
 | Same, through a debounced rule | Blocked before the debounce (the loop guard precedes it) |
 | A process that left the run's group (`setsid`) and writes after the run ended | Blocked while within `causation_grace` (30 s) of the run's end |
 | The same writing after the grace period | Not attributed: fires again. Bounded only by cooldown, rate limit and the circuit breaker |
-| Agent with its cwd elsewhere, writing into the watched folder by absolute path | Not attributed: loops until the circuit breaker opens (3 runs with `max_fires = 3`; 20 per 10 minutes by default, then the rule is held for an hour), recorded as `circuit_open` on the delivery and on the rule, cleared by `unsnooze` |
+| Command agent with its cwd elsewhere, writing into the watched folder by absolute path | Not attributed: loops until the circuit breaker opens (3 runs with `max_fires = 3`; 20 per 10 minutes by default, then the rule is held for an hour), recorded as `circuit_open` on the delivery and on the rule, cleared by `unsnooze` |
 | `pulse run` / `pulse ingest` from inside the run | Exact causation through `PULSE_RUN_ID`; blocked |
 | Two rules that trigger each other (exact) | Runs at depth 1, 2, 3; the fourth is `loop_chain_depth` |
 | Replaying the blocked event | Fires once (a replay drops causation: it is the user's request); that run's own write is blocked in turn. Not a loop |
@@ -72,23 +82,37 @@ Every way we tried to get a loop through, with an agent that really writes:
 
 Limits that remain, stated plainly:
 
-- **Inference is only as good as the working directory.** An agent whose `cwd` does not contain
-  what it writes (the default `cwd` is a per-run directory) gets no inferred attribution at all;
-  only cooldown, rate limit and the breaker stop it. With the defaults that is up to 20 runs in
-  10 minutes, then one hour held, repeating: cheap for a command, real money for a model.
-- **Inference has false positives.** Anything that appears in a run's `cwd` while it runs (and
-  for the grace period) is taken for the agent's. With the `lecture-notes` template (`cwd` is the
-  watched folder) a second PDF saved while the first is being summarized is **skipped** as a
-  self-trigger. It is recorded, `pulse rules history` prints the `pulse replay` command for it,
-  and the template says so; but it is lost work until the user notices. The proper fix is exact
-  attribution of writes: the adapters see which files the agent's tools wrote (Claude Code's
-  `Write`/`Edit` tool calls carry the path), which would make the common case exact and leave
-  inference for shell commands. Not built.
-- After a crash, an orphaned run counts as active until its timeout (default 15 minutes): its own
-  folder's events in that window are attributed to it, false positives included.
-- The grace period catches the user too: a commit made in `~/code` a second after the
-  `build-failure` diagnosis ended was attributed to that run (chain depth 2). Harmless there; it
-  is the same mechanism as the lecture case.
+- **Inference still decides for opaque runs, with both of its errors.** A `command` or `codex`
+  run, or a Claude Code run after its first shell command, MCP tool, subagent or unrecognized
+  output line, claims everything that appears in its `cwd` until 30 s after it ends: in
+  `lecture-notes`, if the model tries `Bash` (`pdftotext`, say; refused, but the attempt counts),
+  a PDF the user saves during that run is skipped as before, with the `pulse replay` hint in
+  `pulse rules history`. And such a run's writes outside its `cwd` that it did not report are
+  not attributed at all; only cooldown, rate limit and the breaker stop those (with the
+  defaults: up to 20 runs in 10 minutes, then one hour held, repeating).
+- **A late fact makes the agent's write the user's.** If the tool call reaches the engine more
+  than the fs quiet period after the write (the agent buffers its output; the store stalls with
+  more than 256 outputs queued behind it), the write is not attributed and, if it matches the
+  run's own rule, fires it once more as a new chain, so chain depth does not bound it. Not
+  observed; the tool call led the write by 30 to 50 ms against a 2 s default quiet period. A
+  rule with `quiet = "100ms"` has much less margin.
+- **Writes that are not in the stream are the user's.** Hooks from the user's or the project's
+  Claude Code settings that print nothing (a formatter after `Write` usually rewrites the same
+  file, which is covered), and Claude Code's own files under `~/.claude` if a source watches
+  them.
+- **A reported path can be spelled differently from the event.** The daemon matches the path as
+  given, its canonical form and the canonical form spelled under the agent's configured `cwd`.
+  A write through a symlink that the fs source knows by yet another name (a source configured
+  through a symlink that is not the agent's `cwd`) does not match: taken for the user's.
+- **Reported over-attributes a little.** A path the agent named is its own until 30 s after the
+  run, even if the write was refused: the user's change to exactly that file in that window is
+  skipped. An `fs.burst` whose sample contains one reported path is attributed whole.
+- After a crash, an orphaned run counts as active and opaque until its timeout (default 15
+  minutes): its own folder's events in that window are attributed to it, false positives
+  included.
+- The grace period still catches the user after opaque runs: a commit made in `~/code` a second
+  after a `build-failure` diagnosis that ran a command was attributed to that run (chain depth
+  2). A diagnosis that only read files is observed, and the commit is the user's.
 - Process exits (`pulse run`) are never inferred, only exact: an agent whose sandbox strips
   `PULSE_RUN_ID` from its tools' environment has its `pulse run` reports unattributed.
 
