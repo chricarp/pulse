@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use base64::Engine;
-use pulse_contracts::config::{PromptLimits, TypeGlob};
+use pulse_contracts::config::TypeGlob;
 use pulse_contracts::rpc::EventFilter;
 use pulse_contracts::{Event, EventId, Ulid};
 use pulse_core::prompt::bounded_data_json;
@@ -36,8 +36,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 
+use crate::present::per_event;
 use crate::subscriptions::{head, read_after};
-use crate::{AgentIdentity, Backend, BackendError, Shared};
+use crate::{AgentIdentity, Backend, BackendError, Limits, Shared};
 
 pub(crate) const EXTENSION: &str = "io.modelcontextprotocol/events";
 const SUBSCRIPTION_ID: &str = "io.modelcontextprotocol/subscriptionId";
@@ -54,8 +55,11 @@ const MIN_HEARTBEAT: Duration = Duration::from_secs(5);
 const MAX_HEARTBEAT: Duration = Duration::from_secs(60);
 const NEXT_POLL_MS: u64 = 5_000;
 const DEFAULT_POLL_EVENTS: u32 = 50;
+/// Events read per poll at most. A poll result is also cut at [`Limits::result_max_bytes`] of
+/// events, like a tool result, so with large events it holds fewer.
 const MAX_POLL_EVENTS: u32 = 200;
-/// Events read per log page while streaming.
+/// Events read per log page while streaming; what is sent per page is cut at
+/// [`Limits::result_max_bytes`] too.
 const STREAM_PAGE: u32 = 100;
 
 pub(crate) fn capability() -> ExtensionCapabilities {
@@ -370,14 +374,11 @@ fn resolve<B: Backend>(
 /// | `data`       | `data`, size-bounded; a non-object is wrapped as `{"value": …}` |
 /// | `_meta`      | `pulse/source`, `pulse/subject`, `pulse/causation`, `pulse/replayOf`, `pulse/shortened` |
 ///
-/// `cursor` is added by the push path; poll carries it at result level.
-fn occurrence(event: &Event, field_max_bytes: u32) -> Value {
-    let limits = PromptLimits {
-        inline_max_chars: 200,
-        field_max_bytes,
-        data_max_bytes: field_max_bytes.saturating_mul(16),
-    };
-    let (bounded, shortened) = bounded_data_json(&event.data, &limits);
+/// `cursor` is added by the push path; poll carries it at result level. `data` and the subject
+/// are bounded as in tool results (`present::per_event`), and `pulse/shortened` says so.
+fn occurrence(event: &Event, limits: &Limits) -> Value {
+    let limits = per_event(limits);
+    let (bounded, mut shortened) = bounded_data_json(&event.data, &limits);
     let data = match serde_json::from_str::<Value>(&bounded) {
         Ok(Value::Object(o)) => Value::Object(o),
         Ok(other) => json!({ "value": other }),
@@ -386,7 +387,11 @@ fn occurrence(event: &Event, field_max_bytes: u32) -> Value {
     let mut meta = Map::new();
     meta.insert("pulse/source".into(), json!(event.source));
     if let Some(subject) = &event.subject {
-        meta.insert("pulse/subject".into(), json!(subject));
+        // A string alone is bounded to `field_max_bytes`, marked `…[N more bytes]`.
+        let (bounded, cut) = bounded_data_json(&json!(subject), &limits);
+        shortened |= cut;
+        let subject = serde_json::from_str::<Value>(&bounded).unwrap_or(Value::Null);
+        meta.insert("pulse/subject".into(), subject);
     }
     if let Some(c) = event.causation {
         meta.insert("pulse/causation".into(), json!(c));
@@ -406,6 +411,39 @@ fn occurrence(event: &Event, field_max_bytes: u32) -> Value {
     })
 }
 
+/// The occurrences of `events` that fit [`Limits::result_max_bytes`] of JSON, in order, and at
+/// least one, with how many of `events` they are. With `cursor`, each carries its own id as
+/// its cursor (push). A page cut short leaves the rest for the next read, from the last
+/// occurrence included: nothing is skipped.
+fn page(events: &[Event], limits: &Limits, cursor: bool) -> (Vec<Value>, usize) {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for event in events {
+        let mut occ = occurrence(event, limits);
+        if cursor {
+            occ["cursor"] = json!(event.id);
+        }
+        // Serializing a `Value` cannot fail; its length is what goes on the wire.
+        let len = serde_json::to_vec(&occ).map_or(0, |v| v.len()) + 1;
+        if !out.is_empty() && used + len > limits.result_max_bytes {
+            break;
+        }
+        used += len;
+        out.push(occ);
+    }
+    let included = out.len();
+    (out, included)
+}
+
+/// When a page kept only the first `included` of `events`, the id of the last one kept: the
+/// cursor to continue from, so the rest are read again rather than skipped.
+fn cut_at(events: &[Event], included: usize) -> Option<EventId> {
+    if included >= events.len() {
+        return None;
+    }
+    included.checked_sub(1).and_then(|i| events.get(i)).map(|e| e.id)
+}
+
 // ---- events/poll ----
 
 async fn poll<B: Backend>(
@@ -414,7 +452,6 @@ async fn poll<B: Backend>(
     p: PollParams,
 ) -> Result<Value, ErrorData> {
     let sub = resolve(shared, agent, &p.name, p.arguments, p.cursor, p.max_age_ms)?;
-    let field_max = shared.config.limits.field_max_bytes;
     let Some(start) = sub.start else {
         let now = head(shared.backend.as_ref(), agent, &shared.config.clock).await?;
         return Ok(json!({
@@ -424,13 +461,17 @@ async fn poll<B: Backend>(
     };
     let max = p.max_events.unwrap_or(DEFAULT_POLL_EVENTS).clamp(1, MAX_POLL_EVENTS);
     let read = read_after(shared.backend.as_ref(), agent, &sub.filter, start, max).await?;
-    let events: Vec<Value> = read.events.iter().map(|e| occurrence(e, field_max)).collect();
+    let (events, included) = page(&read.events, &shared.config.limits, false);
+    let (cursor, has_more) = match cut_at(&read.events, included) {
+        Some(last) => (last, true),
+        None => (read.cursor, read.has_more),
+    };
     Ok(json!({
         "resultType": "complete",
         "events": events,
-        "cursor": read.cursor,
+        "cursor": cursor,
         "truncated": sub.truncated,
-        "hasMore": read.has_more,
+        "hasMore": has_more,
         "nextPollMs": NEXT_POLL_MS,
     }))
 }
@@ -492,7 +533,6 @@ async fn stream<B: Backend>(
         .heartbeat_ms
         .map_or(DEFAULT_HEARTBEAT, Duration::from_millis)
         .clamp(MIN_HEARTBEAT, MAX_HEARTBEAT);
-    let field_max = shared.config.limits.field_max_bytes;
     let mut out = Stream {
         ctx,
         meta: serde_json::to_value(&ctx.id).unwrap_or(Value::Null),
@@ -518,13 +558,14 @@ async fn stream<B: Backend>(
             match read_after(shared.backend.as_ref(), agent, &sub.filter, cursor, STREAM_PAGE).await
             {
                 Ok(read) => {
-                    for event in &read.events {
-                        let mut occ = occurrence(event, field_max);
-                        occ["cursor"] = json!(event.id);
+                    let (occurrences, included) = page(&read.events, &shared.config.limits, true);
+                    for occ in occurrences {
                         out.send("notifications/events/event", occ).await?;
                     }
-                    cursor = read.cursor;
-                    pending = read.has_more;
+                    (cursor, pending) = match cut_at(&read.events, included) {
+                        Some(last) => (last, true),
+                        None => (read.cursor, read.has_more),
+                    };
                 }
                 Err(BackendError::Unauthorized) => {
                     out.send(
@@ -627,13 +668,20 @@ mod tests {
                 }),
             ),
         ];
+        let limits = Limits::default();
         for (event, want) in cases {
-            assert_eq!(occurrence(&event, 1024), want);
+            assert_eq!(occurrence(&event, &limits), want);
         }
         let long =
-            occurrence(&event("fs.file.created", None, json!({ "x": "y".repeat(5000) })), 1024);
+            occurrence(&event("fs.file.created", None, json!({ "x": "y".repeat(5000) })), &limits);
         assert_eq!(long["_meta"]["pulse/shortened"], true);
         assert!(long["data"]["x"].as_str().unwrap().len() <= 1024);
+        // The subject is event content too, and bounded the same way.
+        let subject = "/home/me/U/".to_owned() + &"n".repeat(20_000);
+        let long = occurrence(&event("fs.file.created", Some(&subject), json!({})), &limits);
+        assert_eq!(long["_meta"]["pulse/shortened"], true);
+        let shown = long["_meta"]["pulse/subject"].as_str().unwrap();
+        assert!(shown.len() <= 1024 && shown.ends_with("more bytes]"), "{shown}");
     }
 
     #[test]
