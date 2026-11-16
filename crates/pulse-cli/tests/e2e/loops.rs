@@ -16,14 +16,21 @@ fn blocked(detail: &pulse_contracts::rpc::EventDetail, rule: &str) -> Option<Blo
 
 /// A watched folder, a `command` agent running `script` (with `$LOOP_DIR`, `$E2E_PULSE_BIN` and
 /// `$FIFO` in its environment), and one rule on files created there.
-fn fs_loop_config(env: &Env, agent_cwd: Option<&str>, script: &str, extra: &str) -> String {
+struct LoopSetup<'a> {
+    agent_cwd: Option<&'a str>,
+    script: &'a str,
+    limits: &'a str,
+    rule: &'a str,
+}
+
+fn fs_loop_config(env: &Env, s: LoopSetup<'_>) -> String {
     let dir = env.user_path("watched");
-    let cwd = agent_cwd.map(|c| format!("cwd = {c:?}\n")).unwrap_or_default();
+    let cwd = s.agent_cwd.map(|c| format!("cwd = {c:?}\n")).unwrap_or_default();
     format!(
         r#"
 [limits]
 causation_grace = "30s"
-{extra}
+{limits}
 
 [[source]]
 name = "watched"
@@ -43,8 +50,12 @@ env = {{ LOOP_DIR = {dir:?}, E2E_PULSE_BIN = {bin:?}, FIFO = {fifo:?} }}
 name = "on-new-file"
 on = "fs.file.created"
 where = {{ path = "~/watched/**" }}
+{rule}
 run = {{ agent = "writer" }}
 "#,
+        script = s.script,
+        limits = s.limits,
+        rule = s.rule,
         dir = dir.display().to_string(),
         bin = pulse_bin(),
         fifo = env.dir.path().join("fifo").display().to_string(),
@@ -61,40 +72,77 @@ async fn created(watch: &mut Watch, name: &str) -> Event {
         .await
 }
 
-/// Inferred causation: the run's working directory is the watched folder, and the agent writes
-/// a file there immediately after it starts.
+/// Inferred causation: the run's working directory is the watched folder and the agent writes
+/// a file there. Each case is a way the write could slip past: written at once, through a
+/// debounced rule, and by a process that left the run's group and writes after the run ended
+/// (inside `causation_grace`).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_writing_into_its_own_watched_folder_is_blocked_as_a_self_trigger() {
-    let env = Env::new();
-    env.mkdir("watched");
-    env.write_config(&fs_loop_config(
-        &env,
-        Some("~/watched"),
-        "echo again > \"$LOOP_DIR/out-$PULSE_RUN_ID.txt\"",
-        "",
-    ));
-    let daemon = env.start().await;
-    let mut watch = daemon.watch().await;
-    watch.sources(SourceState::Healthy).await;
+    let at_once = "echo again > \"$LOOP_DIR/out-$PULSE_RUN_ID.txt\"";
+    // The writer waits for the test, so it provably writes after the run has ended.
+    let escaped = "setsid sh -c 'read go < \"$FIFO\"; echo late > \"$LOOP_DIR/out-$PULSE_RUN_ID.txt\"' \
+                   </dev/null >/dev/null 2>&1 &";
+    let cases = [
+        ("at once", at_once, ""),
+        ("debounced", at_once, "debounce = \"300ms\""),
+        ("after the run", escaped, ""),
+    ];
+    for (case, script, rule) in cases {
+        let env = Env::new();
+        env.mkdir("watched");
+        let mut fifo = Fifo::new(env.dir.path(), "fifo");
+        env.write_config(&fs_loop_config(
+            &env,
+            LoopSetup { agent_cwd: Some("~/watched"), script, limits: "", rule },
+        ));
+        let daemon = env.start().await;
+        let mut watch = daemon.watch().await;
+        watch.sources(SourceState::Healthy).await;
 
-    std::fs::write(env.user_path("watched/seed.txt"), "seed").unwrap();
-    let run = watch.run_in("the first run", |_| true).await;
-    let ended = watch.run_terminal(run.id).await;
-    assert_eq!(ended.status, RunStatus::Succeeded);
+        std::fs::write(env.user_path("watched/seed.txt"), "seed").unwrap();
+        let run = watch.run_in("the first run", |_| true).await;
+        let ended = watch.run_terminal(run.id).await;
+        assert_eq!(ended.status, RunStatus::Succeeded, "{case}");
+        if script == escaped {
+            fifo.open().await;
+            fifo.write("go\n");
+            fifo.close();
+        }
 
-    let out = created(&mut watch, &format!("out-{}.txt", run.id)).await;
-    assert_eq!(out.causation_run, Some(run.id), "{out:#?}");
-    assert_eq!(out.causation, Some(Causation::Inferred));
-    assert_eq!(out.chain_depth, 1);
-    let detail = watch.detail(out.id).await;
-    assert_eq!(blocked(&detail, "on-new-file"), Some(BlockReason::LoopSelfTrigger { run: run.id }));
-    assert_eq!(watch.all_runs().await.len(), 1);
+        let out = created(&mut watch, &format!("out-{}.txt", run.id)).await;
+        assert_eq!(out.causation_run, Some(run.id), "{case}: {out:#?}");
+        assert_eq!(out.causation, Some(Causation::Inferred), "{case}");
+        assert_eq!(out.chain_depth, 1, "{case}");
+        let detail = watch.detail(out.id).await;
+        assert_eq!(
+            blocked(&detail, "on-new-file"),
+            Some(BlockReason::LoopSelfTrigger { run: run.id }),
+            "{case}: {:?}",
+            detail.deliveries
+        );
+        assert_eq!(watch.all_runs().await.len(), 1, "{case}");
 
-    // Visible from the CLI, so "why didn't it fire?" has an answer.
-    let (code, out, _) = env.run(&["rules", "history", "on-new-file"]).await;
-    assert_eq!(code, 0);
-    assert!(out.contains("loop protection"), "{out}");
-    daemon.stop().await;
+        if case == "at once" {
+            // Visible from the CLI, so "why didn't it fire?" has an answer.
+            let (code, text, _) = env.run(&["rules", "history", "on-new-file"]).await;
+            assert_eq!(code, 0);
+            assert!(text.contains("loop protection"), "{text}");
+            // A replay is the user's explicit request: it fires once, without the old
+            // causation, and the new run's own write is blocked in turn. One run, not a loop.
+            let (code, text, _) = env.run(&["replay", &out.id.to_string()]).await;
+            assert_eq!(code, 0, "{text}");
+            let again = watch.run_in("the replay's run", |r| r.id != run.id).await;
+            watch.run_terminal(again.id).await;
+            let out2 = created(&mut watch, &format!("out-{}.txt", again.id)).await;
+            let detail = watch.detail(out2.id).await;
+            assert_eq!(
+                blocked(&detail, "on-new-file"),
+                Some(BlockReason::LoopSelfTrigger { run: again.id })
+            );
+            assert_eq!(watch.all_runs().await.len(), 2);
+        }
+        daemon.stop().await;
+    }
 }
 
 /// Exact causation: the agent wraps a failing command with `pulse run` (and reports through
@@ -195,9 +243,12 @@ async fn an_unattributable_loop_is_stopped_by_the_circuit_breaker() {
     env.mkdir("watched");
     env.write_config(&fs_loop_config(
         &env,
-        None,
-        "echo again > \"$LOOP_DIR/gen-$PULSE_RUN_ID.txt\"",
-        "circuit_breaker = { max_fires = 3, window = \"10m\", open_for = \"1h\" }",
+        LoopSetup {
+            agent_cwd: None,
+            script: "echo again > \"$LOOP_DIR/gen-$PULSE_RUN_ID.txt\"",
+            limits: "circuit_breaker = { max_fires = 3, window = \"10m\", open_for = \"1h\" }",
+            rule: "",
+        },
     ));
     let daemon = env.start().await;
     let mut watch = daemon.watch().await;

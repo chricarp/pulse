@@ -145,7 +145,7 @@ impl Daemon {
         // against the real rules.
         let watched = shared.loader.lock().await.watched_dirs();
         shared.apply(loaded, watched.clone()).await;
-        let engine = Engine::restore(shared.clone(), shared.snapshot())
+        let engine = Engine::restore(shared.clone(), shared.snapshot(), &interrupted)
             .await
             .map_err(|e| StartError::Other(format!("cannot rebuild routing state: {e}")))?;
         // `apply` above queued a Config message for the engine; replaying it is harmless.

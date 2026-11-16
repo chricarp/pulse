@@ -300,6 +300,41 @@ impl Queries<'_> {
         Ok(DeliveryPage { deliveries, next_cursor })
     }
 
+    /// `(source, dedupe key, when accepted)` of events accepted at or after `since`, oldest
+    /// first; at most `limit`, the newest kept. Event ids are ULIDs from the engine's clock, so
+    /// "accepted at" is the id's time, whatever the event claims as its `time`. The daemon
+    /// refills its dedupe table from this at startup, so a source retrying after an outage does
+    /// not fire twice.
+    pub fn recent_dedupe_keys(
+        &self,
+        since: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<(String, String, Timestamp)>> {
+        let floor = EventId::from_ulid(pulse_contracts::Ulid::from_parts(
+            u64::try_from(since.as_millis()).unwrap_or(0),
+            0,
+        ));
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, source, json_extract(body, '$.pulsededupekey') AS k FROM events
+             WHERE id >= ?1 AND k IS NOT NULL ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![floor.to_string(), limit], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut keys = rows
+            .into_iter()
+            .map(|(id, source, key)| {
+                let id: EventId = parse_id(&id)?;
+                let at = i64::try_from(id.timestamp_ms()).unwrap_or(i64::MAX);
+                Ok((source, key, Timestamp::from_millis(at)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        keys.reverse();
+        Ok(keys)
+    }
+
     /// Times a rule fired (or awaited approval) after `since`, newest first, at most `limit`.
     /// The daemon rebuilds cooldown, rate-limit and breaker state from this at startup.
     pub fn recent_fires(&self, rule: &str, since: Timestamp, limit: u32) -> Result<Vec<Timestamp>> {

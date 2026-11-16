@@ -136,6 +136,23 @@ impl Env {
         )
     }
 
+    /// Runs the CLI with `input` on stdin: (exit code, stdout, stderr).
+    pub async fn run_stdin(&self, args: &[&str], input: &str) -> (i32, String, String) {
+        use tokio::io::AsyncWriteExt;
+        let mut cmd = self.pulse();
+        cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(input.as_bytes()).await.unwrap();
+        drop(stdin);
+        let out = within(&format!("pulse {args:?}"), child.wait_with_output()).await.unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     /// `pulse start --ready-line --port 0`, returned once it is listening.
     pub async fn start(&self) -> Daemon {
         let mut cmd = self.pulse();
@@ -376,13 +393,35 @@ impl Watch {
         self.until(what, |w| w.runs.values().find(|r| f(r)).cloned()).await
     }
 
+    /// Waits for run `id` to be in `status`. The subscription predates this call, so reading
+    /// the run first misses nothing: any later change is notified.
     pub async fn run_status(&mut self, id: RunId, status: RunStatus) -> RunSummary {
+        let now = self.get_run(id).await.summary();
+        if now.status == status {
+            return now;
+        }
         self.run_in(&format!("run {id} to be {status:?}"), |r| r.id == id && r.status == status)
             .await
     }
 
     pub async fn run_terminal(&mut self, id: RunId) -> RunSummary {
+        let now = self.get_run(id).await.summary();
+        if now.status.is_terminal() {
+            return now;
+        }
         self.run_in(&format!("run {id} to end"), |r| r.id == id && r.status.is_terminal()).await
+    }
+
+    /// Waits until run `id` has printed a line containing `text`.
+    pub async fn output_line(&mut self, id: RunId, text: &str) {
+        if !self.output.contains_key(&id) {
+            self.follow_output(id).await;
+            self.output.insert(id, Vec::new());
+        }
+        self.until(&format!("run {id} to print {text:?}"), |w| {
+            w.output[&id].iter().any(|c| c.output.text.contains(text)).then_some(())
+        })
+        .await;
     }
 
     /// Waits until every configured source reports `state`.
@@ -484,6 +523,11 @@ impl Fifo {
         let path = dir.join(name);
         let ok = std::process::Command::new("mkfifo").arg(&path).status().unwrap().success();
         assert!(ok, "mkfifo {}", path.display());
+        Fifo { path, writer: None }
+    }
+
+    /// A fifo someone else (an agent) created.
+    pub fn existing(path: PathBuf) -> Fifo {
         Fifo { path, writer: None }
     }
 

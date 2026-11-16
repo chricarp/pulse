@@ -12,4 +12,5 @@
 mod support;
 
 mod loops;
+mod restart;
 mod templates;
