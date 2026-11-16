@@ -30,8 +30,12 @@ const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
 /// An authenticated request then needs a slot in the agent's request budget
 /// ([`Limits::requests_per_agent`], [`Limits::requests_total`]); it holds it until its response
 /// body ends or is dropped, so an open SSE stream counts. Without one it is answered `429` (or
-/// `503` when every agent together is at the total) at once, with a fixed body and
-/// `Connection: close`, so a refused client does not keep the socket.
+/// `503` when every agent together is at the total) at once, with a fixed body.
+///
+/// Every response carries `Connection: close`: a connection serves one request. Otherwise an
+/// agent could park any number of idle keep-alive connections between requests, each a
+/// descriptor outside the budget. A loopback connect per MCP request costs little; HTTP
+/// clients reconnect on their own.
 ///
 /// rmcp then checks `Host` against [`McpConfig::allowed_hosts`] (403 otherwise) and rejects any
 /// `Origin` not in [`McpConfig::allowed_origins`]. If the daemon applies its own Host/Origin
@@ -68,9 +72,15 @@ struct Gate<B> {
 
 async fn authenticate<B: Backend>(
     State(gate): State<Arc<Gate<B>>>,
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> Response {
+    let mut response = admit(&gate, request, next).await;
+    response.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
+    response
+}
+
+async fn admit<B: Backend>(gate: &Gate<B>, mut request: Request, next: Next) -> Response {
     let token = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -148,7 +158,6 @@ impl IntoResponse for Refusal {
         let headers = response.headers_mut();
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
-        headers.insert(header::CONNECTION, HeaderValue::from_static("close"));
         response
     }
 }

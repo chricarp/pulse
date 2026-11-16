@@ -64,6 +64,8 @@ async fn tool_over_http(router: &axum::Router, token: &str, name: &str, args: Va
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    // One request per connection: no idle keep-alive sockets outside the request budget.
+    assert_eq!(response.headers()[header::CONNECTION], "close");
     let msgs = messages(response).await;
     let result = msgs.iter().find(|m| m.get("id") == Some(&json!(1))).unwrap();
     result.pointer("/result/content/0/text").and_then(Value::as_str).unwrap().to_owned()
@@ -90,6 +92,7 @@ async fn missing_or_unknown_tokens_are_rejected_before_mcp() {
         let response =
             router.clone().oneshot(b.body(Body::from(body.to_string())).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{auth:?}");
+        assert_eq!(response.headers()[header::CONNECTION], "close");
         assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer realm=\"pulse\"");
         let text = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(text, want.as_bytes());
