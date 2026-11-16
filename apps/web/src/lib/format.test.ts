@@ -78,4 +78,8 @@ describe("hidden characters", () => {
     expect(visible(s)).toBe(s);
     expect(hasHiddenCharacters(s)).toBe(false);
   });
+  it("is idempotent, so text made visible in a view and again by the JSX runtime reads the same", () => {
+    const once = visible(`a\u202Eb\u{E0041}c\u0007d`);
+    expect(visible(once)).toBe(once);
+  });
 });

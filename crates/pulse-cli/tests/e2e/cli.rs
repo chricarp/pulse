@@ -77,6 +77,17 @@ async fn adding_and_removing_definitions() {
     assert!(s["health"]["state"].is_string(), "{s}");
     let (code, _, err) = env.run(&["sources", "add", "schedule", "tick", "--every", "1h"]).await;
     assert_eq!(code, 0, "{err}");
+    // Enable and disable change only `enabled` in the file, from the CLI as from the UI.
+    let (code, out, err) = env.run(&["sources", "disable", "tick"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("Disabled source tick"), "{out}");
+    assert!(env.read_config().contains("every = \"1h\"\nenabled = false"), "{}", env.read_config());
+    let (code, _, err) = env.run(&["sources", "enable", "tick"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(!env.read_config().contains("enabled = false"), "{}", env.read_config());
+    let (code, _, err) = env.run(&["sources", "disable", "nope"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("nope"), "{err}");
     let (code, _, err) = env.run(&["sources", "add", "schedule", "bad"]).await;
     assert_eq!(code, 1);
     assert!(err.contains("cron") || err.contains("every"), "{err}");
@@ -106,13 +117,12 @@ async fn adding_and_removing_definitions() {
     assert_eq!(status["status"]["config_warnings"], 1, "{status}");
     assert_eq!(status["config_warnings"][0]["item"], "rule \"new-note\"");
 
-    // Fixing the agent clears it.
-    let (code, _, err) = env
-        .run_stdin(
-            &["agents", "add", "--file", "-"],
-            "name = \"notes\"\nadapter = \"command\"\ncommand = [\"true\"]\nallow = [\"fs.*:~/inbox/**\"]\n",
-        )
-        .await;
+    // Fixing the agent clears it. `add` does not replace by accident: that takes --replace.
+    let fixed = "name = \"notes\"\nadapter = \"command\"\ncommand = [\"true\"]\nallow = [\"fs.*:~/inbox/**\"]\n";
+    let (code, _, err) = env.run_stdin(&["agents", "add", "--file", "-"], fixed).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("already exists; pass --replace"), "{err}");
+    let (code, _, err) = env.run_stdin(&["agents", "add", "--replace", "--file", "-"], fixed).await;
     assert_eq!(code, 0, "{err}");
     let (_, out, _) = env.run(&["--json", "status"]).await;
     assert_eq!(json(&out)["status"]["config_warnings"], 0);
@@ -158,6 +168,41 @@ async fn adding_and_removing_definitions() {
     );
     assert!(!config.contains("new-note") && !config.contains("inbox"), "{config}");
     assert!(config.contains("name = \"tick\""), "{config}");
+    daemon.stop().await;
+}
+
+/// `pulse project trust` shows what it would trust and binds to the hash it showed: a file
+/// replaced between looking and trusting is not trusted.
+#[tokio::test(flavor = "multi_thread")]
+async fn trusting_a_project_binds_to_the_content_shown() {
+    let env = Env::new();
+    let repo = env.mkdir("code/repo");
+    let file = repo.join("pulse.toml");
+    let text = "[[agent]]\nname = \"fmt\"\nadapter = \"command\"\ncommand = [\"prettier\", \"--write\", \"--\", \"{{path}}\"]\nallow = [\"fs.*:~/code/repo/**\"]\n";
+    std::fs::write(&file, text).unwrap();
+    let daemon = env.start().await;
+    let dir = repo.to_str().unwrap();
+
+    let (code, out, err) = env.run(&["project", "trust", dir]).await;
+    assert_eq!(code, 1, "a review trusts nothing");
+    assert!(out.contains("prettier") && out.contains("content hash"), "{out}");
+    assert!(err.contains("Nothing was trusted") && err.contains("--hash"), "{err}");
+    let (_, out, _) = env.run(&["--json", "project", "trust", dir]).await;
+    let hash = json(&out)["hash"].as_str().unwrap().to_owned();
+
+    std::fs::write(&file, text.replace("prettier", "curl")).unwrap();
+    let (code, _, err) = env.run(&["project", "trust", dir, "--hash", &hash]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("changed since that hash was printed"), "{err}");
+    let (_, out, _) = env.run(&["--json", "agents"]).await;
+    assert_eq!(json(&out)["agents"], serde_json::json!([]));
+
+    std::fs::write(&file, text).unwrap();
+    let (code, out, err) = env.run(&["project", "trust", dir, "--hash", &hash]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("trusted"), "{out}");
+    let (_, out, _) = env.run(&["--json", "agents"]).await;
+    assert_eq!(json(&out)["agents"][0]["config"]["name"], "repo/fmt");
     daemon.stop().await;
 }
 

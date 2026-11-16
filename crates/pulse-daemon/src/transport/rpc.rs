@@ -318,8 +318,8 @@ impl RpcHandler for RpcServer {
     async fn rules_upsert(&self, _: &Self::Context, p: RuleUpsertParams) -> R<RuleInfo> {
         map(self.services.rules_upsert(p).await)
     }
-    async fn rules_delete(&self, _: &Self::Context, p: NameParams) -> R<Empty> {
-        map(self.services.rules_delete(&p.name).await).map(|()| Empty {})
+    async fn rules_delete(&self, _: &Self::Context, p: DeleteParams) -> R<Empty> {
+        map(self.services.rules_delete(&p.name, &p.expected).await).map(|()| Empty {})
     }
     async fn rules_set_enabled(&self, _: &Self::Context, p: SetEnabledParams) -> R<RuleInfo> {
         map(self.services.rules_set_enabled(&p.name, p.enabled).await)
@@ -352,8 +352,8 @@ impl RpcHandler for RpcServer {
     async fn agents_upsert(&self, _: &Self::Context, p: AgentUpsertParams) -> R<AgentInfo> {
         map(self.services.agents_upsert(p).await)
     }
-    async fn agents_delete(&self, _: &Self::Context, p: NameParams) -> R<Empty> {
-        map(self.services.agents_delete(&p.name).await).map(|()| Empty {})
+    async fn agents_delete(&self, _: &Self::Context, p: DeleteParams) -> R<Empty> {
+        map(self.services.agents_delete(&p.name, &p.expected).await).map(|()| Empty {})
     }
     async fn agents_mcp_credentials(&self, _: &Self::Context, p: NameParams) -> R<McpCredentials> {
         map(self.services.agents_mcp_credentials(&p.name).await)
@@ -365,8 +365,11 @@ impl RpcHandler for RpcServer {
     async fn sources_upsert(&self, _: &Self::Context, p: SourceUpsertParams) -> R<SourceInfo> {
         map(self.services.sources_upsert(p).await)
     }
-    async fn sources_delete(&self, _: &Self::Context, p: NameParams) -> R<Empty> {
-        map(self.services.sources_delete(&p.name).await).map(|()| Empty {})
+    async fn sources_delete(&self, _: &Self::Context, p: DeleteParams) -> R<Empty> {
+        map(self.services.sources_delete(&p.name, &p.expected).await).map(|()| Empty {})
+    }
+    async fn sources_set_enabled(&self, _: &Self::Context, p: SetEnabledParams) -> R<SourceInfo> {
+        map(self.services.sources_set_enabled(&p.name, p.enabled).await)
     }
 
     async fn runs_list(&self, _: &Self::Context, p: RunsListParams) -> R<RunPage> {
@@ -433,8 +436,11 @@ impl RpcHandler for RpcServer {
     async fn projects_list(&self, _: &Self::Context, _: Empty) -> R<ProjectList> {
         Ok(ProjectList { projects: self.services.projects_list() })
     }
+    async fn projects_review(&self, _: &Self::Context, p: ProjectReviewParams) -> R<ProjectReview> {
+        map(self.services.projects_review(&p.dir, p.name.as_deref()).await)
+    }
     async fn projects_trust(&self, _: &Self::Context, p: ProjectTrustParams) -> R<Project> {
-        map(self.services.projects_trust(&p.dir, p.name.as_deref()).await)
+        map(self.services.projects_trust(&p.dir, p.name.as_deref(), &p.hash).await)
     }
     async fn projects_untrust(&self, _: &Self::Context, p: ProjectDirParams) -> R<Project> {
         map(self.services.projects_untrust(&p.dir).await)

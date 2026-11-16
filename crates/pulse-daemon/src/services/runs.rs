@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use pulse_contracts::rpc::{RunFilter, RunOutputPage, RunPage, RunsChanged, RunsOutput};
+use pulse_contracts::run::RunSnapshot;
 use pulse_contracts::{Run, RunId, RunStatus, RunSummary, SubscriptionId};
 use pulse_store::{Commit, Effect, NewRun, RunTransition};
 use tokio_util::sync::CancellationToken;
@@ -11,6 +12,7 @@ use super::Services;
 use crate::engine::{Control, summary};
 use crate::error::{ServiceError, ServiceResult};
 use crate::hub::{STUCK_LIMIT, Sent};
+use crate::release;
 
 /// Chunks per `runs.output` notification.
 const OUTPUT_PAGE: u32 = 500;
@@ -163,7 +165,20 @@ impl Services {
         Ok(run)
     }
 
+    /// Approves a pending run, unless its agent or rule changed since it was created (what the
+    /// approval showed would not be what runs): then the run is withdrawn and the call fails
+    /// with the reason.
     pub async fn runs_approve(&self, id: RunId) -> ServiceResult<RunSummary> {
+        let pending = self.runs_get(id).await?;
+        if pending.status == RunStatus::PendingApproval {
+            let config = self.shared.snapshot();
+            if let Some(reason) =
+                release::stale_reason(&config.config, &pending.agent, &pending.snapshot)
+            {
+                self.transition(id, RunTransition::Withdraw { reason: reason.clone() }).await?;
+                return Err(ServiceError::Conflict(format!("not approved: {reason}")));
+            }
+        }
         let run = self.transition(id, RunTransition::Approve).await?;
         self.shared.worker.wake();
         Ok(run.summary())
@@ -186,29 +201,52 @@ impl Services {
         Ok(self.transition(id, RunTransition::Cancel).await?.summary())
     }
 
-    /// A new queued run with the same event, prompt and snapshot. It is the user's explicit
-    /// request, so it skips routing (no approval, cooldown or rate limit).
+    /// A new queued run with the same event and prompt, executed with the agent (and rule) as
+    /// they are now: an old snapshot is never resurrected. It is the user's explicit request,
+    /// so it skips routing (no approval, cooldown or rate limit). Refused if the agent no
+    /// longer exists.
     pub async fn runs_rerun(&self, id: RunId) -> ServiceResult<RunSummary> {
         let old = self.runs_get(id).await?;
-        let event = old.event;
-        if self.shared.store.read(move |q| q.query().event(event)).await?.is_none() {
+        let event_id = old.event;
+        let Some(event) = self.shared.store.read(move |q| q.query().event(event_id)).await? else {
             return Err(ServiceError::Conflict(format!(
-                "run {id}'s event {event} has been pruned from the log"
+                "run {id}'s event {event_id} has been pruned from the log"
             )));
-        }
-        let snapshot = self.shared.snapshot();
+        };
+        let config = self.shared.snapshot();
+        let agent = config.config.agent(&old.agent).ok_or_else(|| {
+            ServiceError::Conflict(format!(
+                "the agent {:?} no longer exists, so this run cannot be run again",
+                old.agent
+            ))
+        })?;
+        let rule = old.rule.as_deref().and_then(|r| config.config.rule(r));
+        let snapshot =
+            RunSnapshot { rule: rule.map(|r| r.config.clone()), agent: agent.config.clone() };
+        let new_id = self.shared.ids.run();
+        let parts = release::RunParts {
+            id: new_id,
+            rule: rule.map(|r| r.config.name.as_str()),
+            agent_name: &old.agent,
+            agent: &snapshot.agent,
+            prompt: old.prompt.as_deref(),
+            chain_depth: old.chain_depth,
+        };
+        let invocation =
+            release::render(&self.shared, &config.config, &parts, &event).ok().map(|i| i.summary());
         let now = self.shared.clock.now();
         let new = NewRun {
-            id: self.shared.ids.run(),
-            rule: old.rule.filter(|r| snapshot.config.rule(r).is_some()),
+            id: new_id,
+            rule: rule.map(|r| r.config.name.clone()),
             agent: old.agent,
-            event,
+            event: event_id,
             status: RunStatus::Queued,
             created_at: now,
             prompt: old.prompt,
             chain_depth: old.chain_depth,
             rerun_of: Some(id),
-            snapshot: old.snapshot,
+            snapshot,
+            invocation,
         };
         let created = summary(&new);
         let commit = Commit {

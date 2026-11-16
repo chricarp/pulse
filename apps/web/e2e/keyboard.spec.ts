@@ -9,6 +9,8 @@ test("navigate, pause and resume, and approve from the keyboard", async ({ page 
   await page.keyboard.press("g");
   await page.keyboard.press("r");
   await expect(page.getByRole("heading", { name: "Rules" })).toBeVisible();
+  // The heading renders before the list has loaded; `j` moves within the rows there are.
+  await expect(page.locator(".rule-row").first()).toBeVisible();
   await page.keyboard.press("j");
   await expect(page.locator(".rule-row.is-selected")).toHaveCount(1);
   await page.keyboard.press("Escape");
@@ -26,6 +28,9 @@ test("navigate, pause and resume, and approve from the keyboard", async ({ page 
   await page.keyboard.press("g");
   await page.keyboard.press("i");
   await expect(page.locator(".approval")).toBeVisible();
+  // What approving starts is shown: the argument list, not only the prompt.
+  await expect(page.locator(".approval .invocation")).toContainText("Approving runs exactly this");
+  await expect(page.locator(".approval .argv")).toContainText("exec");
   await page.keyboard.press("Shift+A");
   await expect(page.locator(".toast").filter({ hasText: "Approved" })).toBeVisible();
   await expect(page.locator(".banner-approval")).toHaveCount(0);

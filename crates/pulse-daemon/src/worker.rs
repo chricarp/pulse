@@ -20,17 +20,14 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pulse_agents::{
-    RunEnd, RunRequest, SuperviseError, SuperviseOptions, SupervisorEvent, WriteFact,
-};
-use pulse_contracts::pattern::expand_path;
+use pulse_agents::{RunEnd, SuperviseError, SuperviseOptions, SupervisorEvent, WriteFact};
 use pulse_contracts::run::InvocationSummary;
-use pulse_contracts::{OutputKind, RenderedPrompt, Run, RunId, RunOutput, RunStatus, Timestamp};
+use pulse_contracts::{OutputKind, Run, RunId, RunOutput, RunStatus, Timestamp};
 use pulse_core::path::{rebase, resolve_reported};
 use pulse_core::{RecentRun, RunWrites};
 use pulse_store::{Effect, OutboxItem, RunTransition, StoreError};
@@ -39,6 +36,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::engine::Control;
+use crate::release;
 use crate::shared::Shared;
 
 const CLAIM_BATCH: u32 = 64;
@@ -355,8 +353,29 @@ fn canonical(path: &Path) -> Option<String> {
 impl RunTask {
     async fn run(self) -> RunId {
         let id = self.run.id;
+        // A run never starts with an agent definition that is not the current one.
+        let config = self.shared.snapshot();
+        if let Some(reason) =
+            release::stale_reason(&config.config, &self.run.agent, &self.run.snapshot)
+        {
+            self.withdraw(reason).await;
+            return id;
+        }
         match self.prepare().await {
             Prepared::Failed(error) => self.fail_to_start(error).await,
+            Prepared::Ready { invocation, .. }
+                if self
+                    .run
+                    .invocation
+                    .as_ref()
+                    .is_some_and(|shown| *shown != invocation.summary()) =>
+            {
+                self.withdraw(
+                    "what this run would execute differs from what was recorded when it was created; replay the event to run it again"
+                        .to_owned(),
+                )
+                .await;
+            }
             Prepared::Ready { invocation, parser, writes } => {
                 self.supervise(*invocation, parser, writes).await;
             }
@@ -391,38 +410,16 @@ impl RunTask {
             return Prepared::Failed(format!("cannot write {}: {e}", event_file.display()));
         }
         let snapshot = self.shared.snapshot();
-        let base =
-            snapshot.config.agent(&run.agent).and_then(|a| a.origin.base_dir().map(PathBuf::from));
-        let cwd = match &agent.cwd {
-            Some(raw) => match expand_path(raw, &self.shared.user_home, base.as_deref()) {
-                Ok(p) => PathBuf::from(p),
-                Err(e) => return Prepared::Failed(format!("agent cwd: {e}")),
-            },
-            None => dir.clone(),
-        };
-        let request = RunRequest {
-            run_id: run.id,
-            rule: run.rule.clone(),
-            agent: run.agent.clone(),
-            event,
-            // Only the text is stored; adapters send the text.
-            prompt: run.prompt.clone().map(|text| RenderedPrompt {
-                text,
-                delimiter: String::new(),
-                truncated: false,
-                missing: Vec::new(),
-            }),
+        // The same rendering as when the run was created (see `release`).
+        let parts = release::RunParts {
+            id: run.id,
+            rule: run.rule.as_deref(),
+            agent_name: &run.agent,
+            agent,
+            prompt: run.prompt.as_deref(),
             chain_depth: run.chain_depth,
-            cwd,
-            event_file,
-            pulse_home: self.shared.home.root().to_path_buf(),
-            limits: snapshot.config.limits.prompt.clone(),
         };
-        let cwd_real = tokio::fs::canonicalize(&request.cwd)
-            .await
-            .ok()
-            .and_then(|p| p.to_str().map(str::to_owned));
-        match adapter.invocation(agent, &request) {
+        match release::render(&self.shared, &snapshot.config, &parts, &event) {
             Ok(invocation) => Prepared::Ready {
                 writes: Writes {
                     state: if adapter.reports_writes() {
@@ -431,13 +428,26 @@ impl RunTask {
                         RunWrites::opaque()
                     },
                     cwd: invocation.cwd.display().to_string(),
-                    cwd_real,
+                    cwd_real: tokio::fs::canonicalize(&invocation.cwd)
+                        .await
+                        .ok()
+                        .and_then(|p| p.to_str().map(str::to_owned)),
                 },
                 invocation: Box::new(invocation),
                 parser: adapter.parser(),
             },
-            Err(e) => Prepared::Failed(e.to_string()),
+            Err(e) => Prepared::Failed(e),
         }
+    }
+
+    /// Ends a queued run that can no longer start as it was created.
+    async fn withdraw(&self, reason: String) {
+        tracing::info!("run {} withdrawn: {reason}", self.run.id);
+        if let Err(e) = self.transition(RunTransition::Withdraw { reason }).await {
+            tracing::warn!("run {}: {e}", self.run.id);
+        }
+        self.complete_item().await;
+        let _ = self.shared.engine.control(Control::RefreshBacklog).await;
     }
 
     async fn transition(&self, t: RunTransition) -> Result<Run, StoreError> {
@@ -467,16 +477,18 @@ impl RunTask {
         let _ = self.shared.engine.control(Control::RefreshBacklog).await;
     }
 
-    /// `queued → running`, as of `at`. `false` if the run is no longer queued (cancelled
-    /// meanwhile).
+    /// `queued → running`, as of `at`, recorded before the process is spawned (the pid is set
+    /// once known): a crash after the spawn then finds a `running` run, recovered as
+    /// `interrupted`, never a queued one it would start a second time. The engine learns of the
+    /// run here too, so it counts as active for attribution from just before the spawn. `false`
+    /// if the run is no longer queued (cancelled meanwhile).
     async fn start(
         &self,
-        pid: Option<u32>,
         invocation: &InvocationSummary,
         at: Timestamp,
         writes: RunWrites,
     ) -> bool {
-        let t = RunTransition::Start { pid, invocation: invocation.clone() };
+        let t = RunTransition::Start { pid: None, invocation: invocation.clone() };
         let started = self.transition_at(t, at).await;
         self.complete_item().await;
         match started {
@@ -519,6 +531,9 @@ impl RunTask {
         // The run starts before its process does: inferred causation compares event times with
         // this, and an agent can write a file before the worker gets to record the start.
         let spawned_at = self.shared.clock.now();
+        if !self.start(&summary, spawned_at, writes.state.clone()).await {
+            return;
+        }
         let options = SuperviseOptions {
             timeout: self.run.snapshot.agent.timeout.to_std(),
             ..SuperviseOptions::default()
@@ -526,8 +541,6 @@ impl RunTask {
         let (tx, mut rx) = mpsc::channel(OUTPUT_CHANNEL);
         let mut supervised =
             self.shared.supervisor.supervise(invocation, parser, tx, options, self.cancel.clone());
-        // None until the run is recorded as running; Some(false) if it turned out cancelled.
-        let mut started: Option<bool> = None;
         let mut result = None;
         // Output waiting for the append in flight. Bounded: while it is full, nothing more is
         // received, so the supervisor stops reading the agent's pipes.
@@ -552,22 +565,14 @@ impl RunTask {
                         closed = true;
                         continue;
                     };
-                    if started.is_none() {
-                        let pid = match event {
-                            SupervisorEvent::Started { pid } => Some(pid),
-                            _ => None,
-                        };
-                        started =
-                            Some(self.start(pid, &summary, spawned_at, writes.state.clone()).await);
-                        if started == Some(false) {
-                            self.cancel.cancel();
-                        }
-                    }
-                    if started != Some(true) {
-                        continue;
-                    }
                     match event {
-                        SupervisorEvent::Started { .. } => {}
+                        SupervisorEvent::Started { pid } => {
+                            let id = self.run.id;
+                            let set = self.shared.store.write(move |s| s.set_run_pid(id, pid)).await;
+                            if let Err(e) = set {
+                                tracing::warn!("run {id}: could not record its pid: {e}");
+                            }
+                        }
                         SupervisorEvent::Output { at, output } => {
                             queued.push((at, output));
                             queued.extend(opaque_marker.take());
@@ -588,7 +593,7 @@ impl RunTask {
             Some(r) => r,
             None => supervised.await,
         };
-        self.finish(started, result).await;
+        self.finish(result).await;
     }
 
     /// Resolves reported paths, tells the engine, and returns a marker for the run's output if
@@ -632,29 +637,9 @@ impl RunTask {
         })
     }
 
-    async fn finish(&self, started: Option<bool>, result: Result<RunEnd, SuperviseError>) {
-        let started = match (started, &result) {
-            (Some(s), _) => s,
-            (None, Err(e)) => {
-                return self.fail_to_start(e.to_string()).await;
-            }
-            (None, Ok(_)) => {
-                self.start(
-                    None,
-                    &InvocationSummary {
-                        program: String::new(),
-                        args: Vec::new(),
-                        cwd: String::new(),
-                    },
-                    self.shared.clock.now(),
-                    RunWrites::opaque(),
-                )
-                .await
-            }
-        };
-        if !started {
-            return;
-        }
+    /// Records how a running run ended. A process that could not be spawned is `failed` with
+    /// the reason (the run was already recorded as running).
+    async fn finish(&self, result: Result<RunEnd, SuperviseError>) {
         let shutting_down =
             self.shared.shutdown.is_cancelled() && !self.by_user.load(Ordering::SeqCst);
         let (status, exit_code, signal, error) = match result {

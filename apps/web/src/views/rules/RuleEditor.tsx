@@ -4,7 +4,8 @@ import { useApp, useDaemon } from "../../app/context";
 import { useBindings } from "../../app/keys";
 import { navigate, useLocation } from "../../app/router";
 import { toast } from "../../app/toasts";
-import type { ConfigError, RuleInfo } from "../../contracts";
+import type { ConfigError, Expected, RuleInfo } from "../../contracts";
+import { expectedFor, refusedCurrent, staleOf } from "../../lib/edits";
 import {
   LIST_OPS,
   NO_VALUE_OPS,
@@ -23,11 +24,18 @@ import { typeGlobMatches, typeGlobProblem } from "../../lib/syntax";
 import { ErrorCodes, RpcCallError } from "../../rpc/client";
 import { Icon } from "../../ui/icons";
 import { Button, Field, IconButton, Input, ListInput, Notice, Select, TextArea, Toggle, cx } from "../../ui/primitives";
+import { ConflictNotice, hasConflict } from "../common/Conflict";
 import { RuleTester } from "./RuleTester";
 
 const TEMPLATE_VARS = ["subject", "type", "source", "time", "id", "rule", "agent"];
 
-export function RuleEditor({ existing }: { existing: RuleInfo | null }) {
+/**
+ * `opened`: the rule the editor was opened on (null: a new rule). `current`: that rule as the
+ * daemon has it now (null once removed), which may differ: the file is edited by hand, the CLI
+ * and other windows while this is open.
+ */
+export function RuleEditor({ opened, current }: { opened: RuleInfo | null; current: RuleInfo | null }) {
+  const existing = opened;
   const { client } = useApp();
   const agents = useDaemon((s) => s.agents);
   const projects = useDaemon((s) => s.projects);
@@ -46,6 +54,10 @@ export function RuleEditor({ existing }: { existing: RuleInfo | null }) {
   const [serverErrors, setServerErrors] = useState<ConfigError[]>([]);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // What the form's edits are based on; a save names its revision.
+  const [base, setBase] = useState<RuleInfo | null>(opened);
+  // The rule as it was when a save was refused as stale (the list may not have caught up yet).
+  const [refused, setRefused] = useState<{ current: RuleInfo | null } | null>(null);
   const first = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -78,7 +90,10 @@ export function RuleEditor({ existing }: { existing: RuleInfo | null }) {
     }
   }
 
-  const save = async () => {
+  const live = opened ? (refused && current?.revision === base?.revision ? refused.current : current) : (refused?.current ?? null);
+  const conflict = hasConflict(base, live);
+
+  const save = async (expected: Expected = expectedFor(base)) => {
     setTouched(true);
     if (problems.length > 0) {
       toast("Fix the highlighted fields first", "error");
@@ -87,12 +102,17 @@ export function RuleEditor({ existing }: { existing: RuleInfo | null }) {
     setSaving(true);
     setServerErrors([]);
     try {
-      const info = await client.call("rules.upsert", { rule, ...(form.project ? { project: form.project } : {}) });
+      const info = await client.call("rules.upsert", { rule, ...(form.project ? { project: form.project } : {}), expected });
       setDirty(false);
       toast(existing ? `Saved ${info.config.name}` : `Created ${info.config.name}`, "ok", `Written to ${info.origin.path}`);
       navigate({ view: "rules", name: info.config.name, mode: "show" }, { replace: true });
     } catch (err) {
-      if (err instanceof RpcCallError && err.code === ErrorCodes.ConfigInvalid) {
+      const stale = staleOf(err);
+      if (stale) {
+        // Changed (or created, or removed) elsewhere: show what is there now; the form stays.
+        const now = await client.call("rules.get", { name: fullName(form) }).catch(() => null);
+        setRefused({ current: refusedCurrent(stale, now) });
+      } else if (err instanceof RpcCallError && err.code === ErrorCodes.ConfigInvalid) {
         setServerErrors((err.data as { errors?: ConfigError[] } | undefined)?.errors ?? [{ message: err.message }]);
       } else {
         toast("Save failed", "error", err instanceof Error ? err.message : String(err));
@@ -153,6 +173,22 @@ export function RuleEditor({ existing }: { existing: RuleInfo | null }) {
           </div>
         </header>
         <div className="editor-body">
+          {conflict && (
+            <ConflictNotice
+              what="rule"
+              name={fullName(form)}
+              base={base}
+              current={live}
+              onReload={() => {
+                if (!live) return;
+                setForm(infoToForm(live));
+                setBase(live);
+                setRefused(null);
+                setDirty(false);
+              }}
+              onOverwrite={(expected) => void save(expected)}
+            />
+          )}
           {(serverErrors.length > 0 || unmatchedServer.length > 0) && (
             <Notice tone="error" title="The daemon did not accept this rule">
               <ul className="plain">

@@ -34,6 +34,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::config::Snapshot;
 use crate::error::{ServiceError, ServiceResult};
+use crate::release;
 use crate::shared::Shared;
 
 /// Events (and requests carrying events) for the engine.
@@ -499,6 +500,21 @@ impl Engine {
             };
             let run = created.map(|(status, prompt)| {
                 let id = self.shared.ids.run();
+                let snapshot = snapshot_of(&self.snapshot.config, &d.rule, &d.agent);
+                // Rendered now so an approval shows what will run; the worker renders it again
+                // before starting and refuses a difference.
+                let parts = release::RunParts {
+                    id,
+                    rule: Some(&d.rule),
+                    agent_name: &d.agent,
+                    agent: &snapshot.agent,
+                    prompt: prompt.as_ref().map(|p| p.text.as_str()),
+                    chain_depth: d.chain_depth,
+                };
+                let invocation =
+                    release::render(&self.shared, &self.snapshot.config, &parts, event)
+                        .ok()
+                        .map(|i| i.summary());
                 let new = NewRun {
                     id,
                     rule: Some(d.rule.clone()),
@@ -509,7 +525,8 @@ impl Engine {
                     prompt: prompt.as_ref().map(|p| p.text.clone()),
                     chain_depth: d.chain_depth,
                     rerun_of: None,
-                    snapshot: snapshot_of(&self.snapshot.config, &d.rule, &d.agent),
+                    snapshot,
+                    invocation,
                 };
                 if status == RunStatus::Queued {
                     p.commit.outbox.push(Effect::StartRun { run: id });

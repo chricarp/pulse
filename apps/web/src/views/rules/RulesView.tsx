@@ -9,9 +9,11 @@ import { attempt } from "../../app/toasts";
 import type { ConfigError, Delivery, DeliveryKind, RuleConfig, RuleInfo, WhereCondition } from "../../contracts";
 import { RUN_STATUS_LABEL, deliveryLabel, deliveryTone, outcomeSentence, runTone } from "../../lib/explain";
 import { dayAndTime, plural, relative, shortId } from "../../lib/format";
+import { mergeDeliveries } from "../../lib/history";
 import { createStore, useStore } from "../../store/store";
 import { Icon } from "../../ui/icons";
 import { Ago, Button, Confirm, Empty, IconButton, Input, Menu, Notice, Pill, Section, Toggle, Trunc, cx, useNow } from "../../ui/primitives";
+import { useFirst } from "../common/Conflict";
 import { useRunList } from "../runs/RunsView";
 import { RuleEditor } from "./RuleEditor";
 import { RuleTester } from "./RuleTester";
@@ -21,13 +23,9 @@ const NO_ERRORS: ConfigError[] = [];
 
 export function RulesView({ name, mode }: { name: string | null; mode: "show" | "edit" | "new" }) {
   const rules = useDaemon((s) => s.rules);
-  if (mode === "new") return <RuleEditor existing={null} />;
+  if (mode === "new") return <RuleEditor opened={null} current={null} />;
   const info = name ? (rules ?? []).find((r) => r.config.name === name) : undefined;
-  if (mode === "edit") {
-    if (!rules) return <Empty title="Loading…" />;
-    if (!info) return <Empty title={`No rule named ${name}`} action={<Button onClick={() => navigate({ view: "rules", name: null, mode: "show" })}>All rules</Button>} />;
-    return <RuleEditor key={info.config.name} existing={info} />;
-  }
+  if (mode === "edit") return <EditRule key={name} name={name ?? ""} rules={rules} info={info} />;
   return (
     <div className={cx("split", name && "has-detail", "rules-split")}>
       <div className="split-main">
@@ -36,6 +34,14 @@ export function RulesView({ name, mode }: { name: string | null; mode: "show" | 
       {name && (info ? <RuleDetail key={name} info={info} /> : <MissingRule name={name} loaded={rules !== null} />)}
     </div>
   );
+}
+
+/** The editor stays open (with what the user typed) if the rule is removed meanwhile. */
+function EditRule({ name, rules, info }: { name: string; rules: RuleInfo[] | null; info: RuleInfo | undefined }) {
+  const opened = useFirst(info);
+  if (!rules && !opened) return <Empty title="Loading…" />;
+  if (!opened) return <Empty title={`No rule named ${name}`} action={<Button onClick={() => navigate({ view: "rules", name: null, mode: "show" })}>All rules</Button>} />;
+  return <RuleEditor opened={opened} current={info ?? null} />;
 }
 
 function MissingRule({ name, loaded }: { name: string; loaded: boolean }) {
@@ -344,7 +350,7 @@ function RuleDetail({ info }: { info: RuleInfo }) {
           <RuleTester key={testEvent ?? ""} makeRef={() => ({ kind: "saved", name })} on={r.on} initialEvent={testEvent} defaultIgnoreState={false} />
         </Section>
 
-        <RuleHistory name={name} />
+        <RuleHistory name={name} on={r.on} />
 
         <RuleRuns name={name} />
       </div>
@@ -355,7 +361,7 @@ function RuleDetail({ info }: { info: RuleInfo }) {
         confirm="Delete"
         danger
         onConfirm={async () => {
-          const ok = await attempt("Delete", () => client.call("rules.delete", { name }), `Deleted ${name}`);
+          const ok = await attempt("Delete", () => client.call("rules.delete", { name, expected: { kind: "revision", revision: info.revision } }), `Deleted ${name}`);
           if (ok) navigate({ view: "rules", name: null, mode: "show" });
         }}
       >
@@ -375,39 +381,72 @@ const OUTCOME_TABS: { key: string; label: string; kinds: DeliveryKind[] }[] = [
   { key: "blocked", label: "Blocked", kinds: ["blocked"] },
 ];
 
-function RuleHistory({ name }: { name: string }) {
+/**
+ * The rule's deliveries, newest first, loaded in pages as the list scrolls. It refreshes when
+ * this rule records a delivery (blocked ones included, which create no run): the events of its
+ * types arrive with their outcomes, and a refresh merges the newest page into what is loaded.
+ */
+function RuleHistory({ name, on }: { name: string; on: string[] }) {
   const { client } = useApp();
-  const runsVersion = useDaemon((s) => s.runsVersion);
   const [tab, setTab] = useState("all");
   const [items, setItems] = useState<Delivery[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const parent = useRef<HTMLDivElement>(null);
   const kinds = OUTCOME_TABS.find((t) => t.key === tab)?.kinds ?? [];
+  const onKey = on.join("\u0000");
   useEffect(() => {
     let live = true;
+    setItems([]);
+    setCursor(null);
     setLoading(true);
     client.call("rules.history", { name, outcomes: kinds, limit: 100 }).then(
       (p) => {
         if (!live) return;
-        setItems(p.deliveries);
+        setItems((prev) => mergeDeliveries(prev, p.deliveries));
         setCursor(p.next_cursor ?? null);
         setLoading(false);
       },
       () => live && setLoading(false),
     );
+    // One refresh at a time; changes during one ask for one more.
+    let running = false;
+    let again = false;
+    const refresh = async () => {
+      if (running) {
+        again = true;
+        return;
+      }
+      running = true;
+      do {
+        again = false;
+        const p = await client.call("rules.history", { name, outcomes: kinds, limit: 100 }).catch(() => null);
+        if (p && live) setItems((prev) => mergeDeliveries(prev, p.deliveries));
+      } while (again && live);
+      running = false;
+    };
+    const sub = client.subscribe(
+      "events.subscribe",
+      () => ({ filter: { types: on, sources: [] } }),
+      // A dropped count means outcomes were left out of the live view: ask the log.
+      (batch) => {
+        if (batch.dropped > 0 || batch.outcomes.some((o) => o.rule === name)) void refresh();
+      },
+      { onSubscribed: ({ resumed }) => resumed && void refresh() },
+    );
     return () => {
       live = false;
+      sub.close();
     };
-    // `tab` stands for `kinds`; a run changing may mean a new delivery.
+    // `tab` stands for `kinds`, `onKey` for `on`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, name, tab, runsVersion]);
+  }, [client, name, tab, onKey]);
   const more = async () => {
     if (!cursor || loading) return;
     setLoading(true);
     const p = await client.call("rules.history", { name, outcomes: kinds, limit: 100, cursor }).catch(() => null);
     if (p) {
-      setItems((prev) => [...prev, ...p.deliveries]);
+      setItems((prev) => mergeDeliveries(prev, p.deliveries));
       setCursor(p.next_cursor ?? null);
     }
     setLoading(false);

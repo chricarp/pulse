@@ -5,12 +5,14 @@ import { useTildifyText } from "../../app/home";
 import { useBindings } from "../../app/keys";
 import { href, navigate } from "../../app/router";
 import { attempt, toast } from "../../app/toasts";
-import type { ConfigError, SourceConfig, SourceInfo } from "../../contracts";
+import type { ConfigError, Expected, SourceConfig, SourceInfo } from "../../contracts";
+import { expectedFor, refusedCurrent, staleOf } from "../../lib/edits";
 import { sourceTone } from "../../lib/explain";
 import { toSearchParams, EMPTY_FILTER } from "../../lib/filter";
 import { count, dayAndTime, plural } from "../../lib/format";
 import { parseDuration } from "../../lib/syntax";
 import { ErrorCodes, RpcCallError } from "../../rpc/client";
+import { ConflictNotice, hasConflict, useFirst } from "../common/Conflict";
 import { Ago, Button, Confirm, Dl, Empty, Field, IconButton, Input, ListInput, Notice, Pill, Section, Select, Toggle, Trunc, cx } from "../../ui/primitives";
 
 type Kind = SourceConfig["kind"];
@@ -30,12 +32,8 @@ function target(c: SourceConfig): string {
 export function SourcesView({ name, mode }: { name: string | null; mode: "show" | "edit" | "new" }) {
   const sources = useDaemon((s) => s.sources);
   const info = name ? (sources ?? []).find((s) => s.config.name === name) : undefined;
-  if (mode === "new") return <SourceEditor existing={null} />;
-  if (mode === "edit") {
-    if (!sources) return <Empty title="Loading…" />;
-    if (!info) return <Empty title={`No source named ${name}`} />;
-    return <SourceEditor key={info.config.name} existing={info} />;
-  }
+  if (mode === "new") return <SourceEditor opened={null} current={null} />;
+  if (mode === "edit") return <EditSource key={name} name={name ?? ""} sources={sources} info={info} />;
   const list = sources ?? [];
   return (
     <div className={cx("split", name && "has-detail")}>
@@ -45,6 +43,14 @@ export function SourcesView({ name, mode }: { name: string | null; mode: "show" 
       {name && (info ? <SourceDetail key={name} info={info} /> : <aside className="detail"><div className="detail-body"><Notice tone="neutral" title={`No source named ${name}`}>It may have been removed.</Notice></div></aside>)}
     </div>
   );
+}
+
+/** The editor stays open (with what the user typed) if the source is removed meanwhile. */
+function EditSource({ name, sources, info }: { name: string; sources: SourceInfo[] | null; info: SourceInfo | undefined }) {
+  const opened = useFirst(info);
+  if (!sources && !opened) return <Empty title="Loading…" />;
+  if (!opened) return <Empty title={`No source named ${name}`} />;
+  return <SourceEditor opened={opened} current={info ?? null} />;
 }
 
 function SourceList({ list, selected, loaded }: { list: SourceInfo[]; selected: string | null; loaded: boolean }) {
@@ -120,10 +126,8 @@ function SourceDetail({ info }: { info: SourceInfo }) {
   const h = info.health;
   const shortText = useTildifyText();
   const tone = sourceTone(h.state);
-  const project = info.origin.kind === "project" ? info.origin.name : undefined;
-  const bare = project ? c.name.slice(project.length + 1) : c.name;
-  const toggle = () =>
-    void attempt(c.enabled ? "Disable" : "Enable", () => client.call("sources.upsert", { source: { ...c, name: bare, enabled: !c.enabled }, ...(project ? { project } : {}) }), c.enabled ? `Disabled ${c.name}` : `Enabled ${c.name}`);
+  // Changes `enabled` of the source as it is in its file, not this cached copy of it.
+  const toggle = () => void attempt(c.enabled ? "Disable" : "Enable", () => client.call("sources.set_enabled", { name: c.name, enabled: !c.enabled }), c.enabled ? `Disabled ${c.name}` : `Enabled ${c.name}`);
   const settings: [string, ReactNode][] = [["Kind", <span key="k" className="mono">{c.kind}</span>]];
   switch (c.kind) {
     case "fs":
@@ -188,7 +192,7 @@ function SourceDetail({ info }: { info: SourceInfo }) {
         confirm="Remove"
         danger
         onConfirm={async () => {
-          const ok = await attempt("Remove", () => client.call("sources.delete", { name: c.name }), `Removed ${c.name}`);
+          const ok = await attempt("Remove", () => client.call("sources.delete", { name: c.name, expected: { kind: "revision", revision: info.revision } }), `Removed ${c.name}`);
           if (ok) navigate({ view: "sources", name: null, mode: "show" });
         }}
       >
@@ -269,26 +273,36 @@ function fromForm(f: SourceForm): { source: SourceConfig; problems: Record<strin
   return { source, problems };
 }
 
-function SourceEditor({ existing }: { existing: SourceInfo | null }) {
+function SourceEditor({ opened, current }: { opened: SourceInfo | null; current: SourceInfo | null }) {
+  const existing = opened;
   const { client } = useApp();
   const projects = useDaemon((s) => s.projects) ?? [];
   const [form, setForm] = useState<SourceForm>(() => toForm(existing));
   const [touched, setTouched] = useState(false);
   const [serverErrors, setServerErrors] = useState<ConfigError[]>([]);
+  const [base, setBase] = useState<SourceInfo | null>(opened);
+  const [refused, setRefused] = useState<{ current: SourceInfo | null } | null>(null);
+  const live = opened ? (refused && current?.revision === base?.revision ? refused.current : current) : (refused?.current ?? null);
+  const conflict = hasConflict(base, live);
+  const fullSourceName = form.project ? `${form.project}/${form.name}` : form.name;
   const set = <K extends keyof SourceForm>(k: K, v: SourceForm[K]) => setForm((f) => ({ ...f, [k]: v }));
   const { source, problems } = fromForm(form);
   const err = (k: string) => serverErrors.find((e) => e.field === k)?.message ?? (touched ? problems[k] : undefined);
   const back = () => navigate({ view: "sources", name: existing?.config.name ?? null, mode: "show" });
-  const save = async () => {
+  const save = async (expected: Expected = expectedFor(base)) => {
     setTouched(true);
     if (Object.keys(problems).length) return;
     setServerErrors([]);
     try {
-      const info = await client.call("sources.upsert", { source, ...(form.project ? { project: form.project } : {}) });
+      const info = await client.call("sources.upsert", { source, ...(form.project ? { project: form.project } : {}), expected });
       toast(existing ? `Saved ${info.config.name}` : `Added ${info.config.name}`, "ok", `Written to ${info.origin.path}`);
       navigate({ view: "sources", name: info.config.name, mode: "show" }, { replace: true });
     } catch (e) {
-      if (e instanceof RpcCallError && e.code === ErrorCodes.ConfigInvalid) setServerErrors((e.data as { errors?: ConfigError[] })?.errors ?? []);
+      const stale = staleOf(e);
+      if (stale) {
+        const now = await client.call("sources.list", {}).catch(() => null);
+        setRefused({ current: refusedCurrent(stale, now?.sources.find((x) => x.config.name === fullSourceName) ?? null) });
+      } else if (e instanceof RpcCallError && e.code === ErrorCodes.ConfigInvalid) setServerErrors((e.data as { errors?: ConfigError[] })?.errors ?? []);
       else toast("Save failed", "error", e instanceof Error ? e.message : String(e));
     }
   };
@@ -307,6 +321,21 @@ function SourceEditor({ existing }: { existing: SourceInfo | null }) {
         </div>
       </header>
       <div className="editor-body narrow-form">
+        {conflict && (
+          <ConflictNotice
+            what="source"
+            name={fullSourceName}
+            base={base}
+            current={live}
+            onReload={() => {
+              if (!live) return;
+              setForm(toForm(live));
+              setBase(live);
+              setRefused(null);
+            }}
+            onOverwrite={(expected) => void save(expected)}
+          />
+        )}
         {serverErrors.length > 0 && (
           <Notice tone="error" title="The daemon did not accept this source">
             <ul className="plain">{serverErrors.map((e, i) => <li key={i}>{e.field && <code>{e.field}</code>} {e.message}</li>)}</ul>

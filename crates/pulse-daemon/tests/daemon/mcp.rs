@@ -300,7 +300,10 @@ async fn subscriptions_wake_on_visible_events_and_end_when_the_agent_goes() {
         })
     };
     let client = t.client().await;
-    client.call::<method::AgentsDelete>(NameParams { name: "x".into() }).await.unwrap();
+    client
+        .call::<method::AgentsDelete>(DeleteParams { name: "x".into(), expected: Expected::Any })
+        .await
+        .unwrap();
     let ended = within("the wait to end", waiting).await.unwrap().unwrap();
     assert_eq!(ended.is_error, Some(true));
     let text: String =

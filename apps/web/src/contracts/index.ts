@@ -24,11 +24,15 @@ max_queued: number,
  */
 env?: { [key in string]: string }, } & ({ "adapter": "claude-code" } & ClaudeCodeSettings | { "adapter": "codex" } & CodexSettings | { "adapter": "command" } & CommandSettings | { "adapter": "mcp" } & McpSettings);
 
-export type AgentInfo = { config: AgentConfig, origin: ConfigOrigin, running: number, queued: number, };
+export type AgentInfo = { config: AgentConfig, origin: ConfigOrigin, 
+/**
+ * See [`RuleInfo::revision`].
+ */
+revision: string, running: number, queued: number, };
 
 export type AgentList = { agents: Array<AgentInfo>, };
 
-export type AgentUpsertParams = { agent: AgentConfig, project?: string, };
+export type AgentUpsertParams = { agent: AgentConfig, project?: string, expected: Expected, };
 
 export type BlockReason = { "reason": "rule_disabled" } | { "reason": "rule_snoozed", until: Timestamp, } | { "reason": "global_pause" } | { "reason": "permission_denied", needed: string, } | { "reason": "loop_self_trigger", run: RunId, } | { "reason": "loop_chain_depth", depth: number, max: number, } | { "reason": "circuit_open", until: Timestamp, } | { "reason": "cooldown", until: Timestamp, } | { "reason": "rate_limited", until: Timestamp, } | { "reason": "agent_busy", backlog: number, max: number, } | { "reason": "render_failed", message: string, };
 
@@ -57,6 +61,8 @@ refresh?: Duration,
 lead?: Duration, };
 
 export type Causation = "exact" | "reported" | "inferred";
+
+export type ChangeKind = { "kind": "added" } | { "kind": "removed" } | { "kind": "changed", fields: Array<string>, };
 
 export type ClaudeCodeSettings = { 
 /**
@@ -157,6 +163,16 @@ export type Decision = { rule: string, agent: string, outcome: Outcome,
  * The chain depth a run created by this decision gets.
  */
 chain_depth: number, };
+
+export type DefinitionChange = { kind: DefinitionKind, name: string, change: ChangeKind, };
+
+export type DefinitionKind = "rule" | "agent" | "source";
+
+export type DeleteParams = { name: string, 
+/**
+ * `revision` from an editor or detail view; `any` from the CLI. `absent` is invalid.
+ */
+expected: Expected, };
 
 export type Delivery = { id: DeliveryId, event: EventId, rule: string, agent: string, at: Timestamp, outcome: DeliveryOutcome, run?: RunId | null, };
 
@@ -285,6 +301,8 @@ events: Array<Event>,
 dropped: number, };
 
 export type EventsSubscribeParams = { filter: EventFilter, };
+
+export type Expected = { "kind": "absent" } | { "kind": "revision", revision: string, } | { "kind": "any" };
 
 export type FsBurstData = { dir: string, count: number, created: number, modified: number, deleted: number, 
 /**
@@ -425,6 +443,40 @@ export type ProjectDirParams = { dir: string, };
 
 export type ProjectList = { projects: Array<Project>, };
 
+export type ProjectReview = { 
+/**
+ * The prefix its definitions would get.
+ */
+name: string, dir: string, file: string, state: TrustState, 
+/**
+ * SHA-256 of `text`. `projects.trust` with this hash trusts exactly this content.
+ */
+hash: string, 
+/**
+ * The file's text.
+ */
+text: string, 
+/**
+ * What it defines, as written (bare names). Empty when it does not parse.
+ */
+rules: Array<RuleConfig>, agents: Array<AgentConfig>, sources: Array<SourceConfig>, 
+/**
+ * Why it cannot be trusted as it is (it must parse on its own).
+ */
+errors: Array<ConfigError>, 
+/**
+ * For a file that changed since it was trusted: what differs from the trusted version, by
+ * definition. `None` when there is no trusted version or Pulse did not keep its text
+ * (it keeps it only for files up to 64 KiB).
+ */
+changes?: Array<DefinitionChange> | null, };
+
+export type ProjectReviewParams = { dir: string, 
+/**
+ * The prefix its definitions would get. Default: the trusted name, else the directory's.
+ */
+name?: string, };
+
 export type ProjectTrustParams = { 
 /**
  * The directory containing `pulse.toml`. Absolute, or starting with `~`.
@@ -433,7 +485,12 @@ dir: string,
 /**
  * The prefix for its definitions. Default: the directory's name.
  */
-name?: string, };
+name?: string, 
+/**
+ * The `hash` of the [`ProjectReview`] the user was shown. If the file no longer has it,
+ * nothing is trusted and the call fails with a `stale` error.
+ */
+hash: string, };
 
 export type ProofQuery = { 
 /**
@@ -526,7 +583,12 @@ export type RuleInfo = {
 /**
  * `config.name` is the full name (`project/rule` for project rules).
  */
-config: RuleConfig, origin: ConfigOrigin, state: RuleRuntimeStatus, };
+config: RuleConfig, origin: ConfigOrigin, 
+/**
+ * Identifies this definition's content as written in its file (a hash). Send it back in
+ * [`Expected::Revision`] when saving an edit of it.
+ */
+revision: string, state: RuleRuntimeStatus, };
 
 export type RuleList = { rules: Array<RuleInfo>, };
 
@@ -563,7 +625,7 @@ export type RuleUpsertParams = {
 /**
  * `rule.name` is the bare name, without a project prefix.
  */
-rule: RuleConfig, project?: string, };
+rule: RuleConfig, project?: string, expected: Expected, };
 
 export type RulesListParams = { include_archived: boolean, };
 
@@ -575,7 +637,14 @@ rule?: string | null, agent: string, event: EventId, status: RunStatus, created_
 /**
  * The rendered prompt, exactly as sent.
  */
-prompt?: string | null, invocation?: InvocationSummary | null, pid?: number | null, exit_code?: number | null, signal?: number | null, 
+prompt?: string | null, 
+/**
+ * What the run executes, rendered when the run is created (so an approval shows it) from
+ * the snapshot; the run starts only if rendering it again gives the same result and the
+ * agent is still defined as in the snapshot. `None` if it could not be rendered (the run
+ * then fails to start).
+ */
+invocation?: InvocationSummary | null, pid?: number | null, exit_code?: number | null, signal?: number | null, 
 /**
  * Why the run failed to start, was rejected, or was interrupted.
  */
@@ -585,7 +654,8 @@ error?: string | null,
  */
 chain_depth: number, rerun_of?: RunId | null, output: OutputStats, 
 /**
- * What the run executed, as configured when it was created.
+ * The rule and agent as configured when it was created. A run never starts with an agent
+ * definition that differs from the current one: see `docs/internals/0002-architecture.md`.
  */
 snapshot: RunSnapshot, };
 
@@ -688,15 +758,26 @@ message?: string | null,
  */
 since: Timestamp, last_event_at?: Timestamp | null, last_error?: SourceErrorInfo | null, events_emitted: number, };
 
-export type SourceInfo = { config: SourceConfig, origin: ConfigOrigin, health: SourceHealth, };
+export type SourceInfo = { config: SourceConfig, origin: ConfigOrigin, 
+/**
+ * See [`RuleInfo::revision`].
+ */
+revision: string, health: SourceHealth, };
 
 export type SourceList = { sources: Array<SourceInfo>, };
 
 export type SourceState = "starting" | "healthy" | "degraded" | "failed" | "stopped" | "disabled";
 
-export type SourceUpsertParams = { source: SourceConfig, project?: string, };
+export type SourceUpsertParams = { source: SourceConfig, project?: string, expected: Expected, };
 
 export type SpecVersion = "1.0";
+
+export type Stale = { 
+/**
+ * The current revision of the definition (for `projects.trust`, the file's current content
+ * hash); `None` when it does not exist.
+ */
+current?: string | null, };
 
 export type StateChanged = { status: SystemStatus, topics: Array<StateTopic>, };
 
@@ -778,7 +859,7 @@ export type RpcMethods = {
   "rules.list": { params: RulesListParams; result: RuleList };
   "rules.get": { params: NameParams; result: RuleInfo };
   "rules.upsert": { params: RuleUpsertParams; result: RuleInfo };
-  "rules.delete": { params: NameParams; result: Empty };
+  "rules.delete": { params: DeleteParams; result: Empty };
   "rules.set_enabled": { params: SetEnabledParams; result: RuleInfo };
   "rules.snooze": { params: SnoozeParams; result: RuleInfo };
   "rules.unsnooze": { params: NameParams; result: RuleInfo };
@@ -789,11 +870,12 @@ export type RpcMethods = {
   "agents.list": { params: Empty; result: AgentList };
   "agents.get": { params: NameParams; result: AgentInfo };
   "agents.upsert": { params: AgentUpsertParams; result: AgentInfo };
-  "agents.delete": { params: NameParams; result: Empty };
+  "agents.delete": { params: DeleteParams; result: Empty };
   "agents.mcp_credentials": { params: NameParams; result: McpCredentials };
   "sources.list": { params: Empty; result: SourceList };
   "sources.upsert": { params: SourceUpsertParams; result: SourceInfo };
-  "sources.delete": { params: NameParams; result: Empty };
+  "sources.delete": { params: DeleteParams; result: Empty };
+  "sources.set_enabled": { params: SetEnabledParams; result: SourceInfo };
   "runs.list": { params: RunsListParams; result: RunPage };
   "runs.get": { params: RunIdParams; result: Run };
   "runs.output": { params: RunOutputParams; result: RunOutputPage };
@@ -805,6 +887,7 @@ export type RpcMethods = {
   "runs.reject": { params: RejectParams; result: RunSummary };
   "runs.rerun": { params: RunIdParams; result: RunSummary };
   "projects.list": { params: Empty; result: ProjectList };
+  "projects.review": { params: ProjectReviewParams; result: ProjectReview };
   "projects.trust": { params: ProjectTrustParams; result: Project };
   "projects.untrust": { params: ProjectDirParams; result: Project };
   "system.status": { params: Empty; result: SystemStatus };
@@ -844,6 +927,7 @@ export const RPC_METHOD_NAMES = [
   "sources.list",
   "sources.upsert",
   "sources.delete",
+  "sources.set_enabled",
   "runs.list",
   "runs.get",
   "runs.output",
@@ -855,6 +939,7 @@ export const RPC_METHOD_NAMES = [
   "runs.reject",
   "runs.rerun",
   "projects.list",
+  "projects.review",
   "projects.trust",
   "projects.untrust",
   "system.status",
@@ -880,6 +965,8 @@ export const WS_PATH = "/ws";
 export const WS_PROTOCOL = "pulse";
 export const WS_TOKEN_PROTOCOL_PREFIX = "pulse.token.";
 export const WS_CLOSE_UNAUTHORIZED = 4401;
+/** The `code` of a `stale` RPC error; its `data` is a `Stale`. */
+export const ERROR_STALE = -32007;
 
 export type NotificationMethod = Notification["method"];
 export type NotificationParams<M extends NotificationMethod> = Extract<Notification, { method: M }>["params"];

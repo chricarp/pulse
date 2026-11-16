@@ -19,7 +19,8 @@ max_queued = 20
 Add one from the UI (**Agents → New agent**), the config file, or a file with the same keys:
 
 ```sh
-pulse agents add --file study.toml     # or - for stdin; replaces an agent of the same name
+pulse agents add --file study.toml     # or - for stdin; refused if the name exists
+pulse agents add --replace -f study.toml   # replace the agent of that name
 pulse agents                           # list (same as pulse agents list)
 pulse agents show study                # its definition, as TOML
 pulse agents remove study              # refused while a rule uses it
@@ -114,7 +115,9 @@ it still holds the output, the run's output says so.
 
 States: `pending_approval` → `queued` → `running` → `succeeded`, `failed`, `timed_out`,
 `cancelled`; `rejected` for a supervised run you refused; `interrupted` when the daemon stopped or
-crashed while it ran (it is not restarted). `max_concurrent` runs execute at once per agent;
+crashed while it ran (it is not restarted). A queued or waiting run whose agent or rule changed
+before it started is `cancelled` with the reason and never runs; see
+[Rules](rules.md#when-a-definition-changes). `max_concurrent` runs execute at once per agent;
 up to `max_queued` more wait. Output is kept up to 4 MiB per run (first half and latest output).
 
 <picture>
@@ -131,7 +134,7 @@ pulse runs list --status running
 pulse runs show <id>                    # event, prompt, invocation, timing
 pulse runs logs <id> -f                 # output, following until it ends
 pulse runs cancel <id>
-pulse runs rerun <id>                   # same event and prompt, now; skips cooldowns and approval
+pulse runs rerun <id>                   # same event and prompt, with the agent as it is now; skips cooldowns and approval
 ```
 
 ## Scopes

@@ -20,7 +20,7 @@ use crate::catalog::{
     GitCommitData, GitMergeConflictedData, GitPushCompletedData, ProcessExitedData,
     ScheduleFiredData,
 };
-use crate::rpc::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Notification};
+use crate::rpc::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Notification, Stale};
 use crate::status::{DaemonInfo, DaemonProof, ProofQuery, UiLoginRequest, UiLoginResponse};
 
 struct Collect<'a> {
@@ -48,6 +48,7 @@ pub fn typescript_bindings() -> String {
     c.visit::<JsonRpcRequest>();
     c.visit::<JsonRpcResponse>();
     c.visit::<JsonRpcNotification>();
+    c.visit::<Stale>();
     c.visit::<DaemonInfo>();
     c.visit::<UiLoginRequest>();
     c.visit::<UiLoginResponse>();
@@ -88,6 +89,7 @@ pub fn typescript_bindings() -> String {
     }
     out.push_str("] as const satisfies readonly RpcMethodName[];\n\n");
     out.push_str(&crate::auth::typescript_constants());
+    out.push_str(&crate::rpc::typescript_constants());
     out.push_str("\nexport type NotificationMethod = Notification[\"method\"];\n");
     out.push_str(
         "export type NotificationParams<M extends NotificationMethod> = Extract<Notification, { method: M }>[\"params\"];\n",

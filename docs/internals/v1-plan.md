@@ -26,7 +26,7 @@ In parallel, independent of the code: research notes on the SEP-3415 draft.
 | **sources** | fs (with coalescing and storm folding), git (reflog-based), schedule, calendar (ICS file and URL), process wrapper, ingest parsing | Each source has tests against real temp directories and repositories; a 10k-file burst yields a bounded number of events. |
 | **agents** | Supervisor (process groups, timeout, termination), `command`, `claude-code`, `codex` adapters | Parsers are tested against recorded output; the supervisor is tested for timeout, cancel and no orphans. |
 | **mcp** | Tools, per-agent scoping, stdio bridge, SEP-3415 module behind a feature | An MCP client can list types, query and subscribe against a fake backend. |
-| **web** | App shell, live feed (virtualized), rules (editor, test, history), runs (live output, approvals), agents, sources, command palette, keybindings | Works against a mock transport; the feed stays smooth with 100k rows. |
+| **web** | App shell, live feed (virtualized), rules (editor, test, history), runs (live output, approvals), agents, sources, command palette, keybindings | Works against a mock transport; the feed stays smooth with 100k rows. (Built: the feed holds at most about 25,000 rows, 5,000 live and 20,000 from the log, and is measured at that; see 0008.) |
 
 ### Phase 3: integration (parallel)
 

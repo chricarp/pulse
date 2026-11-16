@@ -7,7 +7,7 @@ import { href, navigate } from "../../app/router";
 import { attempt } from "../../app/toasts";
 import type { Event, Run } from "../../contracts";
 import { RUN_STATUS_LABEL, runTone } from "../../lib/explain";
-import { dayAndTime, shortId, sourceName, span } from "../../lib/format";
+import { dayAndTime, shortId, sourceName, span, visible } from "../../lib/format";
 import { RpcCallError } from "../../rpc/client";
 import { Icon } from "../../ui/icons";
 import { Button, Dl, IconButton, Modal, Notice, Pill, TextArea, Trunc, cx, useTicker } from "../../ui/primitives";
@@ -173,7 +173,7 @@ export function RunDetail({ id, onClose }: { id: string; onClose: () => void }) 
           ]}
         />
         {run.error && (
-          <Notice tone={status === "rejected" || status === "cancelled" ? "neutral" : "error"} title={status === "rejected" ? "Rejected" : "Error"}>
+          <Notice tone={status === "rejected" || status === "cancelled" ? "neutral" : "error"} title={status === "rejected" ? "Rejected" : status === "cancelled" ? "Cancelled" : "Error"}>
             {run.error}
           </Notice>
         )}
@@ -200,30 +200,8 @@ export function RunDetail({ id, onClose }: { id: string; onClose: () => void }) 
         )}
         {tab === "invocation" && (
           <div className="tab-scroll">
-            {run.invocation ? (
-              <>
-                <p className="muted">What Pulse executed, as an argument list. Nothing goes through a shell. The environment is not recorded; it may hold secrets from the agent's config.</p>
-                <Dl
-                  items={[
-                    ["Program", <span key="p" className="mono">{run.invocation.program}</span>],
-                    [
-                      "Arguments",
-                      <ol key="a" className="argv">
-                        {run.invocation.args.map((a, i) => (
-                          <li key={i} className="mono">
-                            {a === "" ? <span className="faint">(empty)</span> : a}
-                          </li>
-                        ))}
-                      </ol>,
-                    ],
-                    ["Working directory", <Trunc key="c" text={run.invocation.cwd} copy />],
-                    ["Adapter", <span key="ad" className="mono">{agent.adapter}</span>],
-                  ]}
-                />
-              </>
-            ) : (
-              <p className="faint">{isActive(status) ? "Not started yet." : "This run never started a process."}</p>
-            )}
+            {run.invocation || isActive(status) ? <InvocationView run={run} pending={!run.started_at} /> : <p className="faint">This run never started a process.</p>}
+            <p className="faint">Adapter: <span className="mono">{agent.adapter}</span></p>
           </div>
         )}
         {tab === "snapshot" && (
@@ -283,7 +261,39 @@ function ApprovalCard({ run }: { run: Run }) {
           </p>
         </div>
       </div>
-      {run.prompt ? <PromptView text={run.prompt} /> : <p className="faint">No prompt (a command agent).</p>}
+      <InvocationView run={run} pending />
+      {run.prompt ? <PromptView text={run.prompt} /> : <p className="faint">No prompt: the command above gets the event on stdin or in its environment, as configured.</p>}
+    </div>
+  );
+}
+
+/**
+ * The argv and working directory a run executes. Rendered by the daemon when the run was
+ * created, with the event's values substituted; for a pending run, what approving it starts (the
+ * daemon refuses to start it if the agent changed since). Arguments may carry event content.
+ */
+function InvocationView({ run, pending }: { run: Run; pending?: boolean }) {
+  const inv = run.invocation;
+  if (!inv) return <p className="faint">Pulse could not prepare this run's command{pending ? ", so approving it will fail to start it" : ""}.</p>;
+  return (
+    <div className="invocation">
+      <p className="muted">{pending ? "Approving runs exactly this" : "The command"}, as an argument list (never through a shell). The environment is not shown; it may hold secrets from the agent's config.</p>
+      <Dl
+        items={[
+          ["Program", <span key="p" className="mono">{visible(inv.program, { singleLine: true })}</span>],
+          [
+            "Arguments",
+            <ol key="a" className="argv">
+              {inv.args.map((a, i) => (
+                <li key={i} className="mono">
+                  {a === "" ? <span className="faint">(empty)</span> : a}
+                </li>
+              ))}
+            </ol>,
+          ],
+          ["Working directory", <Trunc key="c" text={inv.cwd} copy />],
+        ]}
+      />
     </div>
   );
 }

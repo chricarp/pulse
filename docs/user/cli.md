@@ -60,7 +60,7 @@ Filters for `tail` and `events`:
 |---|---|
 | `list [--all]` | Active rules with their state; `--all` includes archived ones. |
 | `show <NAME>` | The definition as TOML, the file it is in, its state, its last fire. |
-| `add -f/--file <FILE> [--project <P>]` | Add a rule from a TOML file (the bare table `show` prints), or replace the rule of that name. `-` reads stdin. Written to `pulse.toml` (or the project's), comments kept. Prints warnings if it can never fire. |
+| `add -f/--file <FILE> [--project <P>] [--replace]` | Add a rule from a TOML file (the bare table `show` prints). `-` reads stdin. Refused if a rule of that name exists, unless `--replace`. Written to `pulse.toml` (or the project's), comments kept. Prints warnings if it can never fire. |
 | `remove <NAME>` | Delete it from its file. History stays in the log. |
 | `enable <NAME>` / `disable <NAME>` | Set `enabled` in the file. |
 | `snooze <NAME> <FOR>` | Hold it for a duration (`1h`, `30m`) or until an RFC 3339 time. |
@@ -80,12 +80,12 @@ limit). Records nothing and runs nothing.
 | Command | Does |
 |---|---|
 | `list [--rule <R>] [--agent <A>] [--status <S>]… [-n <N>]` | Runs, newest first. Statuses: `pending_approval`, `queued`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, `rejected`, `interrupted`. |
-| `show <ID>` | The event, timing, exactly what was run and where, the prompt, any error. |
+| `show <ID>` | The event, timing, exactly what was run (or, before it starts, will run) and where, the prompt, any error. |
 | `logs <ID> [-f/--follow]` | The run's output; `-f` follows it until it ends. |
-| `approve <ID>` | Start a run that is waiting for approval. |
+| `approve <ID>` | Start a run that is waiting for approval. Refused, and the run cancelled, if its agent or rule changed since it was created. |
 | `reject <ID> [--reason <TEXT>]` | Refuse it. |
 | `cancel <ID>` | Stop a queued or running run (its whole process group). |
-| `rerun <ID>` | A new run with the same event, prompt and configuration snapshot, now. Skips approval, cooldown and rate limit. |
+| `rerun <ID>` | A new run with the same event and prompt, now, with the agent as it is configured now. Skips approval, cooldown and rate limit. Refused if the agent no longer exists. |
 
 Run and event ids are the full 26-character ids; prefixes are not accepted.
 
@@ -95,16 +95,18 @@ Run and event ids are the full 26-character ids; prefixes are not accepted.
 |---|---|
 | `pulse agents` / `pulse agents list` | Agents, their running and queued counts, their scopes. |
 | `pulse agents show <NAME>` | The definition as TOML. |
-| `pulse agents add -f/--file <FILE> [--project <P>]` | Add or replace an agent from a TOML file; `-` reads stdin. |
+| `pulse agents add -f/--file <FILE> [--project <P>] [--replace]` | Add an agent from a TOML file; `-` reads stdin. Refused if the name exists, unless `--replace`. |
 | `pulse agents remove <NAME>` | Delete it. Refused while a rule uses it. |
 | `pulse agents mcp-credentials <NAME>` | The `/mcp` URL, the agent's MCP token, and commands to paste into Claude Code and Codex. See [MCP](mcp.md). |
 | `pulse mcp --agent <AGENT>` | A stdio bridge to the daemon's `/mcp` as that agent, for MCP clients that launch a server. Stdout carries MCP messages only. |
 | `pulse sources` / `pulse sources list` | Sources with their health and event counts. |
-| `pulse sources add <KIND> <NAME> [TARGET] […]` | Add or replace a source: `fs NAME DIR [--ignore <GLOB>]…`, `git NAME REPO`, `schedule NAME --cron "0 9 * * 1-5" [--timezone <TZ>]` or `--every 1h`, `calendar NAME FILE.ics|URL [--lead <D>]`. `--project <P>` writes it to a trusted project's file. |
+| `pulse sources add <KIND> <NAME> [TARGET] […] [--replace]` | Add a source (refused if the name exists, unless `--replace`): `fs NAME DIR [--ignore <GLOB>]…`, `git NAME REPO`, `schedule NAME --cron "0 9 * * 1-5" [--timezone <TZ>]` or `--every 1h`, `calendar NAME FILE.ics|URL [--lead <D>]`. `--project <P>` writes it to a trusted project's file. |
+| `pulse sources enable <NAME>` / `disable <NAME>` | Set `enabled` in its file: stop watching, keeping the definition, and back. |
 | `pulse sources remove <NAME>` | Delete it. |
-| `pulse project trust <DIR> [--name <NAME>]` | Trust `DIR/pulse.toml` as it is now. `--name` is the prefix for its definitions (default: the directory's name). |
+| `pulse project trust <DIR> [--name <NAME>] [--hash <HASH>]` | Without `--hash`: show what `DIR/pulse.toml` would load, what changed since it was trusted, and its content hash; trust nothing (exit status 1). With `--hash`: trust it only if it still has that content. `--name` is the prefix for its definitions (default: the directory's name). See [Projects](projects.md). |
 | `pulse project untrust <DIR>` | Make it inactive. |
 | `pulse project list` | Projects and their trust state. |
 
 `agents add`, `rules add` and `sources add` edit the same file as the UI and your editor, through
-the daemon, so it must be running.
+the daemon, so it must be running. They create; `--replace` replaces a definition of that name
+whatever it is now. `remove` removes whatever is there under that name.

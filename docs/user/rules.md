@@ -32,12 +32,24 @@ lives in the database and refers to rules by name.
 pulse rules list                 # active rules
 pulse rules list --all           # archived ones too
 pulse rules show lecture-notes   # definition (as TOML), file, state, last fire
-pulse rules add --file rule.toml # add, or replace the rule of that name; - reads stdin
+pulse rules add --file rule.toml # add a new rule; - reads stdin
+pulse rules add --replace -f rule.toml  # replace the rule of that name, whatever it is now
 pulse rules remove lecture-notes # delete it from the file (history stays in the log)
 ```
 
 `pulse rules add` takes the bare table that `pulse rules show` prints (`name = …`, `on = …`,
-`[run]`), so `pulse rules show x > x.toml`, edit, `pulse rules add -f x.toml` works.
+`[run]`). It only creates: if a rule of that name exists it says so and changes nothing. To
+change one, `pulse rules show x > x.toml`, edit, `pulse rules add --replace -f x.toml`.
+
+### Editing while something else edits
+
+The file, the CLI and the UI can all change a rule while a rule editor is open. The editor
+remembers which version it opened; if the rule changes meanwhile, it says so, lists what changed
+(`enabled: true → false`), and saving is refused until you choose: **Reload** takes the rule as it
+is now (dropping your edits), **Save mine anyway** replaces the current version with your form.
+What you typed stays in the form either way, also if the rule is deleted meanwhile (then you can
+create it again). Agents and sources behave the same. Enable/disable, archive/reopen and snooze
+change only that one setting, so they never undo someone else's edit.
 
 ## Matching: `on` and `where`
 
@@ -77,12 +89,13 @@ dropped. A debounce that ends during a cooldown waits for the cooldown instead o
 ## Supervised rules
 
 `supervised = true` makes every run wait for you. The run is created as `awaiting approval` with
-its prompt already rendered, so you see exactly what the agent would be told; nothing starts
-until you approve.
+its prompt and its command already rendered, so you see exactly what the agent would be told and
+what would be executed (the program and each argument, with the event's values filled in, and
+the working directory); nothing starts until you approve, and what starts is what you saw.
 
 ```sh
 pulse runs list --status pending_approval
-pulse runs show <id>          # the prompt and the event
+pulse runs show <id>          # the event, the prompt, and the command it will run
 pulse runs approve <id>
 pulse runs reject <id> --reason "not now"
 ```
@@ -96,6 +109,20 @@ Approving needs the daemon token; an agent's own MCP credentials cannot approve 
 </picture>
 
 *A supervised run waiting for approval: nothing has run yet; the prompt it would send is shown in full.*
+
+## When a definition changes
+
+A run remembers the rule and agent it was created with. It starts only if they are still the
+same: if, before it starts (while it waits for approval or for a free slot), its agent is removed
+or edited, its project is untrusted or changes, or its rule is removed, archived or given a
+different prompt or agent, the run is **cancelled without starting**, and says why: "the agent
+was removed or changed after this run was created; replay the event to run it with the current
+definition". Approving such a run fails with the same reason. `pulse replay <event>` (or
+**Replay** in the feed) routes the event again under the current definitions. Other rule changes
+(its `where`, limits, `enabled`, `supervised`) do not affect a run that already exists.
+
+`pulse runs rerun <id>` sends the run's stored prompt again with the agent as it is configured
+now, and is refused if that agent no longer exists.
 
 ## Testing a rule against a past event
 

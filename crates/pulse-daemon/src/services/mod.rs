@@ -18,7 +18,9 @@ use pulse_contracts::config::{ConfigOrigin, Sourced};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::config::{DefKind, edit};
+use pulse_contracts::rpc::Expected;
+
+use crate::config::{DefKind, Loader, edit};
 use crate::error::{ServiceError, ServiceResult};
 use crate::home::write_atomic;
 use crate::shared::Shared;
@@ -31,7 +33,11 @@ pub struct Services {
 
 /// A change to one definition in a config file.
 pub(crate) enum Edit<'a, T> {
-    Upsert(&'a T),
+    /// Create it, or replace it whole (an editor's save, `add --file`).
+    Put(&'a T),
+    /// Change some fields of the definition as it is in the file (enable, archive): nothing
+    /// else about it is touched, whatever the client last saw.
+    Modify(&'a (dyn Fn(&mut T) + Sync)),
     Delete,
 }
 
@@ -41,26 +47,22 @@ impl Services {
     }
 
     /// Applies `change` to the definition `bare` (as written, without project prefix) in the
-    /// user file or project `project`'s file: edit the text, check the result as a reload
-    /// would, replace the file atomically, reload. Serialized with reloads by the loader lock.
+    /// user file or project `project`'s file. The file is read **once**; that text is checked
+    /// against the project's trusted hash and against `expected`, edited, checked as a reload
+    /// would check it, and written atomically. Serialized with reloads by the loader lock.
     pub(crate) async fn write_definition<T>(
         &self,
         kind: DefKind,
         project: Option<&str>,
         bare: &str,
+        expected: &Expected,
         change: Edit<'_, T>,
     ) -> ServiceResult<()>
     where
         T: Serialize + DeserializeOwned + PartialEq,
     {
         let mut loader = self.shared.loader.lock().await;
-        let (origin, path) = loader.target(project)?;
-        if matches!(origin, ConfigOrigin::User { .. }) && loader.user_file_changed() {
-            // Pick up hand edits first, so the check below compares against the file as it is.
-            let loaded = loader.load();
-            let watched = loader.watched_dirs();
-            self.shared.apply(loaded, watched).await;
-        }
+        let (origin, path, trusted) = loader.target(project)?;
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -68,14 +70,30 @@ impl Services {
                 return Err(ServiceError::Internal(format!("cannot read {}: {e}", path.display())));
             }
         };
-        let new_text = match change {
-            Edit::Upsert(def) => edit::upsert(&text, kind, bare, def),
-            Edit::Delete => edit::remove(&text, kind, bare),
-        }
-        .map_err(|e| match e {
+        Loader::check_trusted(&origin, trusted.as_deref(), &text)?;
+        let edit_error = |e: edit::EditError| match e {
             edit::EditError::NotFound => ServiceError::not_found(kind.array(), bare),
             other => ServiceError::config(format!("{}: {other}", path.display())),
-        })?;
+        };
+        let current = edit::find::<T>(&text, kind, bare).map_err(edit_error)?;
+        check_expected(kind, bare, expected, current.as_ref().map(|c| c.revision.as_str()))?;
+        let new_text = match change {
+            Edit::Put(def) => edit::upsert(&text, kind, bare, def),
+            Edit::Modify(f) => {
+                let found = current.ok_or_else(|| ServiceError::not_found(kind.array(), bare))?;
+                let mut def = found.def.ok_or_else(|| {
+                    ServiceError::config(format!(
+                        "{}: the {} {bare:?} is not valid as written; fix it in the file first",
+                        path.display(),
+                        kind.array()
+                    ))
+                })?;
+                f(&mut def);
+                edit::upsert(&text, kind, bare, &def)
+            }
+            Edit::Delete => edit::remove(&text, kind, bare),
+        }
+        .map_err(edit_error)?;
         if new_text == text {
             return Ok(());
         }
@@ -86,6 +104,8 @@ impl Services {
         });
         write_atomic(&path, new_text.as_bytes(), mode)
             .map_err(|e| ServiceError::Internal(format!("cannot write {}: {e}", path.display())))?;
+        // Binds trust to exactly the text written, which was derived from text that had the
+        // trusted hash.
         if loader.retrust_written(&origin, &new_text) {
             let records = serde_json::to_string(&loader.trust)
                 .map_err(|e| ServiceError::Internal(e.to_string()))?;
@@ -99,6 +119,38 @@ impl Services {
         self.shared.apply(loaded, watched).await;
         Ok(())
     }
+}
+
+/// Refuses an edit whose base is not the definition as it is now (`current`: its revision,
+/// `None` when absent).
+fn check_expected(
+    kind: DefKind,
+    name: &str,
+    expected: &Expected,
+    current: Option<&str>,
+) -> ServiceResult<()> {
+    let what = kind.array();
+    let message = match (expected, current) {
+        (Expected::Any, _) | (Expected::Absent, None) => return Ok(()),
+        (Expected::Revision { revision }, Some(c)) if revision == c => return Ok(()),
+        (Expected::Absent, Some(_)) => format!("a {what} named {name:?} already exists"),
+        (Expected::Revision { .. }, None) => {
+            format!("the {what} {name:?} was removed since it was read")
+        }
+        (Expected::Revision { .. }, Some(_)) => {
+            format!("the {what} {name:?} changed since it was read")
+        }
+    };
+    Err(ServiceError::Stale { message, current: current.map(str::to_owned) })
+}
+
+/// The revision of a definition as written in the files a snapshot was built from.
+pub(crate) fn written_revision<T: Clone + Serialize>(
+    files: &[Sourced<pulse_contracts::config::ConfigFile>],
+    origin: &ConfigOrigin,
+    pick: impl Fn(&pulse_contracts::config::ConfigFile) -> Option<&T>,
+) -> String {
+    as_written(files, origin, pick).map(|d| crate::config::revision(&d)).unwrap_or_default()
 }
 
 /// The as-written definition and its file, for a definition known by its full name.

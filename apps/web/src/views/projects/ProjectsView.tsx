@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
 import { href, navigate } from "../../app/router";
 import { attempt, toast } from "../../app/toasts";
-import type { Project } from "../../contracts";
+import type { AgentConfig, Project, ProjectReview, SourceConfig } from "../../contracts";
+import { staleOf } from "../../lib/edits";
 import { TRUST_LABEL, trustTone } from "../../lib/explain";
-import { dayAndTime, plural } from "../../lib/format";
-import { Button, Confirm, Empty, Field, Input, Modal, Notice, Pill, Trunc } from "../../ui/primitives";
+import { dayAndTime, plural, visible } from "../../lib/format";
+import { Button, Confirm, Dl, Empty, Field, Input, Modal, Notice, Pill, Section, Trunc } from "../../ui/primitives";
 
 export function ProjectsView() {
   const projects = useDaemon((s) => s.projects);
@@ -124,17 +125,7 @@ function ProjectCard({ p }: { p: Project }) {
           {defs.rules.length + defs.agents.length + defs.sources.length === 0 && <span className="faint">nothing</span>}
         </div>
       )}
-      <Confirm
-        open={confirm === "trust"}
-        onClose={() => setConfirm(null)}
-        title={`Trust ${p.name}?`}
-        confirm="Trust this content"
-        onConfirm={() => void attempt("Trust", () => client.call("projects.trust", { dir: p.dir, name: p.name }), `Trusted ${p.name}; its definitions are active`)}
-      >
-        <p>
-          Pulse will load the rules, agents and sources in <span className="mono">{p.file}</span>. Its rules can wake agents and run the commands it defines. Trust covers this exact content only.
-        </p>
-      </Confirm>
+      {confirm === "trust" && <TrustReview dir={p.dir} name={p.name} onClose={() => setConfirm(null)} />}
       <Confirm
         open={confirm === "untrust"}
         onClose={() => setConfirm(null)}
@@ -149,44 +140,44 @@ function ProjectCard({ p }: { p: Project }) {
   );
 }
 
+/** Asks for a directory, then shows what trusting it would load. */
 function TrustDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { client } = useApp();
   const [dir, setDir] = useState("");
   const [name, setName] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const close = () => {
+    setReviewing(false);
+    onClose();
+  };
+  if (open && reviewing) {
+    return (
+      <TrustReview
+        dir={dir.trim()}
+        {...(name.trim() ? { name: name.trim() } : {})}
+        onClose={close}
+        onTrusted={() => {
+          setDir("");
+          setName("");
+        }}
+      />
+    );
+  }
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={close}
       title="Trust a project"
       actions={
         <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!dir.trim()}
-            onClick={async () => {
-              // A refusal (no pulse.toml there, a name in use) is shown in the dialog, not behind it.
-              setError(null);
-              try {
-                await client.call("projects.trust", { dir: dir.trim(), ...(name.trim() ? { name: name.trim() } : {}) });
-              } catch (err) {
-                setError(err instanceof Error ? err.message : String(err));
-                return;
-              }
-              toast("Trusted", "ok");
-              setDir("");
-              setName("");
-              onClose();
-            }}
-          >
-            Trust
+          <Button onClick={close}>Cancel</Button>
+          <Button variant="primary" disabled={!dir.trim()} onClick={() => setReviewing(true)}>
+            Review
           </Button>
         </>
       }
     >
-      <p>Point at a directory that contains a <code>pulse.toml</code>. Read the file first: trusting it lets its rules wake agents and run its commands.</p>
-      <Field label="Directory" error={error}>
+      <p>Point at a directory that contains a <code>pulse.toml</code>. Pulse shows you what it defines before anything is trusted.</p>
+      <Field label="Directory">
         <Input mono autoFocus value={dir} onChange={(e) => setDir(e.target.value)} placeholder="~/code/my-repo" />
       </Field>
       <Field label="Name" hint="The prefix for its definitions (name/rule). Default: the directory's name.">
@@ -194,4 +185,216 @@ function TrustDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
       </Field>
     </Modal>
   );
+}
+
+/**
+ * What trusting a project file would load, read from the daemon, and a button that trusts
+ * exactly that content (by its hash). If the file changes before the button is pressed, nothing
+ * is trusted and the new content is shown instead. Everything shown comes from the repository.
+ */
+export function TrustReview({ dir, name, onClose, onTrusted }: { dir: string; name?: string; onClose: () => void; onTrusted?: () => void }) {
+  const { client } = useApp();
+  const [review, setReview] = useState<ProjectReview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [changedWhileOpen, setChangedWhileOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    setReview(null);
+    try {
+      setReview(await client.call("projects.review", { dir, ...(name ? { name } : {}) }));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, dir, name]);
+  const trust = async () => {
+    if (!review) return;
+    setBusy(true);
+    try {
+      await client.call("projects.trust", { dir, ...(name ? { name } : {}), hash: review.hash });
+      toast(`Trusted ${review.name}; its definitions are active`, "ok");
+      onTrusted?.();
+      onClose();
+    } catch (err) {
+      if (staleOf(err)) {
+        setChangedWhileOpen(true);
+        await load();
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    setBusy(false);
+  };
+  return (
+    <Modal
+      open
+      wide
+      onClose={onClose}
+      title={review ? `Trust ${review.name}?` : "Review the project file"}
+      actions={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" icon="shield" disabled={!review || review.errors.length > 0 || busy} onClick={() => void trust()}>
+            Trust this content
+          </Button>
+        </>
+      }
+    >
+      {error && (
+        <Notice tone="error" title="Could not review it">
+          {error}
+        </Notice>
+      )}
+      {changedWhileOpen && (
+        <Notice tone="attention" title="The file changed while you were reading it">
+          Nothing was trusted. Below is what it says now; read it again before you trust it.
+        </Notice>
+      )}
+      {!review && !error && <p className="faint">Reading the file…</p>}
+      {review && <ReviewBody review={review} />}
+    </Modal>
+  );
+}
+
+// Repository text: DOM text goes through `visible()` in the JSX runtime; `line` also shows
+// line breaks inside what should be one line.
+function ReviewBody({ review }: { review: ProjectReview }) {
+  const line = (t: string) => visible(t, { singleLine: true });
+  const nothing = review.rules.length + review.agents.length + review.sources.length === 0;
+  return (
+    <div className="review stack">
+      <p>
+        Trusting loads what <span className="mono">{line(review.file)}</span> defines, as <span className="mono">{line(review.name)}/…</span>: its rules can wake agents and run the commands below. Trust covers exactly this content (<span className="mono" title={review.hash}>{review.hash.slice(0, 12)}</span>); any change makes it inactive again.
+      </p>
+      {review.state === "changed" &&
+        (review.changes ? (
+          <Section title="What changed since you trusted it">
+            {review.changes.length === 0 ? (
+              <p className="faint">Nothing in its definitions: only comments or formatting.</p>
+            ) : (
+              <ul className="plain review-changes">
+                {review.changes.map((c) => (
+                  <li key={`${c.kind} ${c.name}`}>
+                    {c.kind} <span className="mono">{line(c.name)}</span>: {c.change.kind === "changed" ? <>changed <span className="mono">{c.change.fields.map(line).join(", ")}</span></> : c.change.kind}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+        ) : (
+          <Notice tone="attention" title="Changed since you trusted it">
+            Pulse did not keep the version you trusted, so it cannot say what changed. Read all of it.
+          </Notice>
+        ))}
+      {review.errors.length > 0 && (
+        <Notice tone="error" title="It cannot be trusted as it is">
+          <ul className="config-errors">
+            {review.errors.map((e, i) => (
+              <li key={i}>
+                <span className="mono">line {e.line ?? "?"}</span> {e.item && <span className="mono">{line(e.item)}</span>} {e.field && <code>{line(e.field)}</code>} {line(e.message)}
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      )}
+      {nothing && review.errors.length === 0 && <p className="faint">It defines nothing.</p>}
+      {review.agents.length > 0 && (
+        <Section title="Agents: what they run">
+          {review.agents.map((a) => (
+            <div key={a.name} className="review-def">
+              <h4 className="mono">{line(a.name)} <Pill tone="neutral">{a.adapter}</Pill></h4>
+              <Dl items={agentFacts(a, line)} />
+            </div>
+          ))}
+        </Section>
+      )}
+      {review.rules.length > 0 && (
+        <Section title="Rules: when they run">
+          {review.rules.map((r) => (
+            <div key={r.name} className="review-def">
+              <h4 className="mono">{line(r.name)}</h4>
+              <Dl
+                items={[
+                  ["On", <span key="o" className="mono">{r.on.map(line).join(", ")}</span>],
+                  ...(Object.keys(r.where ?? {}).length ? [["Where", <span key="w" className="mono">{line(JSON.stringify(r.where))}</span>] as [string, ReactNode]] : []),
+                  ["Wakes", <span key="a" className="mono">{line(r.run.agent)}</span>],
+                  ["Approval", r.supervised ? "each run waits for you" : <strong key="s">runs without asking</strong>],
+                  ...(r.enabled === false ? [["State", "disabled"] as [string, ReactNode]] : []),
+                ]}
+              />
+              {r.run.prompt ? <pre className="code">{r.run.prompt}</pre> : <p className="faint">No prompt: the agent's command runs as defined above.</p>}
+            </div>
+          ))}
+        </Section>
+      )}
+      {review.sources.length > 0 && (
+        <Section title="Sources: what it watches">
+          <ul className="plain">
+            {review.sources.map((s) => (
+              <li key={s.name}>
+                <span className="mono">{line(s.name)}</span> <Pill tone="neutral">{s.kind}</Pill> <span className="mono">{line(sourceTarget(s))}</span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+      <details className="review-text">
+        <summary>The file as written</summary>
+        <pre className="code">{review.text}</pre>
+      </details>
+    </div>
+  );
+}
+
+function sourceTarget(s: SourceConfig): string {
+  switch (s.kind) {
+    case "fs":
+    case "git":
+      return s.path;
+    case "schedule":
+      return s.cron ? `cron ${s.cron}` : `every ${s.every ?? "?"}`;
+    case "calendar":
+      return s.url ?? s.path ?? "";
+  }
+}
+
+function agentFacts(a: AgentConfig, line: (t: string) => string): [string, ReactNode][] {
+  const mono = (k: string, t: string) => <span key={k} className="mono">{line(t)}</span>;
+  const list = (k: string, xs: string[]) => (
+    <ol key={k} className="argv">
+      {xs.map((x, i) => (
+        <li key={i} className="mono">{x === "" ? <span className="faint">(empty)</span> : line(x)}</li>
+      ))}
+    </ol>
+  );
+  const out: [string, ReactNode][] = [];
+  switch (a.adapter) {
+    case "command":
+      out.push(["Command", list("c", a.command ?? [])], ["Stdin", mono("s", a.stdin ?? "prompt")]);
+      break;
+    case "claude-code":
+      out.push(["Program", mono("p", a.program ?? "claude (from PATH)")], ["Permission mode", mono("m", a.permission_mode ?? "dontAsk (default)")]);
+      if (a.model) out.push(["Model", mono("mo", a.model)]);
+      if (a.allowed_tools?.length) out.push(["Allowed tools", list("t", a.allowed_tools)]);
+      if (a.disallowed_tools?.length) out.push(["Disallowed tools", list("d", a.disallowed_tools)]);
+      if (a.extra_args?.length) out.push(["Extra arguments", list("x", a.extra_args)]);
+      break;
+    case "codex":
+      out.push(["Program", mono("p", a.program ?? "codex (from PATH)")], ["Sandbox", mono("s", a.sandbox ?? "read-only (default)")], ["Approval policy", mono("ap", a.approval_policy ?? "never (default)")]);
+      if (a.model) out.push(["Model", mono("mo", a.model)]);
+      if (a.extra_args?.length) out.push(["Extra arguments", list("x", a.extra_args)]);
+      break;
+    case "mcp":
+      out.push(["Runs", "nothing: an identity for an MCP client"]);
+      break;
+  }
+  out.push(["Sees (scopes)", (a.allow ?? []).length ? list("al", a.allow ?? []) : <span key="n" className="faint">nothing</span>]);
+  if (a.adapter !== "mcp") out.push(["Working directory", mono("cwd", a.cwd ?? "its own run directory")]);
+  const env = Object.entries(a.env ?? {});
+  if (env.length) out.push(["Environment", list("e", env.map(([k, x]) => `${k}=${x}`))]);
+  return out;
 }

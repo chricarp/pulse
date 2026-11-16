@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { mock, startPerf, stopPerf, summarize } from "./helpers";
+import { mock, scrollToGap, startPerf, stopPerf, summarize } from "./helpers";
 
 test("the feed stays virtualized and responsive through a storm of 10,000 events", async ({ page }) => {
   await page.goto("/feed?trickle=0");
@@ -24,8 +24,8 @@ test("the feed stays virtualized and responsive through a storm of 10,000 events
 
   // Virtualized: only the visible rows exist in the DOM.
   expect(await page.locator(".event-row").count()).toBeLessThan(80);
-  // Below the newest batch, a gap row says what was left out of the live view.
-  await page.locator(".feed-list").evaluate((el) => el.scrollTo(0, 200 * 30));
+  // Below a batch that dropped events, a gap row says what was left out of the live view.
+  await scrollToGap(page);
   await expect(page.locator(".gap-row").first()).toContainText("not shown live");
   await page.locator(".feed-list").evaluate((el) => el.scrollTo(0, 0));
   // Still responsive: keyboard selection opens the detail.
@@ -41,7 +41,7 @@ test("a gap row opens the summarized range from the log", async ({ page }) => {
   await expect(page.locator(".event-row").first()).toBeVisible();
   await mock(page).storm(3000, 1);
   await expect(page.getByText(/summarized/)).toBeVisible();
-  await page.locator(".feed-list").evaluate((el) => el.scrollTo(0, 200 * 30));
+  await scrollToGap(page);
   const gap = page.locator(".gap-row").first();
   await expect(gap).toBeVisible();
   await gap.getByRole("button", { name: "Show from the log" }).click();

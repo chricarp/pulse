@@ -42,7 +42,7 @@ Controls:
 ### 2. An agent doing more than the user intended
 
 - **Scopes.** An agent only receives events its `allow` list covers. Enforcement is in the router and in MCP queries, not in prompt text.
-- **Supervised rules.** A rule can require a human to approve each run. Approval is only possible with the daemon token; agents get a derived token that cannot approve, edit rules, or read outside their scope.
+- **Supervised rules.** A rule can require a human to approve each run. Approval is only possible with the daemon token; agents get a derived token that cannot approve, edit rules, or read outside their scope. What the approval shows is what runs: the run's argv and working directory are rendered when it is created and shown on the approval (UI and `pulse runs show`), and before it starts the daemon renders them again and requires the same result, with the agent still defined exactly as when the run was created (see "Runs" in [0002](0002-architecture.md)). The environment is not shown or stored; it comes from the agent's config, which the same check covers.
 
 **Honest limit (agent tokens):** the per-agent token constrains what an agent's *MCP configuration* can do. It is not a boundary against the agent process itself: a spawned agent runs as the user and can read `$PULSE_HOME/token` (mode 0600 protects it from other users, not from the user's own processes), and with it do anything the daemon token can. A hostile or manipulated agent with shell access is contained only by its own runtime's sandbox and permission mode.
 - **The agent's own permissions.** Pulse passes through the agent's permission mode or sandbox settings and never widens them by default. Templates we ship use the most restrictive mode that still does the job. (End-to-end testing found this sentence false once: `lecture-notes` pre-approved a bare `Write`, which allows writing anywhere. It now pre-approves `Edit(./**)`, relative to the agent's `cwd`.)
@@ -95,6 +95,13 @@ Event text is shown to the user in a terminal and in the UI, and a file name can
 ### 5. A hostile repository
 
 A checked-in `pulse.toml` is inert until trusted, and trust is tied to its content hash. A `git pull` that changes it deactivates it until the user looks again.
+
+- **Trust names what the user saw.** `projects.review` returns the file as it is: its text, its hash, every definition it would add (rules with their triggers and prompts, agents with their adapter, program or argv, tools, scopes, working directory and environment, sources) and, for a file that changed since it was trusted, which definitions differ from the trusted version (the trusted text is kept for this, up to 64 KiB). `projects.trust` must carry the hash of the review the user read; the daemon reads the file once, checks that text's hash and binds trust to exactly that text, or refuses with a `stale` error. The UI shows the review before its button can be pressed and, on a refusal, shows the new content instead; `pulse project trust <dir>` prints the review and trusts only with `--hash`. Before this, trust took no hash, and a file replaced while the confirmation was open was trusted unseen.
+- **Write-back never trusts unreviewed content.** Editing a project's definition through the daemon re-binds trust to the written file (the user acted with the daemon token). The daemon reads the file once, checks that text against the trusted hash, edits exactly that text and binds trust to the result; a `git pull` that lands first makes the edit fail instead of being trusted with it.
+- **Queued runs follow the trust.** A project agent's runs that are queued or waiting for approval when the project is untrusted, or its file changes, do not start: the agent is no longer in the config, so the release check withdraws them.
+- Everything in a review is repository text and is shown as text, through the same escaping as event content (4a).
+
+**Honest limit:** the review shows what the file *defines*; it cannot show what a program it names will do. A rule that runs `make generate` is only as safe as the repository's Makefile, which trust does not cover.
 
 ### 6. Killing the wrong process
 

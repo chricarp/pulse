@@ -14,7 +14,7 @@ describe("agent form mapping", () => {
       { name: "editor", adapter: "mcp", allow: ["git.*"], timeout: "15m", max_concurrent: 1, max_queued: 8, env: {} },
     ] as AgentInfo["config"][];
     for (const config of agents) {
-      const { agent, problems } = formToAgent(agentToForm({ config, origin, running: 0, queued: 0 }));
+      const { agent, problems } = formToAgent(agentToForm({ config, origin, revision: "r", running: 0, queued: 0 }));
       expect(problems).toEqual([]);
       expect(agent).toEqual(config);
     }

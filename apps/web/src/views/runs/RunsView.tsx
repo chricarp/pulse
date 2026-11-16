@@ -5,6 +5,7 @@ import { useApp, useDaemon } from "../../app/context";
 import { useBindings } from "../../app/keys";
 import { navigate, setSearch, useLocation } from "../../app/router";
 import type { RunFilter, RunStatus, RunSummary } from "../../contracts";
+import { applyRunChanges } from "../../app/daemon";
 import { RUN_STATUS_LABEL, runTone } from "../../lib/explain";
 import { count, dayAndTime, shortId, span } from "../../lib/format";
 import { Empty, Notice, Pill, Select, cx, useNow } from "../../ui/primitives";
@@ -17,13 +18,6 @@ const TABS: { key: string; label: string; status: RunStatus[] }[] = [
   { key: "failed", label: "Failed", status: ["failed", "timed_out", "interrupted"] },
   { key: "done", label: "Finished", status: ["succeeded", "cancelled", "rejected"] },
 ];
-
-function matches(r: RunSummary, f: RunFilter): boolean {
-  if (f.rule && r.rule !== f.rule) return false;
-  if (f.agent && r.agent !== f.agent) return false;
-  if (f.status.length && !f.status.includes(r.status)) return false;
-  return true;
-}
 
 /** Runs matching a filter: paged from the daemon, kept live by `runs.changed`. */
 export function useRunList(filter: RunFilter) {
@@ -38,34 +32,29 @@ export function useRunList(filter: RunFilter) {
   useEffect(() => {
     if (!connected) return;
     let live = true;
+    // Changes pushed before the page arrives are applied on top of it: the page may have been
+    // read before them.
+    let early: RunSummary[] | null = [];
     setLoading(true);
     client
       .call("runs.list", { filter, limit: 100 })
       .then((page) => {
         if (!live) return;
-        setItems(page.runs);
+        setItems(applyRunChanges(page.runs, early ?? [], filter));
+        early = null;
         setCursor(page.next_cursor ?? null);
         setError(null);
         setLoading(false);
       })
       .catch((e: unknown) => {
         if (!live) return;
+        early = null;
         setError(e instanceof Error ? e.message : String(e));
         setLoading(false);
       });
     const off = daemon.onRunsChanged((runs) => {
-      setItems((prev) => {
-        const byId = new Map(prev.map((r, i) => [r.id, i]));
-        const next = [...prev];
-        const added: RunSummary[] = [];
-        for (const r of runs) {
-          const i = byId.get(r.id);
-          // Runs that leave the filter stay, with their new state, until the list reloads.
-          if (i !== undefined) next[i] = r;
-          else if (matches(r, filter)) added.push(r);
-        }
-        return added.length ? [...added.sort((a, b) => (a.id < b.id ? 1 : -1)), ...next] : next;
-      });
+      if (early) early.push(...runs);
+      else setItems((prev) => applyRunChanges(prev, runs, filter));
     });
     return () => {
       live = false;
