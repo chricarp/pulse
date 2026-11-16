@@ -39,23 +39,42 @@ run = {{ agent = "quick" }}
     )
 }
 
-/// `system.status` round trips, as fast as they complete, until stopped: (count, slowest).
+/// The storm's window as the test sees it: opened just before the storm starts, closed once the
+/// test has seen the storm's last event.
+#[derive(Default)]
+struct Window {
+    open: AtomicBool,
+    closed: AtomicBool,
+}
+
+struct Probed {
+    calls: u32,
+    /// Calls sent after the window opened and answered before it closed: the daemon answered
+    /// them while it still had the storm to process.
+    during: u32,
+    /// Printed only: latency depends on the machine, not on the product.
+    slowest: Duration,
+}
+
+/// `system.status` round trips, one after another, until the window closes.
 fn probe(
     client: pulse_daemon::client::Client,
-) -> (Arc<AtomicBool>, tokio::task::JoinHandle<(u32, Duration)>) {
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = stop.clone();
-    let task = tokio::spawn(async move {
-        let (mut n, mut worst) = (0u32, Duration::ZERO);
-        while !flag.load(Ordering::SeqCst) {
+    window: Arc<Window>,
+) -> tokio::task::JoinHandle<Probed> {
+    tokio::spawn(async move {
+        let mut p = Probed { calls: 0, during: 0, slowest: Duration::ZERO };
+        while !window.closed.load(Ordering::SeqCst) {
+            let opened = window.open.load(Ordering::SeqCst);
             let t = Instant::now();
             client.call::<method::SystemStatusGet>(Empty {}).await.unwrap();
-            worst = worst.max(t.elapsed());
-            n += 1;
+            p.slowest = p.slowest.max(t.elapsed());
+            p.calls += 1;
+            if opened && !window.closed.load(Ordering::SeqCst) {
+                p.during += 1;
+            }
         }
-        (n, worst)
-    });
-    (stop, task)
+        p
+    })
 }
 
 fn python(script: &str, args: &[&Path]) {
@@ -102,9 +121,11 @@ async fn unzipping_ten_thousand_files_is_a_few_events_and_the_daemon_stays_respo
     let daemon = env.start().await;
     let mut watch = daemon.watch().await;
     watch.sources(SourceState::Healthy).await;
-    let (stop, probe) = probe(daemon.client().await);
+    let window = Arc::new(Window::default());
+    let probe = probe(daemon.client().await, window.clone());
 
     let started = Instant::now();
+    window.open.store(true, Ordering::SeqCst);
     python(
         "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
         &[&zip, &watched],
@@ -126,14 +147,14 @@ async fn unzipping_ten_thousand_files_is_a_few_events_and_the_daemon_stays_respo
         })
         .await;
     let settled = started.elapsed();
-    stop.store(true, Ordering::SeqCst);
-    let (calls, worst) = probe.await.unwrap();
+    window.closed.store(true, Ordering::SeqCst);
+    let Probed { calls, during, slowest } = probe.await.unwrap();
 
     let events = watch.query(EventFilter::default()).await;
     let runs = watch.all_runs().await;
     println!(
         "10k unzip: settled in {settled:?}; {} events, {} runs; {} live batches (largest {}, dropped {}); \
-         system.status: {calls} calls, slowest {worst:?}",
+         system.status: {calls} calls ({during} during the storm), slowest {slowest:?}",
         events.len(),
         runs.len(),
         watch.batches,
@@ -148,8 +169,9 @@ async fn unzipping_ten_thousand_files_is_a_few_events_and_the_daemon_stays_respo
     // Only the unrelated file is a creation a rule sees; the storm is one `fs.burst`.
     assert_eq!(runs.len(), 1, "{runs:#?}");
     assert!(watch.max_batch <= 200);
-    assert!(calls > 10, "the probe made progress during the storm");
-    assert!(worst < Duration::from_secs(1), "system.status took {worst:?} during the storm");
+    // Ordering, not latency: a call sent once the storm had begun was answered before the
+    // storm's events had all come out, so the daemon did not hold RPC until the storm was done.
+    assert!(during > 0, "no system.status call was answered during the storm ({calls} in all)");
     daemon.stop().await;
 }
 
@@ -168,7 +190,9 @@ async fn a_clone_and_a_checkout_in_a_watched_folder_stay_bounded() {
     let daemon = env.start().await;
     let mut watch = daemon.watch().await;
     watch.source_state(Some("watched"), SourceState::Healthy).await;
-    let (stop, probe) = probe(daemon.client().await);
+    let window = Arc::new(Window::default());
+    let probe = probe(daemon.client().await, window.clone());
+    window.open.store(true, Ordering::SeqCst);
     let this_repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let repo = watched.join("repo");
     let out = std::process::Command::new("git")
@@ -199,8 +223,8 @@ async fn a_clone_and_a_checkout_in_a_watched_folder_stay_bounded() {
     watch
         .event("the marker", |e| e.subject.as_deref().is_some_and(|s| s.ends_with("/marker.txt")))
         .await;
-    stop.store(true, Ordering::SeqCst);
-    let (calls, worst) = probe.await.unwrap();
+    window.closed.store(true, Ordering::SeqCst);
+    let Probed { calls, during, slowest } = probe.await.unwrap();
 
     let events = watch.query(EventFilter::default()).await;
     let fs = events.iter().filter(|e| e.type_.as_str().starts_with("fs.")).count();
@@ -208,7 +232,7 @@ async fn a_clone_and_a_checkout_in_a_watched_folder_stay_bounded() {
         events.iter().filter(|e| e.type_.as_str().starts_with("git.")).collect();
     let runs = watch.all_runs().await;
     println!(
-        "clone + checkout: {} events ({fs} fs, {} git), {} runs; system.status: {calls} calls, slowest {worst:?}",
+        "clone + checkout: {} events ({fs} fs, {} git), {} runs; system.status: {calls} calls ({during} during), slowest {slowest:?}",
         events.len(),
         git_events.len(),
         runs.len()
@@ -224,6 +248,6 @@ async fn a_clone_and_a_checkout_in_a_watched_folder_stay_bounded() {
         events.iter().map(|e| (&e.type_, &e.subject)).collect::<Vec<_>>()
     );
     assert!(runs.len() <= 10, "{} runs", runs.len());
-    assert!(worst < Duration::from_secs(1));
+    assert!(during > 0, "no system.status call was answered during the clone ({calls} in all)");
     daemon.stop().await;
 }

@@ -2,6 +2,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -23,7 +24,7 @@ impl RollingFile {
     pub fn open(dir: &Path) -> io::Result<RollingFile> {
         fs::create_dir_all(dir)?;
         let path = dir.join("pulse.log");
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
         let size = file.metadata()?.len();
         Ok(RollingFile { path, file, size })
     }
@@ -36,7 +37,7 @@ impl RollingFile {
             }
         }
         fs::rename(&self.path, self.path.with_extension("log.1"))?;
-        self.file = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        self.file = OpenOptions::new().create(true).append(true).mode(0o600).open(&self.path)?;
         self.size = 0;
         Ok(())
     }

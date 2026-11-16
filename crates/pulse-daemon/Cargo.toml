@@ -32,10 +32,12 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "toki
 futures-util = { version = "0.3.31", default-features = false, features = ["sink", "std"] }
 getrandom = "0.4.3"
 hmac = "0.13.0"
-# The client's proof request and WebSocket upgrade share one HTTP/1.1 connection.
+# Used directly on both sides. Client: the proof request and the WebSocket upgrade share one
+# HTTP/1.1 connection. Server: the header-read timeout and a bounded drain, which `axum::serve`
+# does not offer (see `server.rs`). hyper is already in the tree through axum.
 http-body-util = "0.1.5"
-hyper = { version = "1.12.0", features = ["client", "http1"] }
-hyper-util = { version = "0.1.21", features = ["tokio"] }
+hyper = { version = "1.12.0", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["http1", "server", "service", "tokio"] }
 notify = { version = "7.0.0", default-features = false, features = ["macos_fsevent"] }
 rust-embed = { version = "8.7.2", features = ["debug-embed", "mime-guess"] }
 rustix = { version = "1.1.2", features = ["fs", "process"] }

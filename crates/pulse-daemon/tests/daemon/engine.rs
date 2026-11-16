@@ -123,19 +123,49 @@ async fn event_to_run_to_output_end_to_end() {
     t.stop().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_commit_leaves_nothing_behind() {
-    let mut t = TestDaemon::start(&config(
-        r#"
+const FAILED_COMMIT_RULES: &str = r#"
 [[rule]]
 name = "every-ext"
-on = "ext.*"
+on = "ext.ci.first"
 cooldown = "1h"
 run = { agent = "sh" }
-"#,
-    ))
-    .await;
+
+[[rule]]
+name = "settle"
+on = "ext.ci.settle"
+debounce = "1h"
+debounce_by = "subject"
+run = { agent = "sh" }
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_commit_leaves_nothing_behind() {
+    // One debounce slot: whether it is still taken shows whether a pending debounce survived.
+    let limits = "[limits]\ndebounce_capacity = 1\n";
+    let mut t = TestDaemon::start(&format!("{limits}{}", config(FAILED_COMMIT_RULES))).await;
     let client = t.client().await;
+    let ingest = |kind: &str, subject: &str, key: Option<&str>| IngestParams {
+        source: "ci".into(),
+        events: vec![IngestEvent {
+            type_: kind.into(),
+            subject: Some(subject.into()),
+            time: None,
+            data: serde_json::json!({}),
+            dedupe_key: key.map(Into::into),
+            causation_run: None,
+        }],
+    };
+    let outcome = |id| {
+        let client = &client;
+        async move {
+            let detail = client.call::<method::EventsGet>(EventIdParams { id }).await.unwrap();
+            detail.deliveries[0].outcome.clone()
+        }
+    };
+    // A debounce pending from an earlier, committed event.
+    let ok = client.call::<method::EventsIngest>(ingest("settle", "a", None)).await.unwrap();
+    assert!(matches!(outcome(ok.accepted[0]).await, DeliveryOutcome::Debounced { .. }));
+
     // Make every insert into `runs` fail, from a second connection: the commit that would
     // create a run must roll back its event and delivery too.
     let db = rusqlite::Connection::open(t.home.join("pulse.db")).unwrap();
@@ -143,20 +173,19 @@ run = { agent = "sh" }
         "CREATE TRIGGER no_runs BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT, 'injected'); END;",
     )
     .unwrap();
-    let ingest = |kind: &str| IngestParams {
-        source: "ci".into(),
-        events: vec![IngestEvent {
-            type_: kind.into(),
-            subject: None,
-            time: None,
-            data: serde_json::json!({}),
-            dedupe_key: None,
-            causation_run: None,
-        }],
-    };
-    let err = client.call::<method::EventsIngest>(ingest("first")).await.unwrap_err();
+    let first = ingest("first", "x", Some("k1"));
+    let err = client.call::<method::EventsIngest>(first.clone()).await.unwrap_err();
     assert!(err.to_string().contains("injected"), "{err}");
-    let page = client.call::<method::EventsQuery>(EventQuery::default()).await.unwrap();
+    let page = client
+        .call::<method::EventsQuery>(EventQuery {
+            filter: EventFilter {
+                types: vec!["ext.ci.first".parse().unwrap()],
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     assert!(page.page.events.is_empty(), "the event was rolled back with the run");
     let history = client
         .call::<method::RulesHistory>(RuleHistoryParams {
@@ -169,14 +198,39 @@ run = { agent = "sh" }
         .unwrap();
     assert!(history.deliveries.is_empty());
 
-    // Routing state was rebuilt from the log: the fire that was not stored does not hold the
-    // rule in its cooldown.
+    // The sender's retry is not a duplicate of the event that was never stored, and the fire
+    // that was not stored does not hold the rule in its cooldown.
     db.execute_batch("DROP TRIGGER no_runs;").unwrap();
-    let ok = client.call::<method::EventsIngest>(ingest("second")).await.unwrap();
+    let ok = client.call::<method::EventsIngest>(first.clone()).await.unwrap();
+    assert_eq!((ok.accepted.len(), ok.duplicates), (1, 0), "the retry is accepted");
+    assert_eq!(outcome(ok.accepted[0]).await, DeliveryOutcome::Fired);
     let detail =
         client.call::<method::EventsGet>(EventIdParams { id: ok.accepted[0] }).await.unwrap();
-    assert_eq!(detail.deliveries[0].outcome, DeliveryOutcome::Fired);
     assert_eq!(detail.runs.len(), 1);
+
+    // The debounce pending before the failure is still pending: the one slot is taken, so a
+    // new subject is not debounced.
+    let ok = client.call::<method::EventsIngest>(ingest("settle", "b", None)).await.unwrap();
+    assert_eq!(outcome(ok.accepted[0]).await, DeliveryOutcome::Fired);
+
+    // A config change that resizes the dedupe table keeps the keys already accepted.
+    let mut notes = client.notifications().unwrap();
+    t.write_config(&format!(
+        "[limits]\ndebounce_capacity = 1\ndedupe_ttl = \"20m\"\n{}",
+        config(FAILED_COMMIT_RULES)
+    ));
+    within("the new limits", async {
+        loop {
+            if let Notification::StateChanged(s) = notes.recv().await.unwrap() {
+                if s.topics.contains(&StateTopic::Config) {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+    let again = client.call::<method::EventsIngest>(first).await.unwrap();
+    assert_eq!((again.accepted.len(), again.duplicates), (0, 1), "still a duplicate");
     t.stop().await;
 }
 

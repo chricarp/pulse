@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use pulse_contracts::status::DaemonInfo;
@@ -51,14 +51,24 @@ impl PulseHome {
         self.runs_dir().join(run.to_string())
     }
 
-    /// Creates the home (mode 0700: it holds the secret and the event log) and its subdirectories.
+    /// Creates the home and its subdirectories, and makes them private (0700) on every start,
+    /// not only when creating them: the home holds the secret and the event log (paths, commit
+    /// messages, prompts, output), and one that already existed (made by hand, by an older Pulse,
+    /// or by `logs/` being opened first) kept whatever mode it had. Only the home and its own
+    /// subdirectories are changed: a home reached through a symbolic link is the directory it
+    /// points to, but a subdirectory that is a link to somewhere else is left alone, and so are
+    /// the home's parents. A home owned by another user is refused; it cannot be made private.
+    /// The database files are the store's (`pulse_store::Store::open`).
     pub fn create_dirs(&self) -> io::Result<()> {
-        if !self.root.exists() {
-            fs::create_dir_all(&self.root)?;
-            fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))?;
+        fs::create_dir_all(&self.root)?;
+        make_private(&self.root, true)?;
+        for dir in [self.logs_dir(), self.runs_dir(), self.root.join("sources")] {
+            match fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => make_private(&dir, false)?,
+                Err(e) => return Err(e),
+            }
         }
-        fs::create_dir_all(self.logs_dir())?;
-        fs::create_dir_all(self.runs_dir())?;
         Ok(())
     }
 
@@ -75,7 +85,7 @@ impl PulseHome {
 
     pub(crate) fn write_daemon_info(&self, info: &DaemonInfo) -> io::Result<()> {
         let json = serde_json::to_vec_pretty(info).map_err(io::Error::other)?;
-        write_atomic(&self.daemon_info(), &json, 0o644)
+        write_atomic(&self.daemon_info(), &json, 0o600)
     }
 
     pub(crate) fn remove_daemon_info(&self) {
@@ -148,6 +158,32 @@ impl PulseHome {
     }
 }
 
+/// Mode 0700 for a directory this user owns. `follow`: whether a symbolic link at `dir` is
+/// followed (the home itself) or left as it is (a subdirectory linked elsewhere).
+fn make_private(dir: &Path, follow: bool) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = if follow { fs::metadata(dir)? } else { fs::symlink_metadata(dir)? };
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    if !meta.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a directory", dir.display()),
+        ));
+    }
+    if meta.uid() != rustix::process::geteuid().as_raw() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} belongs to another user; Pulse keeps its data private", dir.display()),
+        ));
+    }
+    if meta.mode() & 0o077 != 0 {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Held for the daemon's lifetime: one daemon per Pulse home. The OS releases the lock when the
 /// process exits, however it exits.
 #[derive(Debug)]
@@ -185,9 +221,34 @@ impl InstanceLock {
     }
 }
 
+/// Follows `path` while it is a symbolic link, to the file it finally names (which need not
+/// exist). Directories along the way are left as they are.
+pub(crate) fn resolve_links(path: &Path) -> io::Result<PathBuf> {
+    let mut path = path.to_path_buf();
+    // Linux's own limit; a cycle ends here.
+    for _ in 0..40 {
+        match fs::read_link(&path) {
+            Ok(target) => {
+                // A relative target is relative to the link's directory; `join` keeps an
+                // absolute one as it is.
+                path = path.parent().unwrap_or(Path::new(".")).join(target);
+            }
+            Err(e) if matches!(e.kind(), io::ErrorKind::InvalidInput | io::ErrorKind::NotFound) => {
+                return Ok(path);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other(format!("{}: too many levels of symbolic links", path.display())))
+}
+
 /// Writes `bytes` to a temporary file next to `path`, flushes it, and renames it over `path`, so
-/// readers see the old content or the new, never a mix.
+/// readers see the old content or the new, never a mix. When `path` is a symbolic link (a
+/// `pulse.toml` kept in a dotfiles repository), the file it points to is replaced and the link
+/// stays: renaming over the link would turn it into a regular file, and later edits to the
+/// linked copy would be silently ignored.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    let path = &resolve_links(path)?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let mut nonce = [0u8; 6];
@@ -228,5 +289,77 @@ mod tests {
         assert!(InstanceLock::try_acquire(&home).unwrap().is_none());
         drop(lock);
         assert!(InstanceLock::try_acquire(&home).unwrap().is_some());
+    }
+
+    #[test]
+    fn an_existing_home_is_made_private_and_links_out_of_it_are_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let open = |p: &Path, m| fs::set_permissions(p, fs::Permissions::from_mode(m)).unwrap();
+        // A home that already existed, as a group-writable directory reached through a link,
+        // with loose subdirectories and a log directory that is a link to somewhere else.
+        let real = dir.path().join("real-home");
+        let elsewhere = dir.path().join("elsewhere");
+        for d in [&real, &real.join("runs"), &real.join("sources"), &elsewhere] {
+            fs::create_dir_all(d).unwrap();
+            open(d, 0o775);
+        }
+        std::os::unix::fs::symlink(&elsewhere, real.join("logs")).unwrap();
+        let root = dir.path().join("home");
+        std::os::unix::fs::symlink(&real, &root).unwrap();
+
+        PulseHome::new(&root).create_dirs().unwrap();
+        for d in [&real, &real.join("runs"), &real.join("sources")] {
+            assert_eq!(mode(d), 0o700, "{}", d.display());
+        }
+        assert_eq!(mode(&elsewhere), 0o775, "a link out of the home is not followed");
+
+        // A fresh home, with its parents.
+        let fresh = PulseHome::new(dir.path().join("a/b/home"));
+        fresh.create_dirs().unwrap();
+        for d in [fresh.root().to_path_buf(), fresh.logs_dir(), fresh.runs_dir()] {
+            assert_eq!(mode(&d), 0o700, "{}", d.display());
+        }
+
+        // Not a directory: refused rather than used.
+        let file = dir.path().join("file");
+        fs::write(&file, "").unwrap();
+        assert!(PulseHome::new(&file).create_dirs().is_err());
+    }
+
+    #[test]
+    fn writing_through_a_symlink_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let dotfiles = dir.path().join("dotfiles");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&dotfiles).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let real = dotfiles.join("pulse.toml");
+        fs::write(&real, "old").unwrap();
+        // A relative link, then a link to that link, then a dangling one.
+        let link = home.join("pulse.toml");
+        std::os::unix::fs::symlink("../dotfiles/pulse.toml", &link).unwrap();
+        let chained = home.join("chained.toml");
+        std::os::unix::fs::symlink(&link, &chained).unwrap();
+        let dangling = home.join("dangling.toml");
+        std::os::unix::fs::symlink("../dotfiles/new.toml", &dangling).unwrap();
+
+        write_atomic(&link, b"new", 0o640).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "still a link");
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new", "the target was written");
+        assert_eq!(fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o640);
+
+        write_atomic(&chained, b"newer", 0o600).unwrap();
+        assert!(fs::symlink_metadata(&chained).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "newer");
+
+        write_atomic(&dangling, b"created", 0o600).unwrap();
+        assert!(fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(dotfiles.join("new.toml")).unwrap(), "created");
+
+        // No temporary file is left next to the link.
+        let names: Vec<_> = fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 3, "{names:?}");
     }
 }

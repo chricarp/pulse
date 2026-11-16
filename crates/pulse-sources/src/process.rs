@@ -11,7 +11,8 @@
 //! the moment it arrives.
 //!
 //! **Signals.** SIGINT, SIGTERM, SIGHUP and SIGQUIT sent to the wrapper are forwarded to the
-//! command (its process group when it has its own). When the wrapper shares the command's
+//! command (its process group when it has its own) until the command has been reaped, never
+//! after: its ID may then name another process. When the wrapper shares the command's
 //! foreground process group on a terminal (pipe mode with an interactive stdin), the terminal
 //! already delivered SIGINT and SIGQUIT to both, so those are not sent a second time.
 //!
@@ -59,7 +60,10 @@ pub async fn run_wrapped(
                 == Some(rustix::process::getpgrp());
         Mode::Pipes { own_group: !foreground }
     };
-    run(command, cwd, tail_bytes, mode, &mut StdOutput).await
+    // Before spawning, so a signal that arrives during startup is not lost (or fatal to the
+    // wrapper).
+    let mut signals = Signals::install().map_err(|e| spawn_error(command, e))?;
+    run(command, cwd, tail_bytes, mode, &mut StdOutput, &mut signals).await
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,8 +118,16 @@ impl Tail {
     }
 }
 
-/// Signals the wrapper catches and forwards. Created before spawning so a signal that arrives
-/// during startup is not lost (or fatal to the wrapper).
+/// Where signals for the command come from and how they are sent: the process's own signals and
+/// `kill`, or a test's.
+pub(crate) trait Forwarder {
+    fn next(&mut self) -> impl std::future::Future<Output = Signal>;
+    /// Sends `sig` to `pid` (its process group when `group`). Only called with the command
+    /// itself, while it has not been reaped.
+    fn send(&mut self, pid: Pid, sig: Signal, group: bool);
+}
+
+/// Signals the wrapper catches and forwards.
 struct Signals {
     streams: Vec<(Signal, tokio::signal::unix::Signal)>,
 }
@@ -163,14 +175,30 @@ async fn futures_select_all<F: std::future::Future<Output = Signal> + Unpin>(
     .await
 }
 
-fn forward(pid: Option<u32>, sig: Signal, group: bool) {
-    let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()).and_then(Pid::from_raw) else { return };
-    // Only the process (group) we spawned and have not reaped: its id cannot have been reused.
-    let _ = if group {
-        rustix::process::kill_process_group(pid, sig)
-    } else {
-        rustix::process::kill_process(pid, sig)
+impl Forwarder for Signals {
+    fn next(&mut self) -> impl std::future::Future<Output = Signal> {
+        self.recv()
+    }
+
+    fn send(&mut self, pid: Pid, sig: Signal, group: bool) {
+        let _ = if group {
+            rustix::process::kill_process_group(pid, sig)
+        } else {
+            rustix::process::kill_process(pid, sig)
+        };
+    }
+}
+
+/// Forwards `sig` to the command, unless it has been reaped: then its ID may already name
+/// another process (or group), and nothing is sent. `Child::id` is `None` from the moment
+/// `wait` has reaped it, so the ID is read here, never kept from the spawn. After the reap,
+/// what is left in the command's group during the output drain is not signalled either: its
+/// group ID can no longer be told apart from a reused one.
+fn forward(signals: &mut impl Forwarder, child: &tokio::process::Child, sig: Signal, group: bool) {
+    let Some(pid) = child.id().and_then(|p| i32::try_from(p).ok()).and_then(Pid::from_raw) else {
+        return;
     };
+    signals.send(pid, sig, group);
 }
 
 /// Restores the terminal's mode when dropped.
@@ -212,11 +240,11 @@ pub(crate) async fn run(
     tail_bytes: usize,
     mode: Mode,
     output: &mut dyn Output,
+    signals: &mut impl Forwarder,
 ) -> Result<ProcessExitedData, SourceError> {
     let Some(program) = command.first() else {
         return Err(SourceError::Config("no command given".into()));
     };
-    let mut signals = Signals::install().map_err(|e| spawn_error(command, e))?;
     let mut tail = Tail { buf: VecDeque::new(), cap: tail_bytes, truncated: false };
     let started = Instant::now();
     let status = match mode {
@@ -231,7 +259,6 @@ pub(crate) async fn run(
                 cmd.process_group(0);
             }
             let mut child = cmd.spawn().map_err(|e| spawn_error(command, e))?;
-            let pid = child.id();
             let (mut out, mut err) = (child.stdout.take(), child.stderr.take());
             let (mut ob, mut eb) = (vec![0u8; 16 * 1024], vec![0u8; 16 * 1024]);
             let mut status: Option<ExitStatus> = None;
@@ -249,10 +276,10 @@ pub(crate) async fn run(
                         Some(n) => { output.stderr(&eb[..n]); tail.push(&eb[..n]); }
                         None => err = None,
                     },
-                    sig = signals.recv() => {
+                    sig = signals.next() => {
                         let from_terminal = !own_group && (sig == Signal::INT || sig == Signal::QUIT);
                         if !from_terminal {
-                            forward(pid, sig, own_group);
+                            forward(signals, &child, sig, own_group);
                         }
                     }
                     s = child.wait(), if status.is_none() => {
@@ -272,7 +299,6 @@ pub(crate) async fn run(
                 cmd = cmd.stdin(Stdio::inherit());
             }
             let mut child = cmd.spawn(pts).map_err(|e| spawn_error(command, e))?;
-            let pid = child.id();
             let (mut reader, mut writer) = pty.into_split();
             let _raw = if raw_stdin { RawMode::enter() } else { None };
             let mut keys = raw_stdin.then(stdin_reader);
@@ -300,7 +326,7 @@ pub(crate) async fn run(
                             let _ = writer.resize(pty_process::Size::new(ws.ws_row, ws.ws_col));
                         }
                     }
-                    sig = signals.recv() => forward(pid, sig, true),
+                    sig = signals.next() => forward(signals, &child, sig, true),
                     s = child.wait(), if status.is_none() => {
                         status = Some(s.map_err(|e| spawn_error(command, e))?);
                         drain_until = Some(tokio::time::Instant::now() + DRAIN);
@@ -469,8 +495,56 @@ mod tests {
     async fn go(script: &str, tail: usize, mode: Mode) -> (ProcessExitedData, Captured) {
         let mut cap = Captured::default();
         let dir = std::env::temp_dir();
-        let data = run(&sh(script), &dir, tail, mode, &mut cap).await.unwrap();
+        let mut signals = Signals::install().unwrap();
+        let data = run(&sh(script), &dir, tail, mode, &mut cap, &mut signals).await.unwrap();
         (data, cap)
+    }
+
+    /// A signal for the command on every poll. Each send first checks that the target is still
+    /// our unreaped child; once the command says it is `started`, the first such target gets
+    /// SIGTERM (that process only, never its group). A stale target is recorded and never
+    /// signalled.
+    #[derive(Default)]
+    struct Storm {
+        started: std::rc::Rc<std::cell::Cell<bool>>,
+        killed: bool,
+        stale: Vec<Pid>,
+    }
+
+    /// Tells the storm when the command is ready.
+    struct Started(std::rc::Rc<std::cell::Cell<bool>>);
+
+    impl Output for Started {
+        fn stdout(&mut self, bytes: &[u8]) {
+            if bytes.windows(7).any(|w| w == b"started") {
+                self.0.set(true);
+            }
+        }
+        fn stderr(&mut self, _: &[u8]) {}
+    }
+
+    impl Forwarder for Storm {
+        async fn next(&mut self) -> Signal {
+            // Yield first, so the other branches (output, exit) make progress.
+            tokio::task::yield_now().await;
+            Signal::TERM
+        }
+
+        fn send(&mut self, pid: Pid, _: Signal, _: bool) {
+            use rustix::process::{WaitId, WaitIdOptions, waitid};
+            let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG;
+            // ECHILD: not (or no longer) an unreaped child of ours; the ID may be anyone's.
+            match waitid(WaitId::Pid(pid), options) {
+                Ok(_) => {
+                    // Unreaped (perhaps a zombie): the ID is still ours, only we reap it.
+                    if self.started.get() && !self.killed {
+                        rustix::process::kill_process(pid, Signal::TERM).unwrap();
+                        self.killed = true;
+                    }
+                }
+                Err(_) => self.stale.push(pid),
+            }
+        }
     }
 
     const PIPES: Mode = Mode::Pipes { own_group: true };
@@ -533,27 +607,61 @@ mod tests {
     async fn signals_are_forwarded_to_the_commands_group() {
         let mut child =
             tokio::process::Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
-        forward(child.id(), Signal::TERM, true);
+        forward(&mut Signals::install().unwrap(), &child, Signal::TERM, true);
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(child.wait().await.unwrap().signal(), Some(15));
     }
 
+    /// The command has exited and been reaped, but a background process still holds its output,
+    /// so the wrapper drains for a while; signals arriving then must not go to the old PID,
+    /// which may already name another process.
+    #[tokio::test]
+    async fn signals_are_never_sent_to_a_reaped_command() {
+        let dir = std::env::temp_dir();
+        for mode in [PIPES, Mode::Pipes { own_group: false }, Mode::Pty { raw_stdin: false }] {
+            let mut storm = Storm::default();
+            let mut out = Started(storm.started.clone());
+            // The background sleep ignores the hangup a pty sends when its leader exits, and
+            // holds the output after the command is gone.
+            let script = sh("trap '' HUP; sleep 2 & echo started; exec sleep 30");
+            let data = run(&script, &dir, 4096, mode, &mut out, &mut storm).await.unwrap();
+            let stale = storm.stale.len();
+            assert_eq!(stale, 0, "{mode:?}: {stale} signals for the command after its reap");
+            assert_eq!(data.signal, Some(15), "{mode:?}: the running command got the signal");
+        }
+    }
+
     #[tokio::test]
     async fn a_background_process_holding_the_output_does_not_hang_the_wrapper() {
-        let (d, _) = go("sleep 3 & echo started", 4096, PIPES).await;
+        // The background process holds the output until the test opens the FIFO for writing,
+        // which it only does once the wrapper has returned: returning at all is the proof.
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("release");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            0,
+        )
+        .unwrap();
+        let script = format!("read x < '{}' & echo started", fifo.display());
+        let (d, cap) = go(&script, 4096, PIPES).await;
         assert_eq!(d.exit_code, Some(0));
-        assert!(d.duration_ms < 10_000);
+        assert_eq!(cap.out, b"started\n");
+        // Let the background process end: it is waiting to open the FIFO for reading.
+        drop(std::fs::OpenOptions::new().write(true).open(&fifo).unwrap());
     }
 
     #[tokio::test]
     async fn a_missing_program_is_an_error() {
         let mut cap = Captured::default();
+        let mut signals = Signals::install().unwrap();
+        let program = ["definitely-not-a-program-xyz".into()];
         let err =
-            run(&["definitely-not-a-program-xyz".into()], Path::new("/"), 10, PIPES, &mut cap)
-                .await
-                .unwrap_err();
+            run(&program, Path::new("/"), 10, PIPES, &mut cap, &mut signals).await.unwrap_err();
         assert!(err.to_string().contains("definitely-not-a-program-xyz"), "{err}");
-        assert!(run(&[], Path::new("/"), 10, PIPES, &mut cap).await.is_err());
+        assert!(run(&[], Path::new("/"), 10, PIPES, &mut cap, &mut signals).await.is_err());
     }
 
     #[test]

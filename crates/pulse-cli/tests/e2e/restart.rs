@@ -90,7 +90,8 @@ async fn created(watch: &mut Watch, name: &str) -> Event {
         .await
 }
 
-/// A crash with one run running and one queued, an acknowledged ingest, and limits in force.
+/// A crash of the daemon process (SIGKILL, not of the OS: see 0004 on power loss) with one run
+/// running and one queued, an acknowledged ingest, and limits in force.
 /// After the restart: the running run is `interrupted`, the queued one runs, nothing that was
 /// acknowledged is lost or fires twice, a dedupe key still dedupes, cooldown and rate limit
 /// still hold, and the orphaned agent's late write is still recognised as its own.

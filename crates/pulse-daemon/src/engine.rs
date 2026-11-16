@@ -194,6 +194,15 @@ impl Engine {
         Ok(())
     }
 
+    /// A new table, refilled from the log (with the current limits).
+    async fn reset_dedupe(&mut self) {
+        let limits = &self.snapshot.config.limits;
+        self.dedupe = Dedupe::new(limits.dedupe_ttl, limits.dedupe_capacity as usize);
+        if let Err(e) = self.restore_dedupe().await {
+            tracing::error!("could not rebuild the dedupe table: {e}");
+        }
+    }
+
     /// Runs that ended within the grace period still attribute events, by inference only (their
     /// output is no longer read, so their writes are opaque). A run that was running
     /// when the daemon died may still be running (its agent is in its own process group and
@@ -317,12 +326,12 @@ impl Engine {
             Control::Config(snapshot) => {
                 self.state.retain_configured(&snapshot.routing);
                 let limits = &snapshot.config.limits;
-                if limits.dedupe_ttl != self.snapshot.config.limits.dedupe_ttl
-                    || limits.dedupe_capacity != self.snapshot.config.limits.dedupe_capacity
-                {
-                    self.dedupe = Dedupe::new(limits.dedupe_ttl, limits.dedupe_capacity as usize);
-                }
+                let resized = limits.dedupe_ttl != self.snapshot.config.limits.dedupe_ttl
+                    || limits.dedupe_capacity != self.snapshot.config.limits.dedupe_capacity;
                 self.snapshot = snapshot;
+                if resized {
+                    self.reset_dedupe().await;
+                }
                 if let Err(e) = self.refresh_backlog().await {
                     tracing::warn!("could not recount agent backlogs: {e}");
                 }
@@ -412,6 +421,7 @@ impl Engine {
     async fn process(&mut self, batch: Vec<Input>) {
         let now = self.shared.clock.now();
         self.forget_ended_runs(now);
+        let before = self.state.clone();
         let mut p = Pending { commit: Commit { now, ..Commit::default() }, ..Pending::default() };
         for input in batch {
             match input {
@@ -439,7 +449,7 @@ impl Engine {
                 }
             }
         }
-        self.commit(p).await;
+        self.commit(p, before).await;
     }
 
     /// Dedupe, attribution, id, routing. `None` if the event was a duplicate.
@@ -531,6 +541,9 @@ impl Engine {
     async fn debounces_due(&mut self) {
         let now = self.shared.clock.now();
         let due = self.state.take_due(now);
+        // Taken: if the commit fails, these debounces are lost rather than retried at once
+        // against a store that is failing.
+        let before = self.state.clone();
         let mut p = Pending { commit: Commit { now, ..Commit::default() }, ..Pending::default() };
         for d in due {
             let id = d.event;
@@ -550,10 +563,11 @@ impl Engine {
             self.route(&event, RouteMode::DebounceElapsed(&d.rule), cause, now, &mut p);
             p.earlier.push(event);
         }
-        self.commit(p).await;
+        self.commit(p, before).await;
     }
 
-    async fn commit(&mut self, mut p: Pending) {
+    /// `before` is the routing state as it was before this batch was routed.
+    async fn commit(&mut self, mut p: Pending, before: RouterState) {
         if p.commit.events.is_empty() && p.commit.deliveries.is_empty() {
             answer(p.replies);
             return;
@@ -587,13 +601,12 @@ impl Engine {
                         Reply::Replay(tx, _, _) => drop(tx.send(Err(msg))),
                     }
                 }
-                // Routing already counted fires that were not stored; start over from the log.
-                let limits = self.snapshot.config.limits.clone();
-                self.state = RouterState::new(&limits);
-                if let Err(e) = self.restore_rules().await {
-                    tracing::error!("could not rebuild routing state: {e}");
-                }
-                let _ = self.refresh_backlog().await;
+                // Routing counted fires, armed debounces, tripped breakers and raised backlogs
+                // that were not stored: go back to the state that matches the log. (Rebuilding
+                // it from the log would also drop debounces pending from earlier batches.)
+                self.state = before;
+                // `accept` marked the batch's keys as seen; the sender's retry is not a duplicate.
+                self.reset_dedupe().await;
             }
         }
     }

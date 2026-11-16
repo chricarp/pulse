@@ -632,3 +632,29 @@ async fn handle_serializes_writes_and_reads_see_them() {
     mem.write(|s| s.append_events(&[fs(1, "/m")])).await.unwrap();
     assert!(mem.read(|q| q.query().event(eid(1))).await.unwrap().is_some());
 }
+
+/// The log holds paths, commit messages, prompts and output: other users must not read it,
+/// whatever the umask, and however loose the files were left by an older Pulse.
+#[test]
+fn the_database_and_its_wal_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pulse.db");
+    let files = ["pulse.db", "pulse.db-wal", "pulse.db-shm"].map(|n| dir.path().join(n));
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let mut store = Store::open(&path).unwrap();
+    store.append_events(&[event(1, "fs.file.created", "pulse://fs/u", None, json!({}))]).unwrap();
+    for f in &files {
+        assert_eq!(mode(f), 0o600, "{} when created", f.display());
+    }
+    // Loosened while a daemon is running (the WAL and its index outlive no connection):
+    // opening again tightens all three.
+    for f in &files {
+        std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let _again = Store::open(&path).unwrap();
+    for f in &files {
+        assert_eq!(mode(f), 0o600, "{} when reopened", f.display());
+    }
+    drop(store);
+}

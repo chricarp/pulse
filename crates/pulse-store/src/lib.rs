@@ -16,6 +16,10 @@
 //!
 //! - [`Store::commit`] writes events, deliveries, runs, outbox rows and rule state in **one
 //!   transaction**: a routing result is all there or not at all.
+//! - **Durability** (`synchronous=NORMAL` in WAL mode): a commit that returned survives a crash
+//!   of the process. On an OS crash or power loss the last commits before it can be rolled back
+//!   (the WAL is synced at checkpoints, not per commit); the database is never corrupted, and
+//!   a commit is still lost whole or kept whole. Callers must not promise more.
 //! - Events become visible in id order: a commit whose events are not in increasing id order,
 //!   or not all after the newest event already stored, is refused (`OutOfOrder`). Readers that
 //!   follow the log by cursor (MCP subscriptions) never look below a cursor again, so an event
@@ -70,6 +74,8 @@ pub enum StoreError {
     Corrupt(String),
     #[error("the store has shut down")]
     Closed,
+    #[error("cannot make {path} private: {source}")]
+    Private { path: String, source: std::io::Error },
 }
 
 impl From<serde_json::Error> for StoreError {
@@ -86,6 +92,30 @@ fn configure(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn make_private(path: &Path) -> std::io::Result<()> {
+    use std::fs::{OpenOptions, Permissions};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    match OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    for suffix in ["", "-wal", "-shm"] {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        // Not followed: a link here is not a file this store made.
+        match std::fs::symlink_metadata(&file) {
+            Ok(m) if m.is_file() && m.permissions().mode() & 0o077 != 0 => {
+                std::fs::set_permissions(&file, Permissions::from_mode(0o600))?;
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// The writer.
 #[derive(Debug)]
 pub struct Store {
@@ -94,9 +124,16 @@ pub struct Store {
 
 impl Store {
     /// Opens (creating if needed) the database at `path`, switches it to WAL and migrates it.
+    /// The database file is created mode 0600 before SQLite opens it, so the `-wal` and `-shm`
+    /// files SQLite creates next to it get the same mode; all three are tightened to 0600 if
+    /// they exist with a looser one (left by an older Pulse, or created under a loose umask).
     pub fn open(path: &Path) -> Result<Store> {
+        make_private(path)
+            .map_err(|source| StoreError::Private { path: path.display().to_string(), source })?;
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Survives a process crash, may lose the newest commits on power loss, never corrupts.
+        // FULL would cost an fsync per commit; see the module docs.
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         Store::init(conn)
     }
