@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stands in for `claude`: ignores its arguments (printed to stderr), consumes the prompt and
+# replays a recorded stream-json run. See README.md.
+dir=$(dirname "$0")
+printf 'argv: %s\n' "$*" >&2
+exec "$dir/fake-agent" replay "${FAKE_AGENT_STREAM:-$dir/claude-code/answer.jsonl}" ${FAKE_AGENT_DELAY:+"$FAKE_AGENT_DELAY"}

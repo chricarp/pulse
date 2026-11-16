@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000001"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll read `note.txt`, extract its first word, and write that word to `out.txt`."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"I couldn’t access `note.txt` or create `out.txt` because the workspace sandbox failed to start."}}
+{"type":"turn.completed","usage":{"input_tokens":47259,"cached_input_tokens":44160,"cache_write_input_tokens":0,"output_tokens":681,"reasoning_output_tokens":237}}

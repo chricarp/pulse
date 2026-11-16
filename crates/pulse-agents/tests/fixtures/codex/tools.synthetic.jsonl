@@ -1,0 +1,14 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000001"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"**Reading the note**"}}
+{"type":"item.started","item":{"id":"item_1","type":"todo_list","items":[{"text":"Read note.txt","completed":false},{"text":"Write out.txt","completed":false}]}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"bash -lc 'cat note.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"bash -lc 'cat note.txt'","aggregated_output":"Pineapple tastes sweet.\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"bash -lc 'printf Pineapple > out.txt'","aggregated_output":"bash: out.txt: Read-only file system\n","exit_code":1,"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"file_change","changes":[{"path":"/tmp/pulse-run/out.txt","kind":"add"}],"status":"failed"}}
+{"type":"item.started","item":{"id":"item_5","type":"mcp_tool_call","server":"pulse","tool":"query_events","arguments":{"limit":1},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_5","type":"mcp_tool_call","server":"pulse","tool":"query_events","arguments":{"limit":1},"result":{"content":[{"type":"text","text":"[]"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_6","type":"web_search","query":"pineapple sweetness"}}
+{"type":"item.updated","item":{"id":"item_1","type":"todo_list","items":[{"text":"Read note.txt","completed":true},{"text":"Write out.txt","completed":false}]}}
+{"type":"item.completed","item":{"id":"item_7","type":"agent_message","text":"I read note.txt, but the read-only sandbox stopped me from writing out.txt."}}
+{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":40,"reasoning_output_tokens":8}}
