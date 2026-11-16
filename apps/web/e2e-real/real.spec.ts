@@ -210,3 +210,16 @@ test("a program that takes the port gets no credential, on reconnect or on reloa
   });
   expect(res.status).toBe(401);
 });
+
+test("the UI is served with a strict Content-Security-Policy", async ({ page, daemon }) => {
+  const res = await fetch(`http://127.0.0.1:${daemon.port}/runs`);
+  const csp = res.headers.get("content-security-policy") ?? "";
+  for (const d of ["default-src 'none'", "script-src 'self'", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'"]) expect(csp).toContain(d);
+  expect(csp).not.toContain("unsafe");
+  expect(res.headers.get("cache-control")).toBe("no-store");
+  expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+  // And the app works under it (the page fixture fails the test on any violation).
+  await login(page, daemon);
+  writeFileSync(join(daemon.home, "Inbox", "csp.txt"), "x");
+  await expect(page.locator(".event-row", { hasText: "csp.txt" })).toBeVisible();
+});

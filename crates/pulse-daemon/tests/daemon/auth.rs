@@ -304,3 +304,49 @@ async fn clients_never_send_the_token_to_a_program_that_cannot_prove_itself() {
     Client::connect_to(t.port(), &token).await.unwrap();
     t.stop().await;
 }
+
+/// The UI page, its fallback routes and its assets carry a strict policy: scripts, styles and
+/// connections only from this daemon, no framing, no plugins, no base or form targets, and the
+/// page that handles a login code is never stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_ui_is_served_with_a_content_security_policy() {
+    let mut t = TestDaemon::start(COMMAND_AGENT).await;
+    let port = t.port();
+    for path in ["/", "/runs/x", "/index.html"] {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let req =
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        within("the page", s.read_to_string(&mut out)).await.unwrap();
+        let head = out.split("\r\n\r\n").next().unwrap().to_ascii_lowercase();
+        let header = |name: &str| {
+            head.lines()
+                .find_map(|l| l.strip_prefix(&format!("{name}: ")))
+                .unwrap_or_else(|| panic!("{path}: no {name} in\n{head}"))
+                .to_owned()
+        };
+        let csp = header("content-security-policy");
+        for directive in [
+            "default-src 'none'".to_owned(),
+            "script-src 'self'".to_owned(),
+            format!("connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port}"),
+            "object-src 'none'".to_owned(),
+            "base-uri 'none'".to_owned(),
+            "form-action 'none'".to_owned(),
+            "frame-ancestors 'none'".to_owned(),
+        ] {
+            assert!(csp.contains(&directive), "{path}: {directive} missing from {csp}");
+        }
+        // The placeholder page (no UI built into this binary) may style inline; the UI may not.
+        if !out.contains("The web UI was not built into this binary") {
+            assert!(!csp.contains("unsafe"), "{path}: {csp}");
+        }
+        assert_eq!(header("cache-control"), "no-store", "{path}");
+        assert_eq!(header("x-content-type-options"), "nosniff");
+        assert_eq!(header("referrer-policy"), "no-referrer");
+        assert_eq!(header("x-frame-options"), "deny");
+        assert_eq!(header("cross-origin-opener-policy"), "same-origin");
+    }
+    t.stop().await;
+}
