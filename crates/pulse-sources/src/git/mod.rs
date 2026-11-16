@@ -332,7 +332,7 @@ fn read_range(path: &Path, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
 }
 
 enum State {
-    Tracking { tracker: Tracker, watched: Vec<PathBuf> },
+    Tracking { tracker: Box<Tracker>, watched: Vec<PathBuf> },
     Waiting { watched: Option<PathBuf> },
 }
 
@@ -421,7 +421,7 @@ fn refresh<W: Watcher>(
                     }
                 }
             }
-            *state = State::Tracking { tracker, watched };
+            *state = State::Tracking { tracker: Box::new(tracker), watched };
             cx.health.healthy();
         }
         // Still waiting, and already watching the right directory: the working tree, or an

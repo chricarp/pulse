@@ -25,6 +25,9 @@ use super::ics::{Calendar, Prop, VEvent};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Zone {
     System,
+    /// A fixed zone. Only tests construct it (to not depend on the machine's zone); the source
+    /// always uses the system zone.
+    #[cfg_attr(not(test), allow(dead_code))]
     Named(chrono_tz::Tz),
 }
 
@@ -319,10 +322,7 @@ pub(crate) fn occurrences(
         let mut set = RRuleSet::new(start);
         for rule in &ev.rrules {
             let rule = normalize_until(rule, &mut ctx, tz);
-            match rule
-                .parse::<RRule<Unvalidated>>()
-                .and_then(|r| r.validate(start).map_err(Into::into))
-            {
+            match rule.parse::<RRule<Unvalidated>>().and_then(|r| r.validate(start)) {
                 Ok(r) => set = set.rrule(r),
                 Err(e) => {
                     ctx.warnings.insert(format!(
