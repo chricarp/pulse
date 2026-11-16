@@ -79,9 +79,13 @@ async fn created(watch: &mut Watch, name: &str) -> Event {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_writing_into_its_own_watched_folder_is_blocked_as_a_self_trigger() {
     let at_once = "echo again > \"$LOOP_DIR/out-$PULSE_RUN_ID.txt\"";
-    // The writer waits for the test, so it provably writes after the run has ended.
-    let escaped = "setsid sh -c 'read go < \"$FIFO\"; echo late > \"$LOOP_DIR/out-$PULSE_RUN_ID.txt\"' \
-                   </dev/null >/dev/null 2>&1 &";
+    // The writer leaves the run's process group, then waits for the test, so it provably
+    // writes after the run ended. The run waits until it has left (a fifo handshake): otherwise
+    // the group's SIGTERM at the run's end could reach it before `setsid` does.
+    let escaped = "r=\"$FIFO.left\"; mkfifo \"$r\"; \
+                   setsid sh -c 'echo > \"$1\"; read go < \"$2\"; echo late > \"$3\"' sh \
+                   \"$r\" \"$FIFO\" \"$LOOP_DIR/out-$PULSE_RUN_ID.txt\" </dev/null >/dev/null 2>&1 & \
+                   read _ < \"$r\"; rm -f \"$r\"";
     let cases = [
         ("at once", at_once, ""),
         ("debounced", at_once, "debounce = \"300ms\""),
@@ -110,7 +114,15 @@ async fn a_run_writing_into_its_own_watched_folder_is_blocked_as_a_self_trigger(
         }
 
         let out = created(&mut watch, &format!("out-{}.txt", run.id)).await;
-        assert_eq!(out.causation_run, Some(run.id), "{case}: {out:#?}");
+        let full = watch.get_run(run.id).await;
+        assert_eq!(
+            out.causation_run,
+            Some(run.id),
+            "{case}: event time {} run started {:?} ended {:?}",
+            out.time,
+            full.started_at,
+            full.ended_at
+        );
         assert_eq!(out.causation, Some(Causation::Inferred), "{case}");
         assert_eq!(out.chain_depth, 1, "{case}");
         let detail = watch.detail(out.id).await;

@@ -426,9 +426,21 @@ impl Watch {
 
     /// Waits until every configured source reports `state`.
     pub async fn sources(&mut self, state: SourceState) {
+        self.source_state(None, state).await;
+    }
+
+    /// Waits until source `name` (every source, with `None`) reports `state`.
+    pub async fn source_state(&mut self, name: Option<&str>, state: SourceState) {
         loop {
             let list = self.client.call::<method::SourcesList>(Empty {}).await.unwrap();
-            if !list.sources.is_empty() && list.sources.iter().all(|s| s.health.state == state) {
+            let mut wanted =
+                list.sources.iter().filter(|s| name.is_none_or(|n| s.config.name == n));
+            let mut any = false;
+            if wanted.all(|s| {
+                any = true;
+                s.health.state == state
+            }) && any
+            {
                 return;
             }
             let seen = self.state_changes;
@@ -531,16 +543,17 @@ impl Fifo {
         Fifo { path, writer: None }
     }
 
-    /// Opens the write end (waits until the agent opens the read end).
+    /// Opens the write end (waits until the agent opens the read end). The blocking open runs
+    /// on its own thread, not tokio's blocking pool: if the agent never opens the fifo the test
+    /// fails at the ceiling, and a pool thread stuck in `open` would keep the runtime (and the
+    /// test binary) from ever shutting down.
     pub async fn open(&mut self) {
         let path = self.path.clone();
-        let f = within(
-            "the agent to open the fifo",
-            tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(path)),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(std::fs::OpenOptions::new().write(true).open(path));
+        });
+        let f = within("the agent to open the fifo", rx).await.unwrap().unwrap();
         self.writer = Some(f);
     }
 
