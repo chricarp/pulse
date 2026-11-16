@@ -18,6 +18,7 @@ const status = (over: Partial<SystemStatus> = {}): SystemStatus => ({
   rules: 2,
   agents: 1,
   config_errors: 0,
+  config_warnings: 0,
   ...over,
 });
 
