@@ -10,10 +10,12 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 - **One timer**, armed after every step for `RouterState::next_deadline()`.
 - **Dedupe keys are per source** (`<source uri>\0<key>`): two sources may use the same key for different things.
 - **Exact causation outlives the run.** `PULSE_RUN_ID` on a reported event is resolved from memory, else from the store, so `pulse run` inside a run that has just ended still attributes exactly. Inferred causation only uses runs that are active or within `causation_grace`.
+- **What survives a restart** (added with the end-to-end tests, 0009). The dedupe table is refilled from the log (keys accepted within `dedupe_ttl`), so an external source retrying after an outage does not fire twice. The runs inference needs are reloaded (ended within `causation_grace`); a run that was still `running` when the daemon died counts as active until its timeout would have ended it, because its agent is in its own process group, survived the crash, and nothing enforces the timeout any more. Without this, an orphaned agent's writes after a crash re-fired its own rule.
 - **Backlogs** (`queued + running` per agent) are recounted from the store whenever run states change outside routing (approve, cancel, end, rerun). Routing increments them itself for the fires it makes.
 
 ## Effect worker
 
+- **A run starts as of just before its spawn** (`started_at`). It was recorded after the supervisor's `Started`, and an agent that wrote a file at once could do it "before its run started", escaping inferred causation (seen under load, 8 ms).
 - Claimed `start_run` rows wait in a FIFO per agent and start while the agent is under `max_concurrent` (read from the current config, else the run's snapshot). A row stays `claimed` until its run starts, so a crash returns it to pending. The run is re-read before it starts; one cancelled while it waited is skipped.
 - **Global pause also holds queued runs.** 0002 says "nothing fires". A user who pauses because an agent misbehaves also expects runs already queued not to start; they start on resume. Running runs continue; cancel them explicitly.
 - **Default working directory is per run**: `$PULSE_HOME/runs/<run id>/`, which also holds `event.json` (`PULSE_EVENT_FILE`). 0002 said `runs/`; a shared directory would let one run's files be attributed to another and would mix their outputs. Retention removes the directories of pruned runs.
@@ -33,6 +35,7 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 
 ## Config
 
+- **Warnings** (added with 0009). Config that loads but cannot work: a rule whose `on` matches no type, whose `where` names a field no matching event has (or a relative glob on a path field, which never matches an absolute path), or whose agent's scopes cannot cover its events (every delivery would be `permission_denied`); an agent used by a rule whose program is not installed or whose `cwd` does not exist. The rule checks are `pulse_core::lint`; the filesystem checks are the daemon's and are re-done on every `system.status` / `system.config_errors`, so creating the directory clears the warning. Reported in `system.config_errors.warnings` and `SystemStatus.config_warnings`, logged when they change, and printed by `pulse start` and `pulse status`. Config errors are logged too: a headless daemon's log is where a broken file is noticed.
 - **Last good, per file.** If `pulse.toml` stops parsing, its last good version stays in effect and the errors (file, line, item, field) are in `system.config_errors` and `pulse status`. If the files parse but do not resolve together (a rule names a missing agent), the whole previous config stays. A project file has **no** last good: content that does not match its trusted hash is inert.
 - **Write-back** (`rules.upsert`, `set_enabled`, `archive`, `agents.upsert`, `sources.delete`, …) edits the owning file with `toml_edit`, checks the result exactly as a reload would (parse, resolve with the other files, compile routing), writes a temp file and renames it, then reloads. Invalid definitions are refused with the errors and the file is not touched.
   - Old and new are compared **by meaning**, through the typed definition: `on = "x"` and `on = ["x"]` are equal, so writing back an unchanged rule changes no byte. Only keys whose meaning changed are rewritten; a rewritten value keeps its key's comments and its trailing comment. A key changed back to its default is removed unless a comment is attached to it, so `disable` then `enable` restores the file byte for byte.
@@ -54,7 +57,7 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 ## Lifecycle
 
 - One daemon per Pulse home, by `flock` on `daemon.lock` (released by the OS however the process ends). `daemon.json` (`pulse_contracts::status::DaemonInfo`) is written after the listener is bound and removed on exit. `pulse stop` asks for shutdown, then waits on the lock, so it returns when the daemon has really exited (runs terminated, database checkpointed).
-- `pulse start --detach` re-executes itself in a new process group with `--ready-line` and returns once the child prints `ready <port>`; before that, the child's stderr is shown if it fails.
+- `pulse start --detach` re-executes itself in a new process group with `--ready-line` and returns once the child prints `ready <port>`; before that, the child's stderr is shown if it fails. Config errors and warnings come first as `note <text>` lines, which the parent prints, so a detached start still tells the user what is wrong.
 - Logs: `$PULSE_HOME/logs/pulse.log`, rotated at 10 MB, five old files kept. Retention runs at start and hourly, in batches of 500 with yields between.
 - **Time is injected** (`Clock::System`, or `Clock::Tokio` which follows tokio's clock), so tests under `tokio::time::pause()` see a 10-minute debounce pass instantly.
 
@@ -63,6 +66,8 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 - `pulse ingest` decodes each stdin line as an `IngestEvent` itself and sends batches as soon as stdin has nothing more ready, so `tail -f log | pulse ingest -s ci` streams. `POST /ingest` uses `pulse_sources::ingest::parse` (objects, arrays, JSON lines). Both fill `causation_run` from `PULSE_RUN_ID`.
 - `pulse run` reports through `events.report` with a 3 s bound and is silent when the daemon is unreachable; it exits with the command's code (128 + signal when killed, 127 when it cannot run the command).
 - Exit codes: 0, 1 error, 2 usage, 3 the daemon is not running.
+- **Definitions from the CLI** (0009): `pulse sources add <kind> <name> <path|url> [--cron|--every …]`, `pulse agents add --file`, `pulse rules add --file` (the bare table `rules show` prints and `test-rule --file` reads; `-` is stdin), and `… remove`. They call the same `*.upsert` / `*.delete` services as the UI, so write-back keeps comments, and they print the config warnings about what was added. Editing a definition in place stays the config file's or the UI's job.
+- **Text output escapes terminal control.** Event content (file names, commit messages, agent output) reaches the terminal through `pulse events`, `tail`, `runs logs`; escape sequences in it could recolour or retitle the terminal or write the clipboard (OSC 52), and bidi overrides misdisplay names. Control and invisible formatting characters are printed escaped (`\u{1b}`); `--json` is unchanged (JSON escapes control characters, and its readers are programs).
 
 ## Known limits
 
