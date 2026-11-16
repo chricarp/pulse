@@ -1,0 +1,30 @@
+{
+  "name": "@pulse/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pulse desktop shell: window, tray and notifications around the pulse daemon.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "icons": "node scripts/icons.mjs",
+    "start": "node scripts/build.mjs && electron .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "package": "node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "@types/node": "24.19.0",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.1",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@12.16.1"
+}
