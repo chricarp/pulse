@@ -19,7 +19,15 @@
 //! The source watches only the git directories (`.git`, or the `gitdir:` target and its common
 //! directory for linked worktrees and submodules). History present at startup is not replayed:
 //! reflogs are read from their end. A repository that appears while the source runs (`git
-//! init`, `git clone`) is read from the start, skipping lines older than its appearance.
+//! init`, `git clone`) is read from the start, skipping lines older than its appearance; that
+//! first scan is the only place a reflog line's time is used, because the time is the
+//! committer's clock (`GIT_COMMITTER_DATE`, a clock set back), not ours.
+//!
+//! After that, what is history is decided by position: each reflog's [`Cursor`] remembers how
+//! far it was read and the last line read. A reflog that git rewrote (`reflog expire`, `gc`,
+//! which keep lines and swap in a new file) is recognised by finding that line again, and read
+//! on from there; one that no longer has it (expired to nothing, or a different repository
+//! copied or cloned in at the same path) is read from its end.
 
 mod reflog;
 mod repo;
@@ -51,6 +59,9 @@ const MAX_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 const MAX_READ: u64 = 1 << 20;
 const MAX_REMOTE_LOGS: usize = 10_000;
 const MAX_CONFLICT_FILES: usize = 200;
+/// How much of the last line read is kept to recognise a reflog by. Lines start with two object
+/// ids and end with a time and message, so this is unique in practice.
+const MARK: usize = 1024;
 const OUTBOX: usize = 64;
 
 #[derive(Debug)]
@@ -100,10 +111,11 @@ pub(crate) struct Tracker {
     work: String,
     layout: Layout,
     hash_bytes: usize,
-    /// Bytes of each reflog already consumed.
-    offsets: BTreeMap<PathBuf, u64>,
-    /// Reflog lines older than this (unix seconds) are history, not news.
-    baseline: i64,
+    /// How far each reflog has been read.
+    cursors: BTreeMap<PathBuf, Cursor>,
+    /// For the first scan of a repository that appeared while we ran: reflog lines older than
+    /// this (unix seconds) are history. Cleared after that scan.
+    baseline: Option<i64>,
     branch: Option<String>,
     /// The conflicted files of the current conflict episode, if one is in progress.
     conflict: Option<Vec<String>>,
@@ -113,7 +125,8 @@ pub(crate) struct Tracker {
 
 impl Tracker {
     /// `appeared`: the repository showed up while we were running, so its reflogs are read from
-    /// the start (lines older than `now - 5s` are skipped); otherwise from their current end.
+    /// the start (in that first scan, lines older than `now - 5s` are skipped); otherwise from
+    /// their current end.
     pub(crate) fn new(work: &str, layout: Layout, appeared: bool, now_secs: i64) -> Self {
         let hash_bytes = layout.hash_bytes();
         let mut t = Tracker {
@@ -121,16 +134,16 @@ impl Tracker {
             branch: layout.head_branch(),
             layout,
             hash_bytes,
-            offsets: BTreeMap::new(),
-            baseline: now_secs - 5,
+            cursors: BTreeMap::new(),
+            baseline: appeared.then(|| now_secs.saturating_sub(5)),
             conflict: None,
             index_stamp: None,
             warnings: Vec::new(),
         };
         if !appeared {
             for f in t.reflog_files() {
-                let len = std::fs::metadata(&f).map_or(0, |m| m.len());
-                t.offsets.insert(f, len);
+                let c = Cursor::at_end(&f);
+                t.cursors.insert(f, c);
             }
             // A conflict in progress at startup is not news.
             t.conflict = t.read_conflicts().filter(|c| !c.is_empty());
@@ -169,32 +182,53 @@ impl Tracker {
         out
     }
 
-    /// New complete lines of a reflog since the last read.
+    /// New complete lines of a reflog since the last read. A reflog seen for the first time
+    /// (a new remote-tracking branch, the first commit) is read from its start.
     fn new_lines(&mut self, path: &Path) -> Vec<String> {
         let Ok(meta) = std::fs::metadata(path) else {
-            self.offsets.remove(path);
+            self.cursors.remove(path);
             return Vec::new();
         };
         let len = meta.len();
-        let offset = self.offsets.get(path).copied().unwrap_or(0);
-        if len < offset {
-            // Rewritten (`git reflog expire`, `gc`): what is there now is history.
-            self.offsets.insert(path.to_owned(), len);
+        let mut cursor = self.cursors.remove(path).unwrap_or_default();
+        // Unchanged in length: nothing to read (and nothing read to find that out). A rewrite to
+        // the same length is noticed with the next line appended.
+        if len == cursor.offset {
+            self.cursors.insert(path.to_owned(), cursor);
             return Vec::new();
         }
-        let mut start = offset;
-        if len - offset > MAX_READ {
+        if !cursor.still_matches(path, len) {
+            // Rewritten or replaced: on from the last line we read, if it is still there.
+            match cursor.find_mark(path, len) {
+                Some(c) => cursor = c,
+                None => {
+                    self.cursors.insert(path.to_owned(), Cursor::at_end(path));
+                    return Vec::new();
+                }
+            }
+        }
+        let mut start = cursor.offset;
+        if len - start > MAX_READ {
             self.warnings.push(format!(
                 "{} grew by {} bytes at once; skipped to its end",
                 path.display(),
-                len - offset
+                len - start
             ));
-            start = len;
+            self.cursors.insert(path.to_owned(), Cursor::at_end(path));
+            return Vec::new();
         }
-        let Ok(bytes) = read_range(path, start, len) else { return Vec::new() };
+        let Ok(bytes) = read_range(path, start, len) else {
+            self.cursors.insert(path.to_owned(), cursor);
+            return Vec::new();
+        };
         // Only complete lines; a line being appended is read next time.
         let complete = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-        self.offsets.insert(path.to_owned(), start + complete as u64);
+        if complete > 0 {
+            cursor.mark = Some(last_line_mark(&bytes[..complete]));
+        }
+        start += complete as u64;
+        cursor.offset = start;
+        self.cursors.insert(path.to_owned(), cursor);
         String::from_utf8_lossy(&bytes[..complete]).lines().map(str::to_owned).collect()
     }
 
@@ -214,7 +248,7 @@ impl Tracker {
             let (remote, branch) = (bounded(remote, MAX_NAME), bounded(branch, MAX_NAME));
             for line in self.new_lines(&file) {
                 let Some(l) = reflog::parse(&line) else { continue };
-                if l.time >= self.baseline
+                if self.news(l.time)
                     && reflog::is_push(l.message)
                     && !reflog::is_zero(l.new)
                     && branch != "HEAD"
@@ -243,12 +277,17 @@ impl Tracker {
         } else {
             self.conflict = None;
         }
+        self.baseline = None;
         out
+    }
+
+    fn news(&self, time: i64) -> bool {
+        self.baseline.is_none_or(|b| time >= b)
     }
 
     fn head_line(&mut self, line: &str, out: &mut Vec<BuiltinEvent>) {
         let Some(l) = reflog::parse(line) else { return };
-        let news = l.time >= self.baseline;
+        let news = self.news(l.time);
         match reflog::classify_head(l.message) {
             HeadMove::Commit { subject } if news => {
                 let (author, message) = self.layout.commit_info(l.new).unwrap_or_else(|| {
@@ -319,6 +358,57 @@ impl Tracker {
             dirs.push((self.layout.common_dir.join("logs"), RecursiveMode::Recursive));
         }
         dirs
+    }
+}
+
+/// Where reading a reflog goes on from.
+#[derive(Debug, Default)]
+struct Cursor {
+    /// Bytes consumed (always at a line boundary).
+    offset: u64,
+    /// The end of the last line consumed, newline included, at most [`MARK`] bytes; `None`
+    /// before any line was.
+    mark: Option<Vec<u8>>,
+}
+
+fn last_line_mark(complete: &[u8]) -> Vec<u8> {
+    let body = &complete[..complete.len() - 1];
+    let start = body.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let line = &complete[start..];
+    line[line.len().saturating_sub(MARK)..].to_vec()
+}
+
+impl Cursor {
+    /// After the last complete line the file has now.
+    fn at_end(path: &Path) -> Cursor {
+        let len = std::fs::metadata(path).map_or(0, |m| m.len());
+        let from = len.saturating_sub(MAX_READ);
+        let Ok(tail) = read_range(path, from, len) else { return Cursor::default() };
+        match tail.iter().rposition(|&b| b == b'\n') {
+            Some(i) => {
+                Cursor { offset: from + i as u64 + 1, mark: Some(last_line_mark(&tail[..=i])) }
+            }
+            None => Cursor { offset: len, mark: None },
+        }
+    }
+
+    /// Whether the file still ends its first `offset` bytes with the line we read last.
+    fn still_matches(&self, path: &Path, len: u64) -> bool {
+        if len < self.offset {
+            return false;
+        }
+        let Some(mark) = &self.mark else { return true };
+        let start = self.offset.saturating_sub(mark.len() as u64);
+        read_range(path, start, self.offset).is_ok_and(|b| b == *mark)
+    }
+
+    /// The position after the last occurrence of our last line in the file's tail.
+    fn find_mark(&self, path: &Path, len: u64) -> Option<Cursor> {
+        let mark = self.mark.as_ref()?;
+        let from = len.saturating_sub(MAX_READ);
+        let tail = read_range(path, from, len).ok()?;
+        let end = tail.windows(mark.len()).rposition(|w| w == mark.as_slice())? + mark.len();
+        Some(Cursor { offset: from + end as u64, mark: Some(mark.clone()) })
     }
 }
 

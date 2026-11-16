@@ -13,7 +13,7 @@ use pulse_contracts::config::{Config, SourceConfig, SourceSettings, Sourced};
 use pulse_contracts::pattern::expand_path;
 use pulse_contracts::rpc::StateTopic;
 use pulse_contracts::status::{SourceHealth, SourceState};
-use pulse_sources::{SourceEnv, context};
+use pulse_sources::{Source, SourceContext, SourceEnv, context};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -34,6 +34,13 @@ struct Running {
     health: Health,
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
+}
+
+impl Running {
+    /// The source's task has ended on its own (its runner is the first task).
+    fn ended(&self) -> bool {
+        !self.cancel.is_cancelled() && self.tasks.first().is_some_and(JoinHandle::is_finished)
+    }
 }
 
 #[derive(Default)]
@@ -81,9 +88,12 @@ impl SourceManager {
         let mut running = self.lock();
         let wanted: BTreeMap<&str, &Sourced<SourceConfig>> =
             config.sources.iter().map(|s| (s.config.name.as_str(), s)).collect();
+        // Changed or removed, or ended (failed, see `supervise`): a reload is the way back.
         let stale: Vec<String> = running
             .iter()
-            .filter(|(name, r)| wanted.get(name.as_str()).is_none_or(|w| **w != r.config))
+            .filter(|(name, r)| {
+                wanted.get(name.as_str()).is_none_or(|w| **w != r.config) || r.ended()
+            })
             .map(|(name, _)| name.clone())
             .collect();
         for name in stale {
@@ -153,6 +163,45 @@ fn fixed(
     }
 }
 
+/// Runs a source to its end and says how it ended. Anything but stopping when asked (a panic,
+/// an error, or returning on its own) leaves the source `failed` with the reason, so its last
+/// health does not stay on screen.
+///
+/// It is not restarted here. A source already retries what it knows to be transient (and says
+/// so as `degraded`); ending means a bug (a panic, which the same input would trigger again) or
+/// a condition the source judged permanent. It is started again the next time the
+/// configuration is loaded ([`SourceManager::reconcile`]): any edit, or a daemon restart.
+async fn supervise(source: Box<dyn Source>, cx: SourceContext, name: String) {
+    let reporter = cx.health.clone();
+    let stop = cx.shutdown.clone();
+    // Its own task, so a panic ends that task and arrives here as a `JoinError`.
+    let reason = match tokio::spawn(source.run(cx)).await {
+        _ if stop.is_cancelled() => None,
+        Ok(Ok(())) => Some("the source stopped by itself".to_owned()),
+        Ok(Err(e)) => Some(e.to_string()),
+        Err(e) if e.is_panic() => Some(format!("the source crashed: {}", panic_message(e))),
+        Err(e) => Some(format!("the source task ended: {e}")),
+    };
+    match reason {
+        None => reporter.stopped(),
+        Some(reason) => {
+            tracing::warn!("source {name:?} stopped: {reason}");
+            reporter.failed(reason);
+        }
+    }
+}
+
+fn panic_message(e: tokio::task::JoinError) -> String {
+    let payload = e.into_panic();
+    let text = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("(no message)");
+    // Bounded: a message may quote input.
+    text.chars().take(512).collect()
+}
+
 fn start(shared: &Arc<Shared>, s: &Sourced<SourceConfig>) -> Running {
     if !s.config.enabled {
         return fixed(s, SourceState::Disabled, None, shared);
@@ -170,17 +219,7 @@ fn start(shared: &Arc<Shared>, s: &Sourced<SourceConfig>) -> Running {
     let cancel = shared.shutdown.child_token();
     let (cx, mut events, health) =
         context(source.source_ref().clone(), SOURCE_CHANNEL, cancel.clone(), shared.clock.now());
-    let reporter = cx.health.clone();
-    let name = s.config.name.clone();
-    let runner = tokio::spawn(async move {
-        match source.run(cx).await {
-            Ok(()) => reporter.stopped(),
-            Err(e) => {
-                tracing::warn!("source {name:?} stopped: {e}");
-                reporter.failed(e.to_string());
-            }
-        }
-    });
+    let runner = tokio::spawn(supervise(source, cx, s.config.name.clone()));
     let engine = shared.engine.clone();
     let forwarder = tokio::spawn(async move {
         while let Some(event) = events.recv().await {
@@ -215,5 +254,57 @@ fn start(shared: &Arc<Shared>, s: &Sourced<SourceConfig>) -> Running {
         health: Health::Live(health),
         cancel,
         tasks: vec![runner, forwarder, watcher],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pulse_contracts::{SourceKind, SourceRef, Timestamp};
+    use pulse_sources::{BoxFuture, SourceError};
+
+    use super::*;
+
+    type End = fn() -> Result<(), SourceError>;
+
+    /// Ends however the test says, without being asked to stop.
+    struct Ends(End);
+
+    impl Source for Ends {
+        fn source_ref(&self) -> &SourceRef {
+            static R: std::sync::OnceLock<SourceRef> = std::sync::OnceLock::new();
+            R.get_or_init(|| SourceRef::new(SourceKind::Calendar, "c"))
+        }
+        fn run(self: Box<Self>, cx: SourceContext) -> BoxFuture<'static, Result<(), SourceError>> {
+            Box::pin(async move {
+                cx.health.healthy();
+                (self.0)()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_source_that_ends_abnormally_is_failed_with_the_reason() {
+        let cases: [(End, &str); 3] = [
+            (|| panic!("index out of bounds: the len is 3"), "crashed: index out of bounds"),
+            (|| Ok(()), "stopped by itself"),
+            (|| Err(SourceError::Platform("no watcher".into())), "no watcher"),
+        ];
+        for (end, want) in cases {
+            let stop = CancellationToken::new();
+            let source = Box::new(Ends(end));
+            let (cx, _rx, health) =
+                context(source.source_ref().clone(), 1, stop.clone(), Timestamp::EPOCH);
+            supervise(source, cx, "c".into()).await;
+            let h = health.borrow().clone();
+            assert_eq!(h.state, SourceState::Failed, "{want}");
+            assert!(h.message.as_deref().is_some_and(|m| m.contains(want)), "{want}: {h:?}");
+        }
+        // Asked to stop: stopped, not failed.
+        let stop = CancellationToken::new();
+        stop.cancel();
+        let source = Box::new(Ends(|| Ok(())));
+        let (cx, _rx, health) = context(source.source_ref().clone(), 1, stop, Timestamp::EPOCH);
+        supervise(source, cx, "c".into()).await;
+        assert_eq!(health.borrow().state, SourceState::Stopped);
     }
 }

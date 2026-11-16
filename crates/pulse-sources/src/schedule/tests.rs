@@ -137,6 +137,16 @@ fn latest_due_and_next_after() {
     assert_eq!(every.next_after(a, ts("2026-11-16T09:25:00Z")), Some(ts("2026-11-16T09:30:00Z")));
     assert_eq!(every.latest_due(a, ts("2026-11-16T09:09:59Z")), None);
     assert_eq!(every.latest_due(a, ts("2026-11-16T10:05:00Z")), Some(ts("2026-11-16T10:00:00Z")));
+    // Far from anything: no fire rather than an overflow.
+    let huge = Plan::Every(Duration::from_millis(i64::MAX as u64));
+    assert_eq!(huge.next_after(a, a), None);
+    assert_eq!(huge.latest_due(a, ts("2026-11-16T10:05:00Z")), None);
+    let tiny = Plan::Every(Duration::from_millis(1));
+    assert_eq!(tiny.next_after(Timestamp::from_millis(0), Timestamp::from_millis(i64::MAX)), None);
+    assert_eq!(
+        tiny.latest_due(Timestamp::from_millis(i64::MIN), Timestamp::from_millis(i64::MAX)),
+        None
+    );
     // A minutely cron missed for a year: bounded work, the right answer.
     let minutely =
         Plan::Cron { cron: Cron::parse("* * * * *").unwrap(), zone: Zone::Named(chrono_tz::UTC) };
@@ -159,6 +169,18 @@ fn config_errors() {
         },
         ScheduleSourceSettings { cron: Some("0 0 31 2 *".into()), every: None, timezone: None },
         ScheduleSourceSettings { cron: None, every: None, timezone: None },
+        // Typos that used to overflow (a panic in debug builds, a wrong schedule in release).
+        ScheduleSourceSettings {
+            cron: Some("5/4294967295 * * * *".into()),
+            every: None,
+            timezone: None,
+        },
+        ScheduleSourceSettings { cron: Some("*/90 * * * *".into()), every: None, timezone: None },
+        ScheduleSourceSettings {
+            cron: None,
+            every: Some(Duration::from_millis(u64::MAX / 2)),
+            timezone: None,
+        },
     ];
     for s in bad {
         assert!(matches!(ScheduleSource::new("x", &s, &env), Err(SourceError::Config(_))), "{s:?}");

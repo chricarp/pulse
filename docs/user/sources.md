@@ -31,6 +31,11 @@ it to appear"), a calendar URL that failed ("retrying in 2m"), the inotify watch
 queue overflow, file names that are not valid UTF-8 and were skipped. A missing folder or
 repository is not an error: the source waits for it.
 
+Failed means the source stopped: its settings are invalid, or it hit a problem it cannot work
+around (or a bug in Pulse), and the message says which. A failed source is not retried on its
+own; it starts again the next time the configuration changes (edit it, or re-add it) or the
+daemon restarts.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/sources-dark.png">
   <img alt="The Sources view: four healthy sources and two degraded ones, a folder that does not exist yet and a calendar file that does not exist" src="../images/sources-light.png">
@@ -102,12 +107,14 @@ the working tree, so a checkout that rewrites thousands of files is one `git.bra
 An amend is a new commit; a rebase reports no commits (and `git.merge.conflicted` if it stops on
 a conflict); a fast-forward merge or pull reports nothing. Detached HEAD: `to` is the commit id,
 and commits have `branch: null`. Worktrees and submodules are followed. History is not replayed
-at startup. A push to a URL with no remote-tracking branch leaves no trace and is not seen.
+at startup, and is not replayed when git rewrites a reflog (`gc`) or the repository is replaced;
+a new commit or push is reported whatever date it carries. A push to a URL with no remote-tracking branch leaves no trace and is not seen.
 
 ## `schedule`: a timer
 
 `schedule.fired` with `cron` or `every`, `scheduled_for`, and `late`. `cron` is five fields in
-your local zone or `timezone`. On a daylight-saving change, a skipped time fires right after the
+your local zone or `timezone`. A step must fit its field (`*/90` in the minute field is an error;
+for every 90 minutes use `every = "90m"`), and `every` is at most `3650d`. On a daylight-saving change, a skipped time fires right after the
 gap and a repeated time fires once. If the daemon was down (or the machine asleep) at a
 scheduled time, it fires **once** for the latest missed time, with `late: true`; never a backlog.
 
@@ -119,7 +126,19 @@ exceptions, cancellations and time zones (IANA, Outlook's Windows names) are han
 occurrence fires at most once per kind, even if it is moved; a fire up to 15 minutes late (after
 a suspend or restart) still happens and `minutes_until` shows how late. A URL is re-fetched every
 `refresh` (default 15 minutes) with caching headers; failures retry with backoff and show in the
-source's health.
+source's health. A feed may redirect (up to 5 times), but not from https to http, and not to an
+address on your machine or your local network unless the URL you configured is itself one (a
+calendar on your NAS); the source's health then says which address was refused. Calendar URLs
+are fetched directly: proxy settings from the environment (`HTTPS_PROXY`) are not used.
+
+A calendar can come from someone else (a subscribed feed, an invitation), so the work Pulse does
+for it is limited whatever it contains: at most 2,000 occurrences of one recurring event and
+20,000 of the whole calendar in the window it looks at (about a day back to a day ahead), and a
+fixed amount of computation per event and per calendar. A real calendar stays far below these:
+an event that repeats daily since 2010 costs a few steps. If a calendar reaches a limit, the
+source shows as degraded and says which event and which limit (`some occurrences are not read:
+event "Standup" has more than 2000 occurrences …`); everything within the limits still fires. An
+event longer than 366 days is read as 366 days long, and the source's last error says so.
 
 ## `process.exited`: wrap a command with `pulse run`
 

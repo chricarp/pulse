@@ -38,6 +38,25 @@ impl Git {
             .unwrap()
     }
 
+    /// Runs git with extra environment (a committer date), which must succeed.
+    fn ok_env(&self, dir: &str, env: &[(&str, &str)], args: &[&str]) {
+        let out = Command::new("git")
+            .args(["-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(self.root.join(dir))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("HOME", &self.root)
+            .env("GIT_AUTHOR_NAME", "Ada Lovelace")
+            .env("GIT_AUTHOR_EMAIL", "ada@example.com")
+            .env("GIT_COMMITTER_NAME", "Charles Babbage")
+            .env("GIT_COMMITTER_EMAIL", "charles@example.com")
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
     /// Runs git, which may fail (a conflicting merge); returns stdout.
     fn run(&self, dir: &str, args: &[&str]) -> String {
         String::from_utf8_lossy(&self.command(dir, args).stdout).trim().to_owned()
@@ -337,6 +356,91 @@ fn a_checkout_of_thousands_of_files_is_one_switch() {
     let mut t = g.tracker("r");
     g.ok("r", &["checkout", "-q", "main"]);
     assert_eq!(show(&t.scan()), vec!["switch big -> main"]);
+}
+
+#[test]
+fn reflog_times_are_not_trusted_after_the_first_scan() {
+    let g = Git::new();
+    g.repo("r");
+    g.ok("", &["init", "-q", "--bare", "remote.git"]);
+    g.ok("r", &["remote", "add", "origin", "../remote.git"]);
+    // A tracker started now; the committer's clock (or GIT_COMMITTER_DATE) says 2020.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let work = g.path("r");
+    let mut t =
+        Tracker::new(&work, repo::discover(Path::new(&work)).unwrap(), false, now.as_secs() as i64);
+    let old = [("GIT_COMMITTER_DATE", "2020-01-01T00:00:00Z")];
+    g.ok("r", &["commit", "-q", "--allow-empty", "-m", "one"]);
+    g.ok_env("r", &old, &["commit", "-q", "--allow-empty", "-m", "two, dated 2020"]);
+    g.ok("r", &["commit", "-q", "--allow-empty", "-m", "three"]);
+    g.ok_env("r", &old, &["push", "-q", "origin", "main"]);
+    let sha = g.sha("r", "HEAD");
+    assert_eq!(
+        show(&t.scan()),
+        vec![
+            "commit main \"one\"".to_owned(),
+            "commit main \"two, dated 2020\"".into(),
+            "commit main \"three\"".into(),
+            format!("push origin/main {}", &sha[..7]),
+        ]
+    );
+}
+
+#[test]
+fn a_rewritten_or_replaced_reflog_is_not_replayed() {
+    let g = Git::new();
+    g.repo("r");
+    for i in 0..5 {
+        g.ok("r", &["commit", "-q", "--allow-empty", "-m", &format!("history {i}")]);
+    }
+    let mut t = g.tracker("r");
+    // gc rewrites the reflog (lock and rename) and keeps its lines; a commit lands before we
+    // look. Only the commit is news.
+    g.ok("r", &["reflog", "expire", "--expire=never", "--all"]);
+    g.ok("r", &["commit", "-q", "--allow-empty", "-m", "after gc"]);
+    g.ok("r", &["reflog", "expire", "--expire=never", "--all"]);
+    assert_eq!(show(&t.scan()), vec!["commit main \"after gc\""]);
+    // Expired to nothing, then a commit: the commit.
+    g.ok("r", &["reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all"]);
+    let _ = t.scan();
+    g.ok("r", &["commit", "-q", "--allow-empty", "-m", "after expiry"]);
+    assert_eq!(show(&t.scan()), vec!["commit main \"after expiry\""]);
+
+    // The repository is replaced at the same path between two looks (deleted and cloned, or
+    // another .git copied in) by one with more history: none of it is news.
+    g.repo("other");
+    for i in 0..20 {
+        g.ok("other", &["commit", "-q", "--allow-empty", "-m", &format!("other {i}")]);
+    }
+    std::fs::remove_dir_all(g.root.join("r/.git")).unwrap();
+    let copied = Command::new("cp")
+        .arg("-a")
+        .arg(g.root.join("other/.git"))
+        .arg(g.root.join("r/.git"))
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    assert_eq!(show(&t.scan()), Vec::<String>::new());
+    g.ok("r", &["commit", "-q", "--allow-empty", "-m", "in the new one"]);
+    assert_eq!(show(&t.scan()), vec!["commit main \"in the new one\""]);
+}
+
+#[test]
+fn a_commit_subject_cannot_set_the_branch() {
+    let g = Git::new();
+    g.repo("r");
+    g.ok("r", &["switch", "-q", "-c", "topic"]);
+    g.ok("r", &["commit", "-q", "--allow-empty", "-m", "fix): returning to refs/heads/evil"]);
+    g.ok("r", &["switch", "-q", "main"]);
+    g.ok("r", &["commit", "-q", "--allow-empty", "-m", "main moves"]);
+    g.ok("r", &["switch", "-q", "topic"]);
+    let mut t = g.tracker("r");
+    // The pick's reflog line carries the subject; a commit made during the rebase (by --exec)
+    // follows it in the same batch.
+    g.ok("r", &["rebase", "-q", "--exec", "git commit -q --allow-empty -m during", "main"]);
+    let evs = show(&t.scan());
+    assert!(evs.iter().all(|e| !e.contains("evil")), "{evs:?}");
+    assert_eq!(evs.iter().filter(|e| e.contains("during")).count(), 1, "{evs:?}");
 }
 
 // ---- The source itself ----

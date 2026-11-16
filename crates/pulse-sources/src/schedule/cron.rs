@@ -70,8 +70,9 @@ impl Cron {
         after: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
         let local = after.with_timezone(tz).naive_local();
-        let mut t = local.with_second(0)?.with_nanosecond(0)? + Duration::minutes(1);
-        let limit = local + Duration::days(366 * 8);
+        let minute = Duration::minutes(1);
+        let mut t = local.with_second(0)?.with_nanosecond(0)?.checked_add_signed(minute)?;
+        let limit = local.checked_add_signed(Duration::days(366 * 8))?;
         while t < limit {
             if self.months & (1 << t.month()) == 0 {
                 let (y, m) =
@@ -84,11 +85,11 @@ impl Cron {
                 continue;
             }
             if self.hours & (1 << t.hour()) == 0 {
-                t = t.with_minute(0)? + Duration::hours(1);
+                t = t.with_minute(0)?.checked_add_signed(Duration::hours(1))?;
                 continue;
             }
             if self.minutes & (1 << t.minute()) == 0 {
-                t += Duration::minutes(1);
+                t = t.checked_add_signed(minute)?;
                 continue;
             }
             if let Some(at) = resolve(tz, t) {
@@ -96,7 +97,7 @@ impl Cron {
                     return Some(at);
                 }
             }
-            t += Duration::minutes(1);
+            t = t.checked_add_signed(minute)?;
         }
         None
     }
@@ -111,7 +112,7 @@ fn resolve<Z: TimeZone>(tz: &Z, t: NaiveDateTime) -> Option<DateTime<Utc>> {
         match tz.from_local_datetime(&probe) {
             LocalResult::Single(dt) => return Some(dt.with_timezone(&Utc)),
             LocalResult::Ambiguous(a, _) => return Some(a.with_timezone(&Utc)),
-            LocalResult::None => probe += Duration::minutes(1),
+            LocalResult::None => probe = probe.checked_add_signed(Duration::minutes(1))?,
         }
     }
     None
@@ -146,6 +147,14 @@ fn field(
                 if st == 0 {
                     return Err(err("the step must be positive"));
                 }
+                // A larger step only ever matches the start of its range, which is never what
+                // `*/90` meant.
+                let span = max - min + 1;
+                if st > span {
+                    return Err(err(&format!(
+                        "the step must be at most {span} (for longer intervals use `every`)"
+                    )));
+                }
                 (r, st)
             }
             None => (part, 1),
@@ -167,7 +176,8 @@ fn field(
         let mut v = lo;
         while v <= hi {
             bits |= 1 << v;
-            v += step;
+            let Some(next) = v.checked_add(step) else { break };
+            v = next;
         }
     }
     Ok(bits)
@@ -197,6 +207,9 @@ mod tests {
             "5-1 * * * *",
             "x * * * *",
             "* * * foo *",
+            "*/61 * * * *",
+            "0 0 */32 * *",
+            "0 0 * */13 *",
         ] {
             assert!(Cron::parse(bad).is_err(), "{bad:?}");
         }
