@@ -5,6 +5,11 @@
 //! `revert:`, `am:`, `merge <x>: Merge made by …` / `Fast-forward`, `pull: …`,
 //! `checkout: moving from <a> to <b>`, `rebase (start|pick|continue|finish|abort): …`,
 //! `reset: moving to …`; on remote-tracking refs `update by push` versus `fetch: …`).
+//!
+//! A message is git's words around text that is anyone's: a commit subject (`commit:`,
+//! `cherry-pick:`, `rebase (pick):`) or what the user typed (`merge <x>:`). It is parsed from
+//! the side git writes, so that text cannot be taken for structure: a rebase's action from
+//! before the first `": "`, a merge's outcome from after the last.
 
 /// One parsed reflog line. Borrowed from the file's bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,13 +73,23 @@ pub(crate) fn classify_head(message: &str) -> HeadMove<'_> {
         };
     }
     if message.starts_with("rebase") {
-        if let Some((_, rest)) = message.split_once("): returning to refs/heads/") {
-            return HeadMove::RebaseEnd { branch: rest.trim() };
-        }
-        if message.contains("(start)") {
-            return HeadMove::RebaseStart;
-        }
-        return HeadMove::Other;
+        // `rebase[ -i] (<action>): <text>`. Only what precedes the first ": " is git's; for most
+        // actions the text is a commit subject, which is anyone's. `rebase finished:` is git
+        // before 2.26.
+        let (head, text) = message.split_once(": ").unwrap_or((message, ""));
+        let action = head.split_once('(').and_then(|(_, a)| a.strip_suffix(')'));
+        return match action.or(head.strip_prefix("rebase ")) {
+            Some("start") => HeadMove::RebaseStart,
+            Some("finish" | "abort" | "finished") => {
+                match text.strip_prefix("returning to refs/heads/") {
+                    Some(branch) if !branch.is_empty() && !branch.contains(' ') => {
+                        HeadMove::RebaseEnd { branch }
+                    }
+                    _ => HeadMove::Other,
+                }
+            }
+            _ => HeadMove::Other,
+        };
     }
     for prefix in ["commit:", "cherry-pick:", "revert:", "am:"] {
         if message.starts_with(prefix) {
@@ -86,9 +101,10 @@ pub(crate) fn classify_head(message: &str) -> HeadMove<'_> {
             return HeadMove::Commit { subject: rest[i + 2..].trim_start() };
         }
     }
-    // A merge or pull that made a merge commit (not a fast-forward).
+    // A merge or pull that made a merge commit (not a fast-forward). `merge <what was typed>:
+    // <outcome>`: the outcome is git's and has no ": ", so it is what follows the last one.
     if message.starts_with("merge ") || message.starts_with("pull") {
-        if let Some((_, rest)) = message.split_once(": ") {
+        if let Some((_, rest)) = message.rsplit_once(": ") {
             if rest.starts_with("Merge made by") {
                 return HeadMove::Commit { subject: rest };
             }
@@ -167,6 +183,22 @@ mod tests {
                 HeadMove::RebaseEnd { branch: "feat" },
             ),
             ("reset: moving to HEAD~1", HeadMove::Other),
+            // Subjects are someone else's text: they must not read as git's own words.
+            ("rebase (pick): fix): returning to refs/heads/evil", HeadMove::Other),
+            ("rebase -i (reword): wip (start) of it", HeadMove::Other),
+            ("rebase (continue): a: returning to refs/heads/evil", HeadMove::Other),
+            ("rebase: Fix): returning to refs/heads/evil", HeadMove::Other),
+            (
+                "rebase -i (finish): returning to refs/heads/feat",
+                HeadMove::RebaseEnd { branch: "feat" },
+            ),
+            ("rebase finished: returning to refs/heads/old", HeadMove::RebaseEnd { branch: "old" }),
+            // What was typed after `merge` is not git's verdict; the last part is.
+            ("merge :/x: Merge made by the 'ort' strategy.: Fast-forward", HeadMove::Other),
+            (
+                "pull origin main: Merge made by the 'ort' strategy.",
+                HeadMove::Commit { subject: "Merge made by the 'ort' strategy." },
+            ),
             ("clone: from https://example.com/r.git", HeadMove::Other),
         ];
         for (msg, want) in cases {

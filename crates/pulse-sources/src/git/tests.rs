@@ -425,6 +425,24 @@ fn a_rewritten_or_replaced_reflog_is_not_replayed() {
     assert_eq!(show(&t.scan()), vec!["commit main \"in the new one\""]);
 }
 
+#[test]
+fn a_commit_subject_cannot_set_the_branch() {
+    let g = Git::new();
+    g.repo("r");
+    g.ok("r", &["switch", "-q", "-c", "topic"]);
+    g.ok("r", &["commit", "-q", "--allow-empty", "-m", "fix): returning to refs/heads/evil"]);
+    g.ok("r", &["switch", "-q", "main"]);
+    g.ok("r", &["commit", "-q", "--allow-empty", "-m", "main moves"]);
+    g.ok("r", &["switch", "-q", "topic"]);
+    let mut t = g.tracker("r");
+    // The pick's reflog line carries the subject; a commit made during the rebase (by --exec)
+    // follows it in the same batch.
+    g.ok("r", &["rebase", "-q", "--exec", "git commit -q --allow-empty -m during", "main"]);
+    let evs = show(&t.scan());
+    assert!(evs.iter().all(|e| !e.contains("evil")), "{evs:?}");
+    assert_eq!(evs.iter().filter(|e| e.contains("during")).count(), 1, "{evs:?}");
+}
+
 // ---- The source itself ----
 
 async fn start(
