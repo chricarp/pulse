@@ -45,7 +45,8 @@ pub enum RunTransition {
     Start { pid: Option<u32>, invocation: InvocationSummary },
     /// `queued → failed`: the process could not be spawned.
     FailToStart { error: String },
-    /// `running → succeeded | failed | timed_out | cancelled`.
+    /// `running → succeeded | failed | timed_out | cancelled | interrupted` (interrupted: the
+    /// daemon shut down and terminated the run).
     Finish { status: RunStatus, exit_code: Option<i32>, signal: Option<i32>, error: Option<String> },
 }
 
@@ -163,7 +164,8 @@ impl Store {
             RunTransition::Cancel => matches!(from, PendingApproval | Queued),
             RunTransition::Start { .. } | RunTransition::FailToStart { .. } => from == Queued,
             RunTransition::Finish { status, .. } => {
-                from == Running && matches!(status, Succeeded | Failed | TimedOut | Cancelled)
+                from == Running
+                    && matches!(status, Succeeded | Failed | TimedOut | Cancelled | Interrupted)
             }
         };
         let allowed = from_ok && from.can_transition_to(to);

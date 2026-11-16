@@ -6,6 +6,7 @@
 //! - [`scope`]: agent permission scopes (default deny, every path must be in scope).
 //! - [`dedupe`], [`limits`] (cooldown, rate limit, circuit breaker), [`debounce`].
 //! - [`causation`]: attributing an event to the run that caused it.
+//! - [`filter`]: evaluating an `EventFilter` against one event (live subscriptions).
 //! - [`prompt`]: prompt rendering with a fenced untrusted-data block, `command` argument
 //!   rendering, and the event environment.
 //!
@@ -15,6 +16,7 @@
 pub mod causation;
 pub mod debounce;
 pub mod dedupe;
+pub mod filter;
 pub mod glob;
 pub mod limits;
 pub mod matcher;

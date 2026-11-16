@@ -300,6 +300,10 @@ pub struct RuleTestResult {
     pub matched: bool,
     /// What routing would decide; `None` when it does not match.
     pub decision: Option<Decision>,
+    /// When `decision` is `debounced`: what would happen once the debounce elapses (including
+    /// the rendered prompt).
+    #[serde(default)]
+    pub after_debounce: Option<Decision>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]

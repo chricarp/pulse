@@ -111,3 +111,28 @@ pub struct RunCounts {
     pub queued: u32,
     pub pending_approval: u32,
 }
+
+/// `$PULSE_HOME/daemon.json`, written while the daemon runs. Clients (the CLI, the desktop
+/// shell) read it to find the port. It holds no secret; the token is in `$PULSE_HOME/token`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct DaemonInfo {
+    pub pid: u32,
+    pub port: u16,
+    pub version: String,
+    pub started_at: Timestamp,
+}
+
+/// `POST /auth/login`: exchanges a short-lived, single-use login code (from `pulse open`, in the
+/// URL fragment `#login=<code>`) for the daemon token. Codes keep the token itself out of
+/// process arguments and browser history.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct UiLoginRequest {
+    pub code: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct UiLoginResponse {
+    /// The daemon token. Send it as `Authorization: Bearer <token>`, or for a browser WebSocket
+    /// as the subprotocols `["pulse", "pulse.token.<token>"]`.
+    pub token: String,
+}

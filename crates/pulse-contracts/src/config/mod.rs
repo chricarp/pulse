@@ -20,7 +20,9 @@ use ts_rs::TS;
 
 use crate::time::Duration;
 
-pub use parse::{ConfigError, ConfigErrors, parse_config_file, resolve, validate_name};
+pub use parse::{
+    ConfigError, ConfigErrors, parse_config_file, resolve, validate_file, validate_name,
+};
 pub use values::{
     Rate, RateError, Scope, ScopeError, TypeGlob, TypeGlobs, WhereClause, WhereCondition,
     WhereField, WhereOps, WhereScalar,

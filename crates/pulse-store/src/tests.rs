@@ -276,6 +276,9 @@ fn run_transitions() {
         (Queued, RunTransition::Cancel, Ok(Cancelled)),
         (Queued, RunTransition::FailToStart { error: "ENOENT".into() }, Ok(Failed)),
         (Queued, finish(Succeeded), Err(())),
+        // A graceful shutdown terminates running runs and records them as interrupted.
+        (Running, finish(Interrupted), Ok(Interrupted)),
+        (Queued, finish(Interrupted), Err(())),
     ];
     for (i, (initial, transition, want)) in cases.into_iter().enumerate() {
         let mut s = Store::open_in_memory().unwrap();
@@ -310,10 +313,6 @@ fn run_transitions() {
         s.transition_run(rid(1), RunTransition::Cancel, t(7)),
         Err(StoreError::IllegalTransition { .. })
     ));
-    assert!(
-        s.transition_run(rid(1), finish(Interrupted), t(7)).is_err(),
-        "interrupted is only for restarts"
-    );
     let run = s.transition_run(rid(1), finish(Succeeded), t(8)).unwrap();
     assert_eq!((run.status, run.exit_code, run.ended_at), (Succeeded, Some(0), Some(t(8))));
     assert!(s.transition_run(rid(1), finish(Failed), t(9)).is_err());
