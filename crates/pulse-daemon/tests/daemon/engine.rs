@@ -282,6 +282,58 @@ run = { agent = "sh" }
     t.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tripped_circuit_breaker_is_announced() {
+    // Clients (the desktop tray) learn that a rule was stopped from `state.changed`, not by
+    // polling `rules.list`.
+    let mut t = TestDaemon::start(&config(
+        r#"
+[limits]
+circuit_breaker = { max_fires = 1, window = "1h", open_for = "1h" }
+
+[[rule]]
+name = "hot"
+on = "ext.*"
+run = { agent = "sh" }
+"#,
+    ))
+    .await;
+    let client = t.client().await;
+    let mut notes = client.notifications().unwrap();
+    let ingest = |subject: &str| IngestParams {
+        source: "ci".into(),
+        events: vec![IngestEvent {
+            type_: "build".into(),
+            subject: Some(subject.into()),
+            time: None,
+            data: serde_json::json!({}),
+            dedupe_key: None,
+            causation_run: None,
+        }],
+    };
+    client.call::<method::EventsIngest>(ingest("first")).await.unwrap();
+    let res = client.call::<method::EventsIngest>(ingest("second")).await.unwrap();
+    let detail =
+        client.call::<method::EventsGet>(EventIdParams { id: res.accepted[0] }).await.unwrap();
+    assert!(matches!(
+        detail.deliveries[0].outcome,
+        DeliveryOutcome::Blocked { reason: BlockReason::CircuitOpen { .. } }
+    ));
+    within("state.changed with the rules topic", async {
+        loop {
+            if let Notification::StateChanged(s) = notes.recv().await.unwrap() {
+                if s.topics.contains(&StateTopic::Rules) {
+                    break;
+                }
+            }
+        }
+    })
+    .await;
+    let rule = client.call::<method::RulesGet>(NameParams { name: "hot".into() }).await.unwrap();
+    assert!(rule.state.circuit_open_until.is_some());
+    t.stop().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_debounce_fires_once_after_the_quiet_period() {
     let rules = r#"
@@ -297,7 +349,6 @@ run = { agent = "sh" }
             supervisor: Arc::new(InstantSupervisor),
             clock: Clock::tokio(1_700_000_000_000),
             watch_config: false,
-            mcp: None,
         },
     )
     .await;

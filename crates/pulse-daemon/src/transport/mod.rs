@@ -4,13 +4,17 @@
 //! Every request passes [`guard`] first:
 //! - `Host` must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding: a page on
 //!   `evil.example` that resolves to 127.0.0.1 sends its own name);
-//! - an `Origin`, when present (browsers), must be this daemon's own origin;
+//! - an `Origin`, when present (browsers), must be this daemon's own origin, and on `/mcp` no
+//!   `Origin` is accepted at all (MCP clients are not browsers; the UI never calls `/mcp`);
 //! - `/ws` and `/ingest` need the daemon token (`Authorization: Bearer`, or for a browser
-//!   WebSocket the subprotocol `pulse.token.<token>`); `/mcp` needs an agent token, never the
-//!   daemon token; the static UI and the login exchange need none. A browser-style upgrade
-//!   (offering the `pulse` subprotocol) with a missing or wrong token is not refused with a 401,
-//!   which a browser cannot read, but upgraded and closed at once with 4401 (see
-//!   [`pulse_contracts::auth`]).
+//!   WebSocket the subprotocol `pulse.token.<token>`); the static UI and the login exchange need
+//!   none. An agent token is not the daemon token, so it is refused on all of them. A
+//!   browser-style upgrade (offering the `pulse` subprotocol) with a missing or wrong token is
+//!   not refused with a 401, which a browser cannot read, but upgraded and closed at once with
+//!   4401 (see [`pulse_contracts::auth`]).
+//! - `/mcp` needs an agent token, checked by the MCP router's own bearer layer through
+//!   `Services::mcp_agent` before any MCP handling (see [`mcp`]); the daemon token is not an
+//!   agent token and is refused there.
 //!
 //! Handlers decode, call one service method, and map the error. Nothing here logs a request's
 //! headers or query, so tokens never reach the log.
@@ -24,20 +28,16 @@ use axum::extract::{DefaultBodyLimit, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use pulse_contracts::rpc::{IngestParams, RpcError};
 use pulse_contracts::status::{UiLoginRequest, UiLoginResponse};
-use pulse_mcp::AgentIdentity;
 use pulse_sources::ingest::{IngestError, IngestLimits};
 use serde::Deserialize;
 
-pub use mcp::McpBackend;
-
-use crate::auth::{constant_time_eq, verify_agent_token};
+use crate::auth::constant_time_eq;
 use crate::error::ServiceError;
 use crate::services::Services;
-use crate::wiring::McpMount;
 
 pub use pulse_contracts::auth::{WS_PROTOCOL, WS_TOKEN_PROTOCOL_PREFIX};
 
@@ -46,15 +46,12 @@ pub(crate) struct App {
     pub services: Services,
 }
 
-pub(crate) fn router(services: Services, mcp: Option<McpMount>) -> Router {
+/// The whole listener. Call once the port is known: the Host checks need it.
+pub(crate) fn router(services: Services) -> Router {
     let app = App { services: services.clone() };
     let limits = IngestLimits::default();
-    let mcp_routes: Router = match mcp {
-        Some(mount) => Router::new().nest("/mcp", mount(McpBackend::new(services))),
-        None => Router::new()
-            .route("/mcp", any(mcp_unavailable))
-            .route("/mcp/{*rest}", any(mcp_unavailable)),
-    };
+    let port = services.shared.port();
+    let mcp_routes = Router::new().nest("/mcp", mcp::router(services, allowed_hosts(port)));
     Router::new()
         .route("/ws", get(rpc::upgrade))
         .route("/ingest", post(ingest).layer(DefaultBodyLimit::max(limits.max_body_bytes + 1)))
@@ -65,8 +62,13 @@ pub(crate) fn router(services: Services, mcp: Option<McpMount>) -> Router {
         .layer(middleware::from_fn_with_state(app, guard))
 }
 
+/// The `Host` values the listener accepts (the guard, and rmcp's own check on `/mcp`).
+fn allowed_hosts(port: u16) -> Vec<String> {
+    vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")]
+}
+
 fn allowed_host(host: &str, port: u16) -> bool {
-    host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+    allowed_hosts(port).iter().any(|h| h == host)
 }
 
 fn allowed_origin(origin: &str, port: u16) -> bool {
@@ -101,12 +103,16 @@ async fn guard(State(app): State<App>, mut req: Request, next: Next) -> Response
     if !host.is_some_and(|h| allowed_host(h, port)) {
         return deny(StatusCode::FORBIDDEN, "unexpected Host header");
     }
+    let path = req.uri().path();
+    let mcp = path == "/mcp" || path.starts_with("/mcp/");
     if let Some(origin) = req.headers().get(header::ORIGIN) {
+        if mcp {
+            return deny(StatusCode::FORBIDDEN, "/mcp does not accept browser requests");
+        }
         if !origin.to_str().is_ok_and(|o| allowed_origin(o, port)) {
             return deny(StatusCode::FORBIDDEN, "cross-origin requests are not allowed");
         }
     }
-    let path = req.uri().path();
     if path == "/ws" || path == "/ingest" {
         let token = bearer(req.headers()).or_else(|| ws_protocol_token(req.headers()));
         if !token.is_some_and(|t| constant_time_eq(t.as_bytes(), shared.secret.as_bytes())) {
@@ -116,17 +122,6 @@ async fn guard(State(app): State<App>, mut req: Request, next: Next) -> Response
             }
             // The upgrade handler closes it with 4401 before reading anything.
             req.extensions_mut().insert(rpc::Unauthenticated);
-        }
-    } else if path == "/mcp" || path.starts_with("/mcp/") {
-        let agent = bearer(req.headers())
-            .and_then(|t| verify_agent_token(&shared.secret, t))
-            .filter(|a| shared.snapshot().config.agent(a).is_some())
-            .map(|name| AgentIdentity { name: name.to_owned() });
-        match agent {
-            Some(identity) => {
-                req.extensions_mut().insert(identity);
-            }
-            None => return deny(StatusCode::UNAUTHORIZED, "missing or wrong agent token"),
         }
     }
     next.run(req).await
@@ -201,8 +196,4 @@ async fn login(State(app): State<App>, Json(req): Json<UiLoginRequest>) -> Respo
             "the login code is invalid, expired or already used; run `pulse open` again",
         )
     }
-}
-
-async fn mcp_unavailable() -> Response {
-    deny(StatusCode::NOT_IMPLEMENTED, "the MCP server is not available in this build")
 }

@@ -17,7 +17,7 @@ Sources watch the machine and emit normalized events. The engine persists each e
                           │        ▼
                           │   effect worker ──▶ agent adapter ──▶ process ──▶ run output
                           │
-                          └─▶ subscribers: RPC clients, MCP subscriptions
+                          └─▶ live fan-out: RPC subscribers; wakeups for MCP (which reads the log)
 ```
 
 ## Processes
@@ -30,7 +30,7 @@ Sources watch the machine and emit normalized events. The engine persists each e
 | Desktop app | Electron shell. | Starts the daemon if needed, then loads the UI from it. |
 | Agent runs | Children of the daemon. | Each in its own process group. |
 | `pulse run -- cmd` | Wraps a command, reports its exit. | Works (and stays silent) when the daemon is down. |
-| `pulse mcp --agent X` | stdio MCP bridge to the daemon. | For MCP clients that want stdio. |
+| `pulse mcp --agent X` | stdio-to-HTTP proxy to the daemon's `/mcp`, with the agent's token. | For MCP clients that launch a server. Not a second MCP server. |
 
 ## Workspace
 
@@ -63,7 +63,9 @@ Dependency direction: `contracts ← core ← store, sources, agents, mcp ← da
 pulse.toml      user config (source of truth for definitions)
 pulse.db        SQLite (WAL): event log and runtime state
 daemon.json     { pid, port, version, started_at } while the daemon runs
+daemon.lock     flock held by the running daemon: one per Pulse home
 token           daemon secret, mode 0600
+runs/<id>/      per run: event.json (PULSE_EVENT_FILE) and the default working directory
 logs/           rotated daemon logs
 ```
 
@@ -194,12 +196,12 @@ run        = { agent = "study", prompt = "Summarize {{subject}} and create flash
 
 ```
 pending_approval ─approve─▶ queued ─▶ running ─▶ succeeded | failed | timed_out | cancelled
-        ├─reject─▶ rejected      │                └─ daemon died ─▶ interrupted
+        ├─reject─▶ rejected      │                └─ daemon shut down or died ─▶ interrupted
         └─cancel─▶ cancelled     ├─cancel─▶ cancelled
                                  └─could not spawn─▶ failed
 ```
 
-A running run is cancelled by signalling its process group; the supervisor's result is then recorded as `cancelled`. Chain depth: a run triggered by an uncaused event has depth 1; an event caused by a run carries that run's depth; a rule fires only if the new run's depth is at most `max_chain_depth`.
+A running run is cancelled by signalling its process group; the supervisor's result is then recorded as `cancelled`. A graceful shutdown cancels every run the same way and records them `interrupted` ("the daemon shut down") once reaped; after a crash they become `interrupted` at the next start. Global pause also holds runs already `queued` (they start on resume); running runs continue. A rerun is an explicit request with the daemon token: it skips routing (no approval, cooldown or rate limit) and resends the stored prompt. A run without a configured `cwd` works in its own `runs/<id>/`. Chain depth: a run triggered by an uncaused event has depth 1; an event caused by a run carries that run's depth; a rule fires only if the new run's depth is at most `max_chain_depth`.
 
 A run stores: the triggering event, the rule and agent names, the rendered prompt, the invocation (argv, cwd; not the environment), pid, timestamps, exit code, chain depth, a snapshot of the rule and agent config, and its output as ordered chunks. Output is capped per run: the first half of the cap is the head, then the most recent output; a `marker` chunk between them says how much was dropped.
 
@@ -216,7 +218,7 @@ trait AgentAdapter {
 }
 ```
 
-One shared **supervisor** does the I/O for all of them: spawn in a new process group, stream output, enforce the timeout, and terminate the group (SIGTERM, grace period, SIGKILL) on cancel, timeout or shutdown. Pulse only ever signals process groups it created and whose identity it can still verify. After a daemon crash, runs that were `running` become `interrupted`; we do not guess at PIDs.
+One shared **supervisor** does the I/O for all of them: spawn in a new process group, stream output (`SupervisorEvent::Output { at, output }`, where `at` is when the line was read), enforce the timeout, and terminate the group (SIGTERM, grace period, SIGKILL) on cancel, timeout or shutdown, and after a natural exit too. Pulse only ever signals process groups it created and whose identity it can still verify (the leader is not reaped until the last signal). When the supervisor returns, everything still in the group has been sent SIGKILL. **Limit:** a descendant that leaves the group (`setsid`, `setpgid`: daemons, some multiplexers) escapes and is not killed; if it holds the output pipes, the run still ends and a `marker` says so. After a daemon crash, runs that were `running` become `interrupted`; we do not guess at PIDs. Details: [0006](0006-agent-adapters.md).
 
 `command` never goes through a shell: template variables are substituted per argument, and the program itself cannot contain placeholders. Provider-specific detail (Claude Code's stream-json, Codex's JSONL) is preserved in `RunOutput.data` rather than flattened away. An agent with `adapter = "mcp"` is never run: it is an identity with scopes for an MCP client, and rules cannot target it.
 
@@ -240,13 +242,19 @@ Every transport is a thin layer: decode, call **one service method**, map the er
 
 The same HTTP listener also serves `POST /ingest` (external events, JSON or JSON lines), `/mcp` (MCP streamable HTTP), and `/` (the UI).
 
-**Tokens.** The daemon token grants full control. Each agent gets a derived token (`HMAC(daemon secret, agent name)`) that is valid only on `/mcp` and only as that agent, so an agent's MCP configuration never contains a credential that can approve its own runs or edit rules.
+**Tokens.** The daemon token grants full control. Each agent gets a derived token (`HMAC(daemon secret, agent name)`) that is valid only on `/mcp` and only as that agent, so an agent's MCP configuration never contains a credential that can approve its own runs or edit rules. It is not a boundary against a process running as the user, which can read `$PULSE_HOME/token` (see [0003](0003-threat-model.md)). `/mcp` accepts no browser `Origin` at all.
+
+**The browser** gets the daemon token without it appearing in a URL: `pulse open` puts a single-use, two-minute **login code** in the URL fragment, and the UI exchanges it at `POST /auth/login` for the token (see [0004](0004-daemon-and-config.md)).
 
 ## MCP
 
-Tools: `list_event_types`, `query_events`, `subscribe`, `unsubscribe`, and a way to receive subscribed events for clients that cannot take server push. All of them are scoped by the calling agent's `allow` list. MCP cannot approve runs or change rules.
+Tools: `list_event_types`, `query_events`, `subscribe`, `unsubscribe`, `wait_for_events`. All of them act as the agent the bearer token names, resolved on every request, and are scoped by its `allow` list: the catalog lists only the types the agent's scopes can match, and history is filtered by scope *while it is read*, so pages and cursors never name an event the agent cannot see. MCP cannot approve runs or change rules.
 
-The draft Events extension (SEP-3415) is implemented in **one module** behind the `sep3415` cargo feature and a runtime flag. It maps the spec's catalog, subscription and stream concepts onto the same service calls. When the draft changes, that module changes and nothing else does.
+**The log is the queue.** There are no per-subscription queues. A subscription is a saved filter plus a wakeup ("something you may see was committed"); `wait_for_events` reads the log after the cursor the caller passes back, so a slow agent is behind, never dropped. This needs events to become visible in id order, which the engine guarantees (one task assigns ids and commits) and the store enforces. A subscription ends when its agent is removed or loses access to every type.
+
+`pulse mcp --agent X` is not a second server: it proxies stdio to `/mcp` with the agent's token.
+
+The draft Events extension (SEP-3415) is implemented in **one module** behind the `sep3415` cargo feature (compiled into the shipped binary) and the runtime flag `[daemon] mcp_events_extension` (off by default). It offers `events/list`, poll and push (no webhook mode: a local daemon cannot meet its callback requirements), exists only on protocol revision 2026-07-28, and translates each CloudEvents envelope into the spec's `EventOccurrence`. When the draft changes, that module changes and nothing else does. Details: [0007](0007-mcp-and-sep-3415.md).
 
 ## Persistence
 
@@ -254,7 +262,7 @@ SQLite in WAL mode, one writer connection and one reader connection, each on its
 
 | Table | Purpose |
 |---|---|
-| `events` | The append-only log (full CloudEvents JSON plus indexed columns). Indexed by time, type, source, subject, causing run. |
+| `events` | The append-only log (full CloudEvents JSON plus indexed columns). Indexed by time, type, source, subject, causing run. A commit whose event ids do not increase past the newest stored one is refused. |
 | `event_paths` | Every path an event carries, for indexed "events under this directory" queries. |
 | `deliveries` | One row per (event, matching rule): outcome, reason, run id. |
 | `runs` | Run state and metadata. |
@@ -299,3 +307,17 @@ _Record deviations from this document here: what changed, and why._
 - **Store threading.** A writer thread and a reader thread behind bounded channels rather than `spawn_blocking`: writes are serialized without a lock, and a long query does not hold up the writer.
 - **Config details.** `[daemon]`, `[limits]` and `[retention]` are settled (see `pulse_contracts::config`); project files cannot set them. Unknown keys are errors. `where` gained `type`, `glob` and `exists`.
 - **TypeScript is one generated file**, `apps/web/src/contracts/index.ts`, with every wire type and the method map. `PULSE_UPDATE_TS=1 cargo test -p pulse-contracts --test typescript` regenerates it; the same test fails in CI when it is stale.
+
+### 2026-11-16, integration (daemon with MCP and the real supervisor)
+
+The numbered docs 0004, 0006 and 0007 were written in parallel; this brings the parts of this page they could not edit in line with the code.
+
+- **MCP pulls from the log.** `wait_for_events` reads by cursor; there are no per-subscription queues, and live subscriptions are only wakeups. Bounded queues that count overflow would drop events a cursor never loses.
+- **History is scoped before paging.** Filtering after paging let a `text`, `subject` or `path` filter learn that a hidden event matched (a short page with a cursor). A scan budget (4096 hidden rows) keeps a page's work bounded; only past it does a cursor point at a row the agent cannot see.
+- **Ids are ordered across restarts.** New ids continue after the newest stored one even when the clock reads earlier, and the store refuses out-of-order commits, because a cursor reader would skip such an event silently.
+- **The MCP catalog is per agent**, and `/mcp` identity is decided by the MCP router's bearer layer only (one definition, `Services::mcp_agent`); the daemon's guard checks `Host` and refuses any `Origin` there.
+- **SEP-3415** is poll and push only, needs protocol 2026-07-28, translates the envelope, and is compiled into `pulse` but off at runtime.
+- **Data directory** has `daemon.lock` and `runs/<id>/` (per-run working directory and event file).
+- **Runs:** graceful shutdown also records `interrupted`; pause holds queued runs; reruns skip routing.
+- **Browser handover** is a single-use login code in the fragment, exchanged at `/auth/login`, not the token itself.
+- **Supervisor:** output carries the time each line was read; the orphan guarantee and its `setsid` limit are stated here.

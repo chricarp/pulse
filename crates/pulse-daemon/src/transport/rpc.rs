@@ -273,7 +273,7 @@ impl RpcHandler for RpcServer {
     type Context = Arc<Connection>;
 
     async fn events_query(&self, _: &Self::Context, p: EventQuery) -> R<EventPageWithOutcomes> {
-        map(self.services.events_query_with_outcomes(p).await)
+        map(self.services.events_query(p).await)
     }
     async fn events_get(&self, _: &Self::Context, p: EventIdParams) -> R<EventDetail> {
         map(self.services.events_get(p.id).await)
@@ -286,7 +286,7 @@ impl RpcHandler for RpcServer {
         let stop = cx.reserve_subscription()?;
         let ready = CancellationToken::new();
         let deliver = cx.notifier::<EventsBatchWithOutcomes>("events.batch");
-        let id = map(self.services.events_subscribe_with_outcomes(
+        let id = map(self.services.events_subscribe(
             p.filter,
             deliver,
             ready.clone(),

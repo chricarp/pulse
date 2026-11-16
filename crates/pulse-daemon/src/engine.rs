@@ -15,9 +15,11 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use pulse_contracts::config::Config;
+use pulse_contracts::rpc::StateTopic;
 use pulse_contracts::run::RunSnapshot;
 use pulse_contracts::{
-    Delivery, Event, EventId, NewEvent, Outcome, RunId, RunStatus, RunSummary, Timestamp,
+    BlockReason, Delivery, Event, EventId, NewEvent, Outcome, RunId, RunStatus, RunSummary,
+    Timestamp,
 };
 use pulse_core::dedupe::Dedupe;
 use pulse_core::limits::{FireHistory, history_capacity};
@@ -135,6 +137,8 @@ struct Pending {
     rules_touched: BTreeSet<String>,
     runs: Vec<RunSummary>,
     replies: Vec<Reply>,
+    /// A circuit breaker tripped in this batch; clients are told after the commit.
+    breaker_tripped: bool,
 }
 
 enum Reply {
@@ -438,6 +442,13 @@ impl Engine {
                 p.commit.runs.push(new);
                 id
             });
+            // A breaker that trips now holds the rule until exactly `now + open_for`; one that was
+            // already open reports an earlier deadline. A false positive only costs clients a
+            // refetch.
+            if let Outcome::Blocked { reason: BlockReason::CircuitOpen { until } } = &d.outcome {
+                let open_for = self.snapshot.config.limits.circuit_breaker.open_for;
+                p.breaker_tripped |= *until == now.saturating_add(open_for);
+            }
             p.rules_touched.insert(d.rule.clone());
             p.commit.deliveries.push(Delivery {
                 id: self.shared.ids.delivery(),
@@ -493,6 +504,9 @@ impl Engine {
                 answer(p.replies);
                 self.shared.hub.publish_events(events, &deliveries, p.earlier);
                 self.shared.publish_runs(p.runs);
+                if p.breaker_tripped {
+                    self.shared.notify_state(&[StateTopic::Rules]);
+                }
                 if wake_worker {
                     self.shared.worker.wake();
                 }

@@ -548,7 +548,7 @@ async fn stream<B: Backend>(
         tokio::select! {
             () = ctx.ct.cancelled() => return Ok(out.done()),
             () = shared.config.shutdown.cancelled() => return Ok(out.done()),
-            batch = live.events.recv() => match batch {
+            woken = live.wake.recv() => match woken {
                 Some(_) => pending = true,
                 // The backend ended the subscription: the agent was removed or lost access.
                 None => {

@@ -112,6 +112,7 @@ impl Daemon {
             );
         }
         let paused = store.read(|q| q.query().flag(flags::PAUSED)).await?.is_some();
+        let last_event = store.read(|q| q.query().last_event_id()).await?;
         let trust: Vec<TrustRecord> = match store.read(|q| q.query().flag(TRUST_KEY)).await? {
             Some(json) => serde_json::from_str(&json)
                 .map_err(|e| StartError::Other(format!("trusted projects are unreadable: {e}")))?,
@@ -125,12 +126,12 @@ impl Daemon {
         let (engine_handle, control_rx, input_rx) = engine::channels();
         let (worker_handle, worker_rx) = WorkerHandle::channels();
         let worker_notify = worker_handle.clone();
-        let mcp = wiring.mcp.clone();
         let shared = Arc::new(Shared::new(SharedParts {
             home: home.clone(),
             user_home: opts.user_home.clone(),
             clock: opts.clock,
             store,
+            last_event,
             secret,
             snapshot: initial,
             loader,
@@ -160,7 +161,7 @@ impl Daemon {
             .map_err(io(format!("cannot listen on 127.0.0.1:{port}")))?;
         let port = listener.local_addr().map_err(io("cannot read the listening port"))?.port();
         let _ = shared.port.set(port);
-        let app = crate::transport::router(services.clone(), mcp);
+        let app = crate::transport::router(services.clone());
         let stop = shared.shutdown.clone();
         let server = tokio::spawn(async move {
             let serve = axum::serve(listener, app).with_graceful_shutdown(stop.cancelled_owned());

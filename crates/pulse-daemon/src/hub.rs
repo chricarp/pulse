@@ -38,9 +38,6 @@ pub(crate) const MAX_BATCH: usize = 200;
 pub(crate) const FLUSH_EVERY: Duration = Duration::from_millis(250);
 pub(crate) const STUCK_LIMIT: Duration = Duration::from_secs(30);
 
-/// An extra check on each event (an MCP agent's scopes).
-pub(crate) type Permit = Box<dyn Fn(&Event) -> bool + Send>;
-
 /// A committed event and the deliveries recorded for it in the same commit. `new` is false when
 /// the event was published before and only `outcomes` are news (a debounce elapsed).
 #[derive(Debug)]
@@ -50,14 +47,13 @@ pub(crate) struct LiveEvent {
     new: bool,
 }
 
-/// How an event subscription delivers.
-pub(crate) struct Live {
-    /// Scoped subscribers (MCP agents) see only what this allows.
-    pub permit: Option<Permit>,
-    /// Include outcomes. Off for agents: they are not told what other rules decided.
-    pub outcomes: bool,
-    /// Nothing is delivered until this is cancelled.
-    pub ready: CancellationToken,
+impl LiveEvent {
+    /// The event, if it is new to the log (not just new outcomes for an earlier one). MCP
+    /// wakeups look only at this: agents are never told outcomes, and a late outcome adds
+    /// nothing to the log they read.
+    pub(crate) fn new_event(&self) -> Option<&Event> {
+        self.new.then_some(&self.event)
+    }
 }
 
 /// What a delivery attempt did.
@@ -161,27 +157,26 @@ impl Hub {
         self.output_done(run);
     }
 
-    /// Delivers events matching `filter` (and the permit, for scoped subscribers).
+    /// Every committed batch, for subscribers that do their own filtering (MCP wakeups).
+    pub(crate) fn subscribe_events(&self) -> broadcast::Receiver<Arc<[LiveEvent]>> {
+        self.events.subscribe()
+    }
+
+    /// Delivers events matching `filter`, with their outcomes, once `ready` is cancelled. Only
+    /// for clients holding the daemon token: MCP agents get wakeups instead.
     pub(crate) fn spawn_event_subscription(
         &self,
         id: SubscriptionId,
         filter: CompiledFilter,
-        live: Live,
         deliver: impl FnMut(&EventsBatchWithOutcomes) -> Sent + Send + 'static,
+        ready: CancellationToken,
         stop: CancellationToken,
         client: CancellationToken,
     ) {
         let rx = self.events.subscribe();
-        let buffer = EventBuffer {
-            id,
-            filter,
-            permit: live.permit,
-            with_outcomes: live.outcomes,
-            events: VecDeque::new(),
-            late: VecDeque::new(),
-            dropped: 0,
-        };
-        tokio::spawn(pump(rx, buffer, deliver, live.ready, stop, client));
+        let buffer =
+            EventBuffer { id, filter, events: VecDeque::new(), late: VecDeque::new(), dropped: 0 };
+        tokio::spawn(pump(rx, buffer, deliver, ready, stop, client));
     }
 
     pub(crate) fn spawn_run_subscription(
@@ -215,8 +210,6 @@ trait Buffer: Send + 'static {
 struct EventBuffer {
     id: SubscriptionId,
     filter: CompiledFilter,
-    permit: Option<Permit>,
-    with_outcomes: bool,
     /// New events with their outcomes. Dropping an event drops its outcomes (the log has them).
     events: VecDeque<(Event, Vec<EventOutcome>)>,
     /// Outcomes for events delivered in earlier batches.
@@ -252,14 +245,13 @@ impl Buffer for EventBuffer {
     fn add(&mut self, items: &[LiveEvent]) {
         for item in items {
             let e = &item.event;
-            if !self.filter.matches(e) || !self.permit.as_ref().is_none_or(|p| p(e)) {
+            if !self.filter.matches(e) {
                 continue;
             }
-            let outcomes = if self.with_outcomes { item.outcomes.clone() } else { Vec::new() };
             if item.new {
-                self.push(e.clone(), outcomes);
+                self.push(e.clone(), item.outcomes.clone());
             } else {
-                self.push_late(outcomes);
+                self.push_late(item.outcomes.iter().cloned());
             }
         }
     }
@@ -455,19 +447,18 @@ mod tests {
 
     type Got = Arc<StdMutex<Vec<EventsBatchWithOutcomes>>>;
 
-    fn subscribe(hub: &Hub, outcomes: bool, ready: CancellationToken) -> Got {
+    fn subscribe(hub: &Hub, ready: CancellationToken) -> Got {
         let got: Got = Arc::default();
         let sink = got.clone();
-        let live = Live { permit: None, outcomes, ready };
         let filter = CompiledFilter::compile(&EventFilter::default()).unwrap();
         hub.spawn_event_subscription(
             SubscriptionId::from_ulid(Ulid::from_parts(1, 1)),
             filter,
-            live,
             move |b: &EventsBatchWithOutcomes| {
                 sink.lock().unwrap().push(b.clone());
                 Sent::Ok
             },
+            ready,
             CancellationToken::new(),
             CancellationToken::new(),
         );
@@ -485,7 +476,7 @@ mod tests {
     async fn nothing_is_delivered_before_the_subscription_is_ready() {
         let hub = Hub::default();
         let ready = CancellationToken::new();
-        let got = subscribe(&hub, true, ready.clone());
+        let got = subscribe(&hub, ready.clone());
         tokio::task::yield_now().await;
         let e = event(1);
         hub.publish_events(vec![e.clone()], &[fired(&e, 1)], vec![]);
@@ -500,12 +491,13 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn outcomes_follow_their_events_and_stay_out_of_agent_batches() {
+    async fn outcomes_follow_their_events_and_never_reach_agent_wakeups() {
         let hub = Hub::default();
         let ready = CancellationToken::new();
         ready.cancel();
-        let full = subscribe(&hub, true, ready.clone());
-        let agent = subscribe(&hub, false, ready);
+        let full = subscribe(&hub, ready);
+        // What MCP wakeups read: agents only ever look at new events, never at outcomes.
+        let mut agent = hub.subscribe_events();
         tokio::task::yield_now().await;
         let (a, b) = (event(1), event(2));
         hub.publish_events(vec![a.clone(), b.clone()], &[fired(&b, 1)], vec![]);
@@ -520,8 +512,10 @@ mod tests {
         let outcomes: Vec<_> =
             full.iter().flat_map(|x| x.outcomes.iter().map(|o| o.event)).collect();
         assert_eq!(outcomes, [b.id, a.id]);
-        let agent = agent.lock().unwrap();
-        assert!(agent.iter().all(|x| x.outcomes.is_empty()));
-        assert_eq!(agent.iter().map(|x| x.batch.events.len()).sum::<usize>(), 2);
+        let mut seen = Vec::new();
+        while let Ok(batch) = agent.try_recv() {
+            seen.extend(batch.iter().filter_map(|l| l.new_event()).map(|e| e.id));
+        }
+        assert_eq!(seen, [a.id, b.id], "a late outcome is not a new event for agents");
     }
 }

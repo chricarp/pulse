@@ -7,7 +7,7 @@ mod support;
 
 use std::sync::Arc;
 
-use pulse_mcp::stdio::{Target, proxy};
+use pulse_mcp::stdio::{CheckError, Target, check, proxy};
 use rmcp::serve_client_with_lifecycle;
 use rmcp::service::ClientLifecycleMode;
 use serde_json::{Value, json};
@@ -106,6 +106,13 @@ async fn failures_come_back_as_errors_for_the_request() {
 
     let reply = exchange(&url, ALICE_TOKEN, json!("not a message")).await;
     assert!(reply["error"].is_object(), "{reply}");
+
+    // The launcher's probe tells the three cases apart before serving anything.
+    check(&Target::new(&url, ALICE_TOKEN).unwrap()).await.unwrap();
+    let wrong = check(&Target::new(&url, "tok-wrong").unwrap()).await.unwrap_err();
+    assert!(matches!(wrong, CheckError::Rejected), "{wrong}");
+    let down = check(&Target::new(&dead, ALICE_TOKEN).unwrap()).await.unwrap_err();
+    assert!(matches!(down, CheckError::Unreachable { .. }), "{down}");
 }
 
 #[cfg(feature = "sep3415")]
