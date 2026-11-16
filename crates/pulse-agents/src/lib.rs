@@ -13,8 +13,8 @@
 //!
 //! ### Run environment
 //!
-//! A run's environment is the daemon's environment, then the agent's configured `env`, then
-//! [`run_env`] (which wins):
+//! A run's environment is the daemon's environment minus every `PULSE_*` variable, then the
+//! agent's configured `env`, then [`run_env`] (which wins):
 //!
 //! | Variable | Value |
 //! |---|---|
@@ -29,7 +29,7 @@
 //! sandboxes are passed through from config and never widened.
 
 pub mod command;
-mod supervisor;
+pub mod supervisor;
 
 use std::path::PathBuf;
 
@@ -95,6 +95,15 @@ pub enum AdapterError {
 pub enum Stream {
     Stdout,
     Stderr,
+}
+
+impl Stream {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Stream::Stdout => "stdout",
+            Stream::Stderr => "stderr",
+        }
+    }
 }
 
 /// Turns native output into normalized output. One parser per run; it may keep state across

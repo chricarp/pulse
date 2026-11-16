@@ -1,0 +1,110 @@
+#!/bin/sh
+# Fake agent for Pulse tests: never calls a model. See README.md in this directory.
+# Usage: fake-agent <mode> [args...]
+set -u
+mode=${1:-}
+[ $# -gt 0 ] && shift
+
+case "$mode" in
+exit)
+    # exit [CODE]: one line on each stream, then exit with CODE (default 0).
+    echo "stdout line"
+    echo "stderr line" >&2
+    exit "${1:-0}"
+    ;;
+args)
+    # args [ARG...]: each argument on its own line.
+    for a in "$@"; do printf '%s\n' "$a"; done
+    ;;
+stdin)
+    # stdin: copy stdin to stdout.
+    cat
+    ;;
+env)
+    # env: the PULSE_* variables the run received, sorted.
+    env | grep '^PULSE_' | sort
+    ;;
+replay)
+    # replay FILE [DELAY]: print FILE line by line, sleeping DELAY seconds between lines.
+    # Consumes stdin first (to $FAKE_AGENT_STDIN_FILE if set), exits with $FAKE_AGENT_EXIT.
+    if [ -n "${FAKE_AGENT_STDIN_FILE:-}" ]; then cat > "$FAKE_AGENT_STDIN_FILE"; else cat > /dev/null; fi
+    delay=${2:-}
+    while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "$line"
+        if [ -n "$delay" ]; then sleep "$delay"; fi
+    done < "$1"
+    exit "${FAKE_AGENT_EXIT:-0}"
+    ;;
+hang)
+    # hang: print "ready", then wait until killed.
+    echo ready
+    exec sleep 100000
+    ;;
+ignore-term)
+    # ignore-term: print "ready"; on every SIGTERM print "term-ignored" and keep running.
+    trap 'echo term-ignored' TERM
+    echo ready
+    while :; do
+        sleep 100000 &
+        wait $!
+    done
+    ;;
+grandchild)
+    # grandchild [--ignore-term] [--detached] [--hang]: start a grandchild that sleeps (ignoring
+    # SIGTERM, and with its output on /dev/null if asked), print "grandchild <pid>", then exit 0
+    # (abandoning it) or, with --hang, wait until killed.
+    ignore=false detached=false hang=false
+    for a in "$@"; do
+        case "$a" in
+        --ignore-term) ignore=true ;;
+        --detached) detached=true ;;
+        --hang) hang=true ;;
+        *) echo "unknown flag $a" >&2; exit 64 ;;
+        esac
+    done
+    if $detached; then
+        ( if $ignore; then trap '' TERM; fi; exec sleep 100000 ) </dev/null >/dev/null 2>&1 &
+    else
+        ( if $ignore; then trap '' TERM; fi; exec sleep 100000 ) &
+    fi
+    echo "grandchild $!"
+    if $hang; then exec sleep 100000; fi
+    exit 0
+    ;;
+escape)
+    # escape: start a grandchild that leaves the process group with setsid (Linux) and keeps
+    # stdout open; it prints "escaped <pid>" once it is out. Then write a last line without
+    # newline and exit 0.
+    command -v setsid >/dev/null || { echo "fake-agent: setsid not available" >&2; exit 69; }
+    fifo="${TMPDIR:-/tmp}/fake-agent-escape-$$"
+    mkfifo "$fifo" || exit 70
+    setsid sh -c 'echo "escaped $$"; echo > "$1"; exec sleep 100000' sh "$fifo" &
+    # Exiting before the grandchild has left would get it killed with the group.
+    read -r _ < "$fifo"
+    rm -f "$fifo"
+    printf 'partial'
+    ;;
+write-file)
+    # write-file PATH [TEXT]: write TEXT (default "written by fake-agent") to PATH.
+    printf '%s\n' "${2:-written by fake-agent}" > "$1"
+    echo "wrote $1"
+    ;;
+flood)
+    # flood LINES [DONE_FILE]: print LINES numbered 100-byte lines, then create DONE_FILE.
+    awk -v n="$1" 'BEGIN { for (i = 1; i <= n; i++) printf "line %08d %086d\n", i, 0 }'
+    if [ -n "${2:-}" ]; then : > "$2"; fi
+    ;;
+long-line)
+    # long-line BYTES: one line of BYTES "x" characters, then a line "after".
+    head -c "$1" /dev/zero | tr '\0' x
+    printf '\nafter\n'
+    ;;
+bad-utf8)
+    # bad-utf8: invalid UTF-8, a CRLF line, and a last line without a newline.
+    printf 'caf\351\n\377\376 binary\r\nno newline at end'
+    ;;
+*)
+    echo "fake-agent: unknown mode '$mode'" >&2
+    exit 64
+    ;;
+esac

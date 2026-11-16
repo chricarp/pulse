@@ -9,10 +9,15 @@ rust-version.workspace = true
 [dependencies]
 pulse-contracts.workspace = true
 pulse-core.workspace = true
+# Safe process-group signalling and `waitid(WNOWAIT)`; already in the tree through tempfile.
+rustix = { version = "1.1.6", features = ["process"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt", "time", "net", "io-util", "macros"] }
 tokio-util.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "rt", "macros"] }
 
 [lints]
 workspace = true
