@@ -532,9 +532,14 @@ impl RunTask {
         // Output waiting for the append in flight. Bounded: while it is full, nothing more is
         // received, so the supervisor stops reading the agent's pipes.
         let mut queued: Vec<(Timestamp, RunOutput)> = Vec::new();
+        // Said after the output of the line that caused it (the tool call), which follows.
+        let mut opaque_marker: Option<(Timestamp, RunOutput)> = None;
         let mut appending: Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>> = None;
         let mut closed = false;
         loop {
+            if closed {
+                queued.extend(opaque_marker.take());
+            }
             if appending.is_none() && !queued.is_empty() {
                 appending = Some(Box::pin(self.append(std::mem::take(&mut queued))));
             }
@@ -563,10 +568,13 @@ impl RunTask {
                     }
                     match event {
                         SupervisorEvent::Started { .. } => {}
-                        SupervisorEvent::Output { at, output } => queued.push((at, output)),
+                        SupervisorEvent::Output { at, output } => {
+                            queued.push((at, output));
+                            queued.extend(opaque_marker.take());
+                        }
                         SupervisorEvent::Writes { at, facts } => {
                             if let Some(marker) = self.report_writes(&mut writes, facts).await {
-                                queued.push((at, marker));
+                                opaque_marker = Some((at, marker));
                             }
                         }
                     }
@@ -599,7 +607,11 @@ impl RunTask {
                 })
                 .collect::<Vec<_>>()
         };
-        let resolved = tokio::task::spawn_blocking(resolve).await.unwrap_or_default();
+        let resolved = match tokio::task::spawn_blocking(resolve).await {
+            Ok(r) => r,
+            // Losing a fact must not make the run look cleaner than it is.
+            Err(_) => vec![(WriteFact::Opaque("a write Pulse failed to resolve".into()), vec![])],
+        };
         let before = writes.state.clone();
         let became_opaque = writes.record(resolved);
         if writes.state != before {
@@ -681,5 +693,40 @@ async fn sleep_until(at: Option<tokio::time::Instant>) {
     match at {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fs source spells paths under the configured folder; Claude Code reports canonical
+    /// ones (its working directory is the realpath). A reported write must match either.
+    #[test]
+    fn reported_paths_in_every_spelling_the_watcher_may_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().canonicalize().unwrap().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let (real, link) = (real.display().to_string(), link.display().to_string());
+        let cwd_real = Some(real.as_str());
+        let both = |rel: &str| {
+            let mut v = vec![format!("{link}/{rel}"), format!("{real}/{rel}")];
+            v.sort();
+            v
+        };
+        let cases = [
+            (format!("{real}/a.md"), both("a.md")),
+            (format!("{link}/a.md"), both("a.md")),
+            ("a.md".to_owned(), both("a.md")),
+            // The directory does not exist yet: its existing ancestor is resolved.
+            ("notes/new/a.md".to_owned(), both("notes/new/a.md")),
+            ("/elsewhere/x".to_owned(), vec!["/elsewhere/x".to_owned()]),
+            ("../a.md".to_owned(), vec![]),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(spellings(&raw, &link, cwd_real), want, "{raw}");
+        }
     }
 }
