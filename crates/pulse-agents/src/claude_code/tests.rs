@@ -107,7 +107,7 @@ fn invalid_requests() {
 #[test]
 fn recorded_streams() {
     use OutputKind::*;
-    let cases: [(&str, &str, Expect); 3] = [
+    let cases: [(&str, &str, Expect); 4] = [
         (
             "answer",
             include_str!("../../tests/fixtures/claude-code/answer.jsonl"),
@@ -133,6 +133,19 @@ fn recorded_streams() {
                 (Assistant, "I couldn't create `out.txt`."),
                 (Result, "I couldn't create `out.txt`."),
                 (Error, "1 tool call(s) were denied (Write)."),
+            ],
+        ),
+        (
+            "write",
+            include_str!("../../tests/fixtures/claude-code/write.jsonl"),
+            &[
+                (System, "Claude Code 2.1.325"),
+                (ToolUse, "Write /tmp/pulse-run/notes/a.txt"),
+                (ToolResult, "File created successfully at: /tmp/pulse-run/notes/a.txt"),
+                (ToolUse, "Write /tmp/pulse-run/b.txt"),
+                (ToolResult, "File created successfully at: /tmp/pulse-run/b.txt"),
+                (Assistant, "I created both files"),
+                (Result, "I created both files"),
             ],
         ),
         (
@@ -218,4 +231,119 @@ fn unknown_and_malformed_lines_degrade_to_raw_output() {
     for (stream, line, want) in cases {
         assert_outputs(&parse(ClaudeCodeAdapter.parser(), &[(stream, line)]), want, line);
     }
+}
+
+fn facts(lines: &[(Stream, &str)]) -> Vec<WriteFact> {
+    let mut parser = ClaudeCodeAdapter.parser();
+    let (mut out, mut facts) = (Vec::new(), Vec::new());
+    for (stream, line) in lines {
+        parser.line(*stream, line, &mut out);
+        parser.take_facts(&mut facts);
+    }
+    parser.finish(&mut out);
+    parser.take_facts(&mut facts);
+    facts
+}
+
+fn stdout(text: &str) -> Vec<(Stream, &str)> {
+    text.lines().map(|l| (Stream::Stdout, l)).collect()
+}
+
+/// An assistant message with these tool calls; `parent` marks a subagent's call.
+fn tool_calls(calls: &[(&str, serde_json::Value)], parent: Option<&str>) -> String {
+    let content: Vec<serde_json::Value> = calls
+        .iter()
+        .map(|(name, input)| json!({"type": "tool_use", "id": "t", "name": name, "input": input}))
+        .collect();
+    json!({"type": "assistant", "parent_tool_use_id": parent, "message": {"content": content}})
+        .to_string()
+}
+
+#[test]
+fn write_facts() {
+    use WriteFact::{Opaque, Wrote};
+    let wrote = |p: &str| Wrote(p.to_owned());
+    let opaque = |r: &str| Opaque(r.to_owned());
+    assert!(ClaudeCodeAdapter.reports_writes());
+    let recorded: [(&str, &str, Vec<WriteFact>); 4] = [
+        ("answer", include_str!("../../tests/fixtures/claude-code/answer.jsonl"), vec![]),
+        (
+            "write",
+            include_str!("../../tests/fixtures/claude-code/write.jsonl"),
+            vec![wrote("/tmp/pulse-run/notes/a.txt"), wrote("/tmp/pulse-run/b.txt")],
+        ),
+        // The refused `Write` still counts: it is seen before the refusal.
+        (
+            "tool-denied",
+            include_str!("../../tests/fixtures/claude-code/tool-denied.jsonl"),
+            vec![wrote("/tmp/pulse-run/out.txt")],
+        ),
+        ("bad-model", include_str!("../../tests/fixtures/claude-code/bad-model.jsonl"), vec![]),
+    ];
+    for (name, text, want) in recorded {
+        assert_eq!(facts(&stdout(text)), want, "{name}");
+    }
+
+    let truncated = &include_str!("../../tests/fixtures/claude-code/write.jsonl")[..300];
+    let not_understood = || opaque("output Pulse does not recognize");
+    let lines: Vec<(String, Vec<WriteFact>)> = vec![
+        (
+            tool_calls(
+                &[
+                    ("Read", json!({"file_path": "/w/a.pdf"})),
+                    ("Grep", json!({"pattern": "x"})),
+                    ("TodoWrite", json!({"todos": []})),
+                    ("Edit", json!({"file_path": "notes/a.md", "old_string": "a"})),
+                    ("MultiEdit", json!({"file_path": "/w/b.md", "edits": []})),
+                    ("NotebookEdit", json!({"notebook_path": "/w/n.ipynb"})),
+                ],
+                None,
+            ),
+            vec![wrote("notes/a.md"), wrote("/w/b.md"), wrote("/w/n.ipynb")],
+        ),
+        (
+            tool_calls(
+                &[
+                    ("Bash", json!({"command": "pdftotext a.pdf"})),
+                    ("Task", json!({"prompt": "summarize"})),
+                    ("mcp__pulse__query_events", json!({})),
+                    ("SomeNewTool", json!({"file_path": "/w/a"})),
+                    ("Write", json!({"path": "/w/a"})),
+                ],
+                None,
+            ),
+            vec![
+                opaque("Bash"),
+                opaque("Task"),
+                opaque("mcp__pulse__query_events"),
+                opaque("SomeNewTool"),
+                opaque("Write without a file_path"),
+            ],
+        ),
+        // A subagent's calls are in the stream too.
+        (
+            tool_calls(&[("Write", json!({"file_path": "/w/sub.md"}))], Some("toolu_1")),
+            vec![wrote("/w/sub.md")],
+        ),
+        (
+            r#"{"type":"system","subtype":"hook_response","hook_name":"x"}"#.into(),
+            vec![opaque("a hook")],
+        ),
+        (r#"{"type":"system","subtype":"compact_boundary"}"#.into(), vec![]),
+        (
+            r#"{"type":"assistant","message":{"content":[{"type":"image","source":{}}]}}"#.into(),
+            vec![not_understood()],
+        ),
+        (r#"{"type":"brand_new_event","x":1}"#.into(), vec![not_understood()]),
+        (r#"{"type":"assistant"}"#.into(), vec![not_understood()]),
+        ("not json".into(), vec![not_understood()]),
+        (truncated.into(), vec![not_understood()]),
+        ("".into(), vec![]),
+        (r#"{"type":"result","result":"done"}"#.into(), vec![]),
+    ];
+    for (line, want) in &lines {
+        assert_eq!(&facts(&[(Stream::Stdout, line)]), want, "{line}");
+    }
+    // Stderr is not the agent's tool stream.
+    assert_eq!(facts(&[(Stream::Stderr, "not json")]), vec![]);
 }

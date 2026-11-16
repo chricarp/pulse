@@ -145,7 +145,7 @@ async fn a_pdf_saved_while_another_is_summarized_gets_its_own_run() {
         .await;
     assert_eq!(
         (summary.causation_run, summary.causation),
-        (Some(first.id), Some(Causation::Inferred))
+        (Some(first.id), Some(Causation::Reported))
     );
     stream.write(&format!("{}\n", claude::result("done")));
     stream.close();

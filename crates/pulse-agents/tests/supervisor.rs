@@ -161,6 +161,43 @@ async fn exits() {
     }
 }
 
+/// Loop protection needs a write reported before the file event can exist: the facts of a line
+/// go out before its outputs, and the tool call before the agent does anything else.
+#[tokio::test(start_paused = true)]
+async fn write_facts_precede_their_line() {
+    let _serial = SERIAL.lock().await;
+    let stream = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code/write.jsonl")
+        .display()
+        .to_string();
+    let (tx, mut rx) = mpsc::channel(4);
+    let parser =
+        pulse_agents::adapter_for(pulse_contracts::config::AgentKind::ClaudeCode).unwrap().parser();
+    let handle = tokio::spawn(supervise(
+        fake(&["replay", &stream]),
+        parser,
+        tx,
+        OPTIONS,
+        CancellationToken::new(),
+    ));
+    let mut seen = Vec::new();
+    while let Some(event) = rx.recv().await {
+        seen.push(match event {
+            SupervisorEvent::Started { .. } => "started".to_owned(),
+            SupervisorEvent::Writes { facts, .. } => format!("{facts:?}"),
+            SupervisorEvent::Output { output, .. } => output.kind.as_str().to_owned(),
+        });
+    }
+    handle.await.unwrap().unwrap();
+    let writes: Vec<(usize, &String)> =
+        seen.iter().enumerate().filter(|(_, s)| s.starts_with('[')).collect();
+    assert_eq!(writes.len(), 2, "{seen:?}");
+    for (i, facts) in writes {
+        assert!(facts.contains("Wrote(\"/tmp/pulse-run/"), "{facts}");
+        assert_eq!(seen[i + 1], "tool_use", "{seen:?}");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn stdin_and_environment() {
     let _serial = SERIAL.lock().await;

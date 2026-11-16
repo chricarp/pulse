@@ -4,6 +4,7 @@
 use pulse_contracts::rpc::{NameParams, method};
 use pulse_contracts::status::SourceState;
 use pulse_contracts::{BlockReason, Causation, DeliveryOutcome, Event, RunStatus};
+use serde_json::json;
 
 use crate::support::*;
 
@@ -152,6 +153,114 @@ async fn a_run_writing_into_its_own_watched_folder_is_blocked_as_a_self_trigger(
                 Some(BlockReason::LoopSelfTrigger { run: again.id })
             );
             assert_eq!(watch.all_runs().await.len(), 2);
+        }
+        daemon.stop().await;
+    }
+}
+
+/// Reported causation, through the `claude-code` adapter (`fake-claude` replays a stream with
+/// the tool calls, then does the writes): a write the agent's tool call named is its own, in
+/// its working directory or outside it; after a tool whose writes cannot be seen (`Bash`), the
+/// run falls back to inference; a write it did not report is taken for the user's.
+#[tokio::test(flavor = "multi_thread")]
+async fn writes_an_agent_reports_are_its_own_and_opaque_tools_fall_back_to_inference() {
+    enum Want {
+        Blocked(Causation),
+        /// Not attributed: fires once more (and that run's rewrite is a `modified`).
+        Fires,
+    }
+    let cases = [
+        (
+            "reported, in its cwd",
+            Some("~/watched"),
+            false,
+            true,
+            Want::Blocked(Causation::Reported),
+        ),
+        ("reported, outside its cwd", None, false, true, Want::Blocked(Causation::Reported)),
+        ("after Bash", Some("~/watched"), true, false, Want::Blocked(Causation::Inferred)),
+        ("not reported", Some("~/watched"), false, false, Want::Fires),
+    ];
+    for (case, cwd, bash, reported, want) in cases {
+        let env = Env::new();
+        env.mkdir("watched");
+        let out = env.user_path("watched/out.txt").display().to_string();
+        let mut stream = vec![claude::init("/somewhere")];
+        if bash {
+            stream.push(claude::tool_use("Bash", json!({"command": "echo x > out.txt"})));
+        }
+        if reported {
+            stream.push(claude::write(&out));
+        } else {
+            stream.push(format!("#write {out}"));
+        }
+        stream.push(claude::result("done"));
+        let stream_file = env.dir.path().join("stream.jsonl");
+        std::fs::write(&stream_file, stream.join("\n") + "\n").unwrap();
+        let cwd = cwd.map(|c| format!("cwd = {c:?}\n")).unwrap_or_default();
+        env.write_config(&fake_claude(
+            &format!(
+                r#"
+[limits]
+causation_grace = "30s"
+
+[[source]]
+name = "watched"
+kind = "fs"
+path = "~/watched"
+quiet = "100ms"
+
+[[agent]]
+name = "writer"
+adapter = "claude-code"
+allow = ["fs.*:~/watched/**"]
+{cwd}
+[[rule]]
+name = "on-new-file"
+on = "fs.file.created"
+where = {{ path = "~/watched/**" }}
+run = {{ agent = "writer", prompt = "Handle {{{{path}}}}" }}
+"#
+            ),
+            &[("FAKE_AGENT_STREAM", stream_file.display().to_string())],
+        ));
+        let daemon = env.start().await;
+        let mut watch = daemon.watch().await;
+        watch.sources(SourceState::Healthy).await;
+
+        std::fs::write(env.user_path("watched/seed.txt"), "seed").unwrap();
+        let run = watch.run_in("the first run", |_| true).await;
+        assert_eq!(watch.run_terminal(run.id).await.status, RunStatus::Succeeded, "{case}");
+        let event = created(&mut watch, "out.txt").await;
+        let detail = watch.detail(event.id).await;
+        match want {
+            Want::Blocked(kind) => {
+                assert_eq!(
+                    (event.causation_run, event.causation),
+                    (Some(run.id), Some(kind)),
+                    "{case}"
+                );
+                assert_eq!(
+                    blocked(&detail, "on-new-file"),
+                    Some(BlockReason::LoopSelfTrigger { run: run.id }),
+                    "{case}"
+                );
+                assert_eq!(watch.all_runs().await.len(), 1, "{case}");
+                let (code, text, _) = env.run(&["events", "show", &event.id.to_string()]).await;
+                assert_eq!(code, 0);
+                let how = if kind == Causation::Reported { ", reported)" } else { ", inferred)" };
+                assert!(text.contains(&format!("(from run {}{how}", run.id)), "{case}: {text}");
+            }
+            Want::Fires => {
+                assert_eq!(event.causation_run, None, "{case}");
+                let again = watch.run_in("the second run", |r| r.id != run.id).await;
+                watch.run_terminal(again.id).await;
+                assert_eq!(detail.deliveries.len(), 1, "{case}: {:?}", detail.deliveries);
+                assert_eq!(detail.deliveries[0].run, Some(again.id), "{case}");
+            }
+        }
+        if bash {
+            watch.output_line(run.id, "can no longer tell this run's writes apart (Bash)").await;
         }
         daemon.stop().await;
     }

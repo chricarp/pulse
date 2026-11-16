@@ -72,8 +72,11 @@ impl Event {
 pub enum Causation {
     /// Reported by a process that carried `PULSE_RUN_ID` (`pulse run`, `pulse ingest`).
     Exact,
-    /// Attributed because a filesystem or git event happened inside an active run's working
-    /// directory. May be wrong.
+    /// A filesystem event on a path the run's agent said it wrote: its adapter saw the tool
+    /// call (Claude Code's `Write`, `Edit`, …). As good as the agent's own output.
+    Reported,
+    /// Attributed because a filesystem or git event happened inside the working directory of
+    /// an active run whose writes Pulse cannot see. May be wrong.
     Inferred,
 }
 

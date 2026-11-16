@@ -10,17 +10,29 @@
 //! pending. A run is re-read before it starts, so one cancelled while it waited is skipped.
 //! On shutdown every active run is cancelled (the supervisor terminates its process group) and
 //! the worker waits for all of them to be reaped and recorded as `interrupted`.
+//!
+//! What a run's adapter reports about its writes goes to the engine as soon as it is read, and
+//! is not held up by a slow output append: the engine needs it before the file event that the
+//! write causes, which the fs source holds back for its quiet period. Paths are resolved here
+//! (the filesystem is the daemon's business): relative to the run's working directory, and in
+//! every spelling the watcher might use (as given, canonical, and canonical spelled under the
+//! configured working directory, since Claude Code reports the canonical one).
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pulse_agents::{RunEnd, RunRequest, SuperviseError, SuperviseOptions, SupervisorEvent};
+use pulse_agents::{
+    RunEnd, RunRequest, SuperviseError, SuperviseOptions, SupervisorEvent, WriteFact,
+};
 use pulse_contracts::pattern::expand_path;
 use pulse_contracts::run::InvocationSummary;
-use pulse_contracts::{RenderedPrompt, Run, RunId, RunOutput, RunStatus, Timestamp};
-use pulse_core::RecentRun;
+use pulse_contracts::{OutputKind, RenderedPrompt, Run, RunId, RunOutput, RunStatus, Timestamp};
+use pulse_core::path::{rebase, resolve_reported};
+use pulse_core::{RecentRun, RunWrites};
 use pulse_store::{Effect, OutboxItem, RunTransition, StoreError};
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -268,8 +280,76 @@ struct RunTask {
 }
 
 enum Prepared {
-    Ready { invocation: Box<pulse_agents::Invocation>, parser: Box<dyn pulse_agents::OutputParser> },
+    Ready {
+        invocation: Box<pulse_agents::Invocation>,
+        parser: Box<dyn pulse_agents::OutputParser>,
+        writes: Writes,
+    },
     Failed(String),
+}
+
+/// A run's write knowledge, kept here and copied to the engine whenever it changes.
+struct Writes {
+    state: RunWrites,
+    /// The working directory as configured (how the fs source spells it) and canonical.
+    cwd: String,
+    cwd_real: Option<String>,
+}
+
+impl Writes {
+    /// Records facts; returns why the run just became opaque, if it did.
+    fn record(&mut self, facts: Vec<(WriteFact, Vec<String>)>) -> Option<String> {
+        let mut became = None;
+        for (fact, spellings) in facts {
+            let (now_opaque, why) = match fact {
+                WriteFact::Wrote(raw) => {
+                    let why = if spellings.is_empty() {
+                        let raw: String = raw.chars().take(200).collect();
+                        format!("a write to {raw:?}, a path Pulse cannot resolve")
+                    } else {
+                        format!("more than {} files written", RunWrites::MAX_PATHS)
+                    };
+                    (self.state.record_write(&spellings), why)
+                }
+                WriteFact::Opaque(why) => (self.state.make_opaque(), why),
+            };
+            if now_opaque {
+                became = Some(why);
+            }
+        }
+        became
+    }
+}
+
+/// The spellings of a reported path, or none if it cannot be resolved. Blocking.
+fn spellings(raw: &str, cwd: &str, cwd_real: Option<&str>) -> Vec<String> {
+    let Some(path) = resolve_reported(raw, cwd) else { return Vec::new() };
+    let mut out = vec![path.clone()];
+    if let Some(real) = canonical(Path::new(&path)) {
+        if let Some(back) = cwd_real.and_then(|r| rebase(&real, r, cwd)) {
+            out.push(back);
+        }
+        out.push(real);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// `path` with its longest existing prefix canonicalized (the file itself usually does not
+/// exist yet when its write is reported).
+fn canonical(path: &Path) -> Option<String> {
+    let mut tail = Vec::new();
+    let mut base = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(base) {
+            let mut real = real;
+            real.extend(tail.iter().rev());
+            return real.to_str().map(str::to_owned);
+        }
+        tail.push(base.file_name()?);
+        base = base.parent()?;
+    }
 }
 
 impl RunTask {
@@ -277,8 +357,8 @@ impl RunTask {
         let id = self.run.id;
         match self.prepare().await {
             Prepared::Failed(error) => self.fail_to_start(error).await,
-            Prepared::Ready { invocation, parser } => {
-                self.supervise(*invocation, parser).await;
+            Prepared::Ready { invocation, parser, writes } => {
+                self.supervise(*invocation, parser, writes).await;
             }
         }
         id
@@ -338,10 +418,24 @@ impl RunTask {
             pulse_home: self.shared.home.root().to_path_buf(),
             limits: snapshot.config.limits.prompt.clone(),
         };
+        let cwd_real = tokio::fs::canonicalize(&request.cwd)
+            .await
+            .ok()
+            .and_then(|p| p.to_str().map(str::to_owned));
         match adapter.invocation(agent, &request) {
-            Ok(invocation) => {
-                Prepared::Ready { invocation: Box::new(invocation), parser: adapter.parser() }
-            }
+            Ok(invocation) => Prepared::Ready {
+                writes: Writes {
+                    state: if adapter.reports_writes() {
+                        RunWrites::observed()
+                    } else {
+                        RunWrites::opaque()
+                    },
+                    cwd: invocation.cwd.display().to_string(),
+                    cwd_real,
+                },
+                invocation: Box::new(invocation),
+                parser: adapter.parser(),
+            },
             Err(e) => Prepared::Failed(e.to_string()),
         }
     }
@@ -375,7 +469,13 @@ impl RunTask {
 
     /// `queued → running`, as of `at`. `false` if the run is no longer queued (cancelled
     /// meanwhile).
-    async fn start(&self, pid: Option<u32>, invocation: &InvocationSummary, at: Timestamp) -> bool {
+    async fn start(
+        &self,
+        pid: Option<u32>,
+        invocation: &InvocationSummary,
+        at: Timestamp,
+        writes: RunWrites,
+    ) -> bool {
         let t = RunTransition::Start { pid, invocation: invocation.clone() };
         let started = self.transition_at(t, at).await;
         self.complete_item().await;
@@ -388,6 +488,7 @@ impl RunTask {
                     started_at: run.started_at.unwrap_or(run.created_at),
                     ended_at: None,
                     chain_depth: run.chain_depth,
+                    writes,
                 };
                 let _ = self.shared.engine.control(Control::RunStarted(recent)).await;
                 true
@@ -412,6 +513,7 @@ impl RunTask {
         &self,
         invocation: pulse_agents::Invocation,
         parser: Box<dyn pulse_agents::OutputParser>,
+        mut writes: Writes,
     ) {
         let summary = invocation.summary();
         // The run starts before its process does: inferred causation compares event times with
@@ -427,40 +529,50 @@ impl RunTask {
         // None until the run is recorded as running; Some(false) if it turned out cancelled.
         let mut started: Option<bool> = None;
         let mut result = None;
+        // Output waiting for the append in flight. Bounded: while it is full, nothing more is
+        // received, so the supervisor stops reading the agent's pipes.
+        let mut queued: Vec<(Timestamp, RunOutput)> = Vec::new();
+        let mut appending: Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>> = None;
+        let mut closed = false;
         loop {
-            let event = tokio::select! {
-                ev = rx.recv() => ev,
-                res = &mut supervised, if result.is_none() => {
-                    result = Some(res);
-                    continue;
-                }
-            };
-            let Some(event) = event else { break };
-            match event {
-                SupervisorEvent::Started { pid } => {
+            if appending.is_none() && !queued.is_empty() {
+                appending = Some(Box::pin(self.append(std::mem::take(&mut queued))));
+            }
+            if closed && appending.is_none() {
+                break;
+            }
+            tokio::select! {
+                ev = rx.recv(), if !closed && queued.len() < OUTPUT_BATCH => {
+                    let Some(event) = ev else {
+                        closed = true;
+                        continue;
+                    };
                     if started.is_none() {
-                        started = Some(self.start(Some(pid), &summary, spawned_at).await);
+                        let pid = match event {
+                            SupervisorEvent::Started { pid } => Some(pid),
+                            _ => None,
+                        };
+                        started =
+                            Some(self.start(pid, &summary, spawned_at, writes.state.clone()).await);
                         if started == Some(false) {
                             self.cancel.cancel();
                         }
                     }
-                }
-                SupervisorEvent::Output { at, output } => {
-                    if started.is_none() {
-                        started = Some(self.start(None, &summary, spawned_at).await);
+                    if started != Some(true) {
+                        continue;
                     }
-                    let mut chunks = vec![(at, output)];
-                    while chunks.len() < OUTPUT_BATCH {
-                        match rx.try_recv() {
-                            Ok(SupervisorEvent::Output { at, output }) => chunks.push((at, output)),
-                            Ok(SupervisorEvent::Started { .. }) => {}
-                            Err(_) => break,
+                    match event {
+                        SupervisorEvent::Started { .. } => {}
+                        SupervisorEvent::Output { at, output } => queued.push((at, output)),
+                        SupervisorEvent::Writes { at, facts } => {
+                            if let Some(marker) = self.report_writes(&mut writes, facts).await {
+                                queued.push((at, marker));
+                            }
                         }
                     }
-                    if started == Some(true) {
-                        self.append(chunks).await;
-                    }
                 }
+                () = wait(&mut appending), if appending.is_some() => appending = None,
+                res = &mut supervised, if result.is_none() => result = Some(res),
             }
         }
         // The channel closed, so the supervisor has returned or is about to.
@@ -469,6 +581,43 @@ impl RunTask {
             None => supervised.await,
         };
         self.finish(started, result).await;
+    }
+
+    /// Resolves reported paths, tells the engine, and returns a marker for the run's output if
+    /// the run just became opaque.
+    async fn report_writes(&self, writes: &mut Writes, facts: Vec<WriteFact>) -> Option<RunOutput> {
+        let (cwd, cwd_real) = (writes.cwd.clone(), writes.cwd_real.clone());
+        let resolve = move || {
+            facts
+                .into_iter()
+                .map(|f| {
+                    let s = match &f {
+                        WriteFact::Wrote(raw) => spellings(raw, &cwd, cwd_real.as_deref()),
+                        WriteFact::Opaque(_) => Vec::new(),
+                    };
+                    (f, s)
+                })
+                .collect::<Vec<_>>()
+        };
+        let resolved = tokio::task::spawn_blocking(resolve).await.unwrap_or_default();
+        let before = writes.state.clone();
+        let became_opaque = writes.record(resolved);
+        if writes.state != before {
+            let control = Control::RunWrites { id: self.run.id, writes: writes.state.clone() };
+            let _ = self.shared.engine.control(control).await;
+        }
+        let why = became_opaque?;
+        let grace = self.shared.snapshot().config.limits.causation_grace;
+        let why: String = why.chars().take(200).collect();
+        Some(RunOutput {
+            kind: OutputKind::Marker,
+            text: format!(
+                "Pulse can no longer tell this run's writes apart ({why}). Until {grace} after it \
+                 ends, changes in {} are taken to be its own (inferred), yours included.",
+                writes.cwd
+            ),
+            data: Some(serde_json::json!({ "reason": "writes_opaque", "cause": why })),
+        })
     }
 
     async fn finish(&self, started: Option<bool>, result: Result<RunEnd, SuperviseError>) {
@@ -486,6 +635,7 @@ impl RunTask {
                         cwd: String::new(),
                     },
                     self.shared.clock.now(),
+                    RunWrites::opaque(),
                 )
                 .await
             }
@@ -516,6 +666,14 @@ impl RunTask {
             Err(e) => tracing::error!("run {}: could not record its end: {e}", self.run.id),
         }
         let _ = self.shared.engine.control(Control::RefreshBacklog).await;
+    }
+}
+
+/// Waits for the future in `slot`; never resolves when there is none.
+async fn wait(slot: &mut Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>>) {
+    match slot {
+        Some(f) => f.await,
+        None => std::future::pending().await,
     }
 }
 
