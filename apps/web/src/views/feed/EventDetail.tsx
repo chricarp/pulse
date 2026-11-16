@@ -5,7 +5,7 @@ import { href, navigate } from "../../app/router";
 import { attempt } from "../../app/toasts";
 import type { Delivery, EventDetail as Detail, RunSummary } from "../../contracts";
 import { RpcCallError } from "../../rpc/client";
-import { deliveryLabel, deliveryTone, outcomeSentence, RUN_STATUS_LABEL, runTone } from "../../lib/explain";
+import { CAUSATION, deliveryLabel, deliveryTone, outcomeSentence, RUN_STATUS_LABEL, runTone } from "../../lib/explain";
 import { EMPTY_FILTER, type FeedFilter } from "../../lib/filter";
 import { count, dayAndTime, hasHiddenCharacters, shortId, sourceName, visible } from "../../lib/format";
 import { typeGlobMatches } from "../../lib/syntax";
@@ -203,7 +203,7 @@ function Causation({ event }: { event: Detail["event"] }) {
   if (!event.pulsecausationrun) {
     return event.pulsechaindepth > 0 ? <p className="faint">Chain depth {event.pulsechaindepth}.</p> : null;
   }
-  const exact = event.pulsecausation === "exact";
+  const how = CAUSATION[event.pulsecausation ?? "inferred"];
   return (
     <Notice
       tone="neutral"
@@ -213,13 +213,11 @@ function Causation({ event }: { event: Detail["event"] }) {
           <a className="mono" href={href({ view: "runs", runId: event.pulsecausationrun })} onClick={(e) => { e.preventDefault(); navigate({ view: "runs", runId: event.pulsecausationrun ?? "" }); }}>
             {shortId(event.pulsecausationrun)}
           </a>{" "}
-          <Pill tone={exact ? "ok" : "waiting"}>{exact ? "exact" : "inferred"}</Pill>
+          <Pill tone={how.tone}>{how.label}</Pill>
         </>
       }
     >
-      {exact
-        ? "The run reported this event itself (it carried the run's PULSE_RUN_ID)."
-        : "The change happened inside that run's working directory while it ran (or just after), so Pulse attributes it to the run. Filesystems do not say which process wrote a file, so this is a guess."}{" "}
+      {how.why}{" "}
       Chain depth <span className="num">{event.pulsechaindepth}</span>.
     </Notice>
   );

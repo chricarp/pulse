@@ -1,6 +1,6 @@
 // Words for routing outcomes and run states: what happened, and why, in one line.
 
-import type { BlockReason, DeliveryOutcome, Outcome, RunStatus, SourceState, TrustState } from "../contracts";
+import type { BlockReason, Causation, DeliveryOutcome, Outcome, RunStatus, SourceState, TrustState } from "../contracts";
 
 export type Tone = "ok" | "attention" | "waiting" | "loop" | "blocked" | "error" | "neutral" | "running";
 
@@ -107,6 +107,28 @@ export function outcomeSentence(o: DeliveryOutcome | Outcome, agent: string, whe
       return blockSentence(o.reason, agent, when);
   }
 }
+
+/** How an event's causing run is known: a pill, a feed flag, and the explanation. */
+export const CAUSATION: Record<Causation, { label: string; flag: string; tone: Tone; why: string }> = {
+  exact: {
+    label: "exact",
+    flag: "by agent",
+    tone: "ok",
+    why: "The run reported this event itself (it carried the run's PULSE_RUN_ID).",
+  },
+  reported: {
+    label: "reported",
+    flag: "by agent",
+    tone: "ok",
+    why: "The agent's own tool call named this file (a Write or Edit in its output), so Pulse attributes the change to the run. It is as reliable as the agent's output.",
+  },
+  inferred: {
+    label: "inferred",
+    flag: "by agent?",
+    tone: "waiting",
+    why: "The change happened inside that run's working directory while it ran (or just after), and the run had done something whose writes Pulse cannot see (a shell command, say), so Pulse attributes the change to the run. Filesystems do not say which process wrote a file, so this is a guess.",
+  },
+};
 
 export const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   pending_approval: "awaiting approval",
