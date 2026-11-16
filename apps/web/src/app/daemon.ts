@@ -30,6 +30,8 @@ export interface DaemonState {
   sources: SourceInfo[] | null;
   projects: Project[] | null;
   configErrors: ConfigError[] | null;
+  /** Definitions in effect that cannot work as written (a rule that can never fire). */
+  configWarnings: ConfigError[] | null;
   eventTypes: EventTypeInfo[] | null;
   /** Run index: every active run plus the newest finished ones. */
   runs: ReadonlyMap<string, RunSummary>;
@@ -60,6 +62,7 @@ export class Daemon {
       sources: null,
       projects: null,
       configErrors: null,
+      configWarnings: null,
       eventTypes: null,
       runs: new Map(),
       runsVersion: 0,
@@ -119,6 +122,7 @@ export class Daemon {
         sources: sources.sources,
         projects: projects.projects,
         configErrors: errors.errors,
+        configWarnings: errors.warnings,
         loadError: null,
       }));
       if (!this.store.get().eventTypes) {
@@ -165,7 +169,7 @@ export class Daemon {
       tasks.push(c.call("projects.list", {}).then((r) => this.store.set((s) => ({ ...s, projects: r.projects }))));
     }
     if (t.has("config")) {
-      tasks.push(c.call("system.config_errors", {}).then((r) => this.store.set((s) => ({ ...s, configErrors: r.errors }))));
+      tasks.push(c.call("system.config_errors", {}).then((r) => this.store.set((s) => ({ ...s, configErrors: r.errors, configWarnings: r.warnings }))));
     }
     await Promise.allSettled(tasks);
   }

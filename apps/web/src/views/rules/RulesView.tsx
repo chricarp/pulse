@@ -55,24 +55,41 @@ function MissingRule({ name, loaded }: { name: string; loaded: boolean }) {
 }
 
 export function ConfigErrors({ errors }: { errors: ConfigError[] }) {
-  const tildify = useTildify();
   if (errors.length === 0) return null;
   return (
     <Notice tone="error" title={`${plural(errors.length, "problem")} in config files`}>
       <p>Until it is fixed, Pulse keeps using the last version of the file that worked (a project's file with errors is inactive instead). Edit the file; Pulse reloads it on save.</p>
-      <ul className="config-errors">
-        {errors.map((e, i) => (
-          <li key={i}>
-            <span className="mono" title={e.file ?? undefined}>
-              {e.file ? tildify(e.file) : "config"}
-              {e.line ? `:${e.line}` : ""}
-              {e.column ? `:${e.column}` : ""}
-            </span>{" "}
-            {e.item && <span className="mono">{e.item}</span>} {e.field && <code>{e.field}</code>} <span>{e.message}</span>
-          </li>
-        ))}
-      </ul>
+      <ConfigProblemList problems={errors} />
     </Notice>
+  );
+}
+
+/** Definitions that loaded but cannot work as written. Nothing is disabled; the user is told. */
+export function ConfigWarnings({ warnings }: { warnings: ConfigError[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <Notice tone="attention" title={`${plural(warnings.length, "definition")} that cannot work as written`}>
+      <p>These are loaded and in effect, but will not do what they say until the cause is fixed.</p>
+      <ConfigProblemList problems={warnings} />
+    </Notice>
+  );
+}
+
+function ConfigProblemList({ problems }: { problems: ConfigError[] }) {
+  const tildify = useTildify();
+  return (
+    <ul className="config-errors">
+      {problems.map((e, i) => (
+        <li key={i}>
+          <span className="mono" title={e.file ?? undefined}>
+            {e.file ? tildify(e.file) : "config"}
+            {e.line ? `:${e.line}` : ""}
+            {e.column ? `:${e.column}` : ""}
+          </span>{" "}
+          {e.item && <span className="mono">{e.item}</span>} {e.field && <code>{e.field}</code>} <span>{e.message}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -87,6 +104,7 @@ function ruleTone(r: RuleInfo, now: number): { tone: "ok" | "neutral" | "attenti
 function RulesList({ selected }: { selected: string | null }) {
   const rules = useDaemon((s) => s.rules);
   const errors = useDaemon((s) => s.configErrors) ?? NO_ERRORS;
+  const warnings = useDaemon((s) => s.configWarnings) ?? NO_ERRORS;
   const archived = useStore(showArchived, (v) => v);
   const [q, setQ] = useState("");
   const now = useNow();
@@ -124,6 +142,7 @@ function RulesList({ selected }: { selected: string | null }) {
       {errors.length > 0 && (
         <div className="list-notice">
           <ConfigErrors errors={errors} />
+          <ConfigWarnings warnings={warnings} />
         </div>
       )}
       <div className="table-scroll">

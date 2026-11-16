@@ -337,6 +337,17 @@ export function projects(now: number): Project[] {
   ];
 }
 
+export function configWarnings(): ConfigError[] {
+  return [
+    {
+      file: `${HOME}/.pulse/pulse.toml`,
+      item: 'agent "reviewer"',
+      field: "program",
+      message: 'the program "codex" was not found on PATH; runs of this agent will fail to start',
+    },
+  ];
+}
+
 export function configErrors(): ConfigError[] {
   return [
     {

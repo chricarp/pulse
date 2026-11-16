@@ -7,13 +7,14 @@ import { count, dayAndTime, span } from "../../lib/format";
 import { Button, Confirm, Dl, Empty, Notice, Section, Trunc, useNow } from "../../ui/primitives";
 import { ShortcutList } from "../../shell/HelpOverlay";
 import { useTogglePause } from "../../shell/Shell";
-import { ConfigErrors } from "../rules/RulesView";
+import { ConfigErrors, ConfigWarnings } from "../rules/RulesView";
 
 export function SystemView() {
   const { client } = useApp();
   const status = useDaemon((s) => s.status);
   const connection = useDaemon((s) => s.connection);
   const errors = useDaemon((s) => s.configErrors);
+  const warnings = useDaemon((s) => s.configWarnings);
   const theme = useTheme();
   const now = useNow();
   const togglePause = useTogglePause();
@@ -55,7 +56,9 @@ export function SystemView() {
                 />
               </Section>
               <Section title="Config">
-                {errors && errors.length > 0 ? <ConfigErrors errors={errors} /> : <p className="faint">No problems in the config files.</p>}
+                {errors && errors.length > 0 ? <ConfigErrors errors={errors} /> : null}
+                {warnings && warnings.length > 0 ? <ConfigWarnings warnings={warnings} /> : null}
+                {!errors?.length && !warnings?.length ? <p className="faint">No problems in the config files.</p> : null}
               </Section>
             </>
           )}

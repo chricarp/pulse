@@ -201,6 +201,7 @@ export class MockDaemon {
   /** Definitions of an untrusted project, kept so trusting it again restores them. */
   private readonly stash = new Map<string, { rules: Def<RuleConfig>[]; agents: Def<AgentConfig>[]; sources: (Def<SourceConfig> & { health: SourceHealth })[] }>();
   private configErrors: ConfigError[];
+  private configWarnings: ConfigError[];
   private readonly ruleState: Record<string, RuleRuntimeStatus>;
   private readonly fires = new Map<string, number[]>();
   private readonly debounces = new Map<string, { timer: ReturnType<typeof setTimeout>; event: Event }>();
@@ -222,6 +223,7 @@ export class MockDaemon {
     this.sources = fx.sources(now);
     this.projects = fx.projects(now);
     this.configErrors = fx.configErrors();
+    this.configWarnings = fx.configWarnings();
     this.ruleState = fx.ruleStates(now);
     if (opts.seed !== false) this.seed(now);
     if (opts.trickle !== false) this.scheduleTrickle();
@@ -306,6 +308,7 @@ export class MockDaemon {
       rules: this.rules.filter((r) => !r.config.archived).length,
       agents: this.agents.length,
       config_errors: this.configErrors.length,
+      config_warnings: this.configWarnings.length,
     };
   }
 
@@ -1391,7 +1394,7 @@ export class MockDaemon {
       return {};
     },
     "system.event_types": () => ({ types: CATALOG }),
-    "system.config_errors": () => ({ errors: this.configErrors }),
+    "system.config_errors": () => ({ errors: this.configErrors, warnings: this.configWarnings }),
   };
 
   // ---- the machine's life ----

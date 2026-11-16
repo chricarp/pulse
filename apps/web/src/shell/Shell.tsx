@@ -100,6 +100,7 @@ function Sidebar({ active, onPalette }: { active: ViewName; onPalette: () => voi
   const sources = useDaemon((s) => s.sources);
   const projects = useDaemon((s) => s.projects);
   const configErrors = useDaemon((s) => s.configErrors?.length ?? 0);
+  const configWarnings = useDaemon((s) => s.configWarnings?.length ?? 0);
   let running = 0;
   let pending = 0;
   for (const r of runs.values()) {
@@ -118,7 +119,12 @@ function Sidebar({ active, onPalette }: { active: ViewName; onPalette: () => voi
           </>
         );
       case "rules":
-        return configErrors > 0 ? <span className="badge tone-error" title={`${configErrors} config errors`}>{configErrors}</span> : null;
+        return (
+          <>
+            {configErrors > 0 && <span className="badge tone-error" title={`${configErrors} config errors`}>{configErrors}</span>}
+            {configWarnings > 0 && <span className="badge tone-attention" title={`${configWarnings} definitions that cannot work as written`}>{configWarnings}</span>}
+          </>
+        );
       case "sources":
         return badSources > 0 ? <span className="badge tone-error" title={`${badSources} sources failing or degraded`}>{badSources}</span> : null;
       case "projects":
