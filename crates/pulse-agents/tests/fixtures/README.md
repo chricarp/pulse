@@ -15,7 +15,7 @@ A stand-in for any `command` agent. Use it as `command[0]`.
 | `args [ARG…]` | each argument on its own line | asserting argv as the process saw it |
 | `stdin` | copies stdin to stdout | asserting the prompt or event JSON on stdin |
 | `env` | the `PULSE_*` variables it received, sorted | the run environment contract |
-| `replay FILE [DELAY]` | consumes stdin (into `$FAKE_AGENT_STDIN_FILE` if set), prints `FILE` line by line, sleeping `DELAY` seconds between lines, exits `$FAKE_AGENT_EXIT` (0) | live output, slow streams |
+| `replay FILE [DELAY]` | consumes stdin (into `$FAKE_AGENT_STDIN_FILE` if set), prints `FILE` line by line, sleeping `DELAY` seconds between lines, exits `$FAKE_AGENT_EXIT` (0). A line `#write PATH` is not printed: it writes a line to `PATH` (after the line before it was printed, as a real agent prints a tool call and then runs it) | live output, slow streams, an agent's writes |
 | `hang` | prints `ready`, then sleeps until killed | timeout, cancel, shutdown |
 | `ignore-term` | prints `ready`; on each SIGTERM prints `term-ignored` and keeps running | the SIGKILL after the grace period |
 | `grandchild [--ignore-term] [--detached] [--hang]` | starts a sleeping grandchild (ignoring SIGTERM; with its output on `/dev/null`), prints `grandchild <pid>`, then exits 0 or (`--hang`) sleeps until killed | orphans: the group must be gone afterwards |
@@ -60,6 +60,7 @@ the init event's tool, skill and plugin lists cut down).
 | `claude-code/answer.jsonl` | Claude Code 2.1.325, haiku, `dontAsk`: one-sentence answer |
 | `claude-code/tool-denied.jsonl` | reads `note.txt` (allowed), tries to write `out.txt` (denied by `dontAsk`), explains |
 | `claude-code/bad-model.jsonl`, `.stderr` | unknown model: API error, exit 1 |
+| `claude-code/write.jsonl` | Claude Code 2.1.325, haiku, `dontAsk`, `--allowedTools=Write`, working directory reached through a symlink: two `Write` calls (one into a new subdirectory), absolute canonical paths. Each call line was read 30 to 50 ms before the file's mtime. |
 | `codex/answer.jsonl`, `.stderr` | codex-cli 0.169, `gpt-5.6-luna`, `read-only`, approvals `never`: one-sentence answer |
 | `codex/sandbox-failed.jsonl` | the read-only sandbox could not start on the recording machine; the agent says so |
 | `codex/bad-model.jsonl` | unknown model: `error` and `turn.failed`, exit 1 |

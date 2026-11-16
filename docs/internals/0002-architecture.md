@@ -89,7 +89,7 @@ Events use the [CloudEvents 1.0](https://cloudevents.io) JSON envelope with Puls
   "pulsededupekey": "…",               // optional
   "pulsecoalesced": 14,                // raw signals folded into this event
   "pulsecausationrun": "01JD…",        // run believed to have caused this event, if any
-  "pulsecausation": "exact|inferred",  // how we know
+  "pulsecausation": "exact|reported|inferred",  // how we know
   "pulsechaindepth": 1,                // 0 for events with no causing run
   "pulsereplayof": "01JD…"             // set on replays
 }
@@ -214,7 +214,9 @@ An adapter is two pure pieces and nothing else:
 ```rust
 trait AgentAdapter {
     fn invocation(&self, agent: &AgentConfig, request: &RunRequest) -> Result<Invocation, AdapterError>; // argv, env, cwd, stdin
-    fn parser(&self) -> Box<dyn OutputParser>; // native output lines → RunOutput { kind, text, data }
+    fn parser(&self) -> Box<dyn OutputParser>; // native output lines → RunOutput { kind, text, data },
+                                               // and write facts (see "Loop protection")
+    fn reports_writes(&self) -> bool;          // whether that parser sees every write its tools make
 }
 ```
 
@@ -226,14 +228,17 @@ The run environment contract (`PULSE_RUN_ID`, `PULSE_RULE`, `PULSE_AGENT`, `PULS
 
 ## Loop protection
 
-inotify and FSEvents do not say which process wrote a file, so causation is partly inference. We are explicit about which part:
+inotify and FSEvents do not say which process wrote a file. So we attribute what we know and guess only where we are blind, and every event says which it is (`pulsecausation`):
 
 - **Exact:** every run gets `PULSE_RUN_ID` in its environment. `pulse run` and `pulse ingest` read it, so events they report carry exact causation.
-- **Inferred:** while a run is active, and for a short grace period after (`causation_grace`, 30 s), filesystem and git events inside that run's working directory are attributed to it and marked `inferred`. A run counts as active from just before its process is spawned, so a write in its first milliseconds is covered. Inference is wrong in both directions: it misses an agent that writes outside its `cwd`, and it claims **anything** that appears in the `cwd` during that window, the user's own files included. What that looks like in practice is in [0009](0009-end-to-end.md).
-- **Across restarts:** dedupe keys and recent runs are reloaded from the log at startup, so a keyed external event retried after a restart is still a duplicate, and a run orphaned by a crash still has its folder's events attributed to it until its timeout.
-- **Policy:** a rule never fires on an event caused by its own run (`LoopSelfTrigger`). Other rules may, up to `max_chain_depth` (default 3).
+- **Reported:** an adapter's parser sees the agent's tool calls, and reports two kinds of fact per run (`WriteFact`): "the agent wrote this path" (Claude Code's `Write`, `Edit`, `MultiEdit`, `NotebookEdit` carry it) and "the agent did something whose writes we cannot see" (a shell command, an MCP tool, a subagent, any tool the adapter does not know to be read-only, a hook, output the parser does not understand). A filesystem or git event on a path a run said it wrote, while it runs or within `causation_grace` (30 s) after, is attributed to it as `reported`, inside its working directory or outside it.
+- **Inferred:** a filesystem or git event inside the working directory of a run whose writes are **opaque**, during the run or the grace period, is attributed to it and marked `inferred`. A run is opaque if its adapter cannot report writes at all (`command`, `codex`), from its first opaque tool call on, past 128 reported paths, and when it is reloaded after a daemon restart (nobody reads its output any more). Opaque is for good. A run that is not opaque (**observed**) claims nothing by inference: a file in its folder that it did not write is the user's, and so is a commit there. A run counts as active from just before its process is spawned, so a write in its first milliseconds is covered.
+- **The decision** is pure (`pulse_core::causation`): the write state is part of `RecentRun`, passed in. The effect worker resolves reported paths (relative to the run's `cwd`; spelled as given, canonically, and canonically under the configured `cwd`, because Claude Code reports canonical paths and the fs source reports the configured spelling) and copies the run's state to the engine as facts arrive.
+- **Ordering.** A write is reported when the tool call is printed, before the tool runs (measured with Claude Code 2.1.325: the line arrives 30 to 50 ms before the file's mtime), and the fs source holds every change back for its quiet period (2 s by default). The worker forwards facts without waiting for output appends, and the engine handles every pending control message before its next batch of events. The fact is late only if the agent's output reaches the daemon more than a quiet period after the write: the agent buffers its output, or the run's output channel stays full (more than 256 outputs behind a stalled store). Then the write is taken for the user's: it is not attributed, so if it matches the run's own rule, the rule fires once more, as a fresh chain (depth 1: chain depth does not bound it). That new run's own writes are normally reported in time and blocked. Only if the race is lost every time does it loop, and then cooldown, rate limit and the circuit breaker stop it. [0009](0009-end-to-end.md) lists what remains wrong in both directions.
+- **Across restarts:** dedupe keys and recent runs are reloaded from the log at startup, so a keyed external event retried after a restart is still a duplicate, and a run orphaned by a crash still has its folder's events attributed to it (inferred) until its timeout.
+- **Policy:** a rule never fires on an event caused by its own run (`LoopSelfTrigger`), however the cause is known. Other rules may, up to `max_chain_depth` (default 3).
 - **Backstops that do not depend on attribution:** per-rule cooldown and rate limit, and a **circuit breaker** that snoozes a rule that fires too often in a short window (`CircuitOpen`).
-- Blocked deliveries are recorded and shown in the UI. A loop that was stopped should be visible, not silent.
+- Blocked deliveries are recorded and shown in the UI. A loop that was stopped should be visible, not silent. A run that turns opaque says so in its output (a `marker`), so "why was my file taken for the agent's?" has an answer in the run.
 
 ## Protocol
 
@@ -322,3 +327,9 @@ The numbered docs 0004, 0006 and 0007 were written in parallel; this brings the 
 - **Runs:** graceful shutdown also records `interrupted`; pause holds queued runs; reruns skip routing.
 - **Browser handover** is a single-use login code in the fragment, exchanged at `/auth/login`, not the token itself.
 - **Supervisor:** output carries the time each line was read; the orphan guarantee and its `setsid` limit are stated here.
+
+### 2026-11-16, reported writes (loop protection)
+
+- **Attribution by inference had a false positive that broke the headline demo:** with `lecture-notes` (the agent's `cwd` is the watched folder) a PDF the user saved during a run, or 30 s after, was skipped as a self-trigger. Adapters now report the writes their agent's tool calls name, and a third causation kind, `reported`, sits between exact and inferred. Inference applies only to runs whose writes Pulse cannot see. It also closes a false negative: a reported write outside the run's `cwd` is attributed.
+- **`AgentAdapter::reports_writes`** and **`OutputParser::take_facts`**, and **`SupervisorEvent::Writes`** (sent before the line's outputs). Classifying tools is a provider quirk and stays in the adapter; only `claude-code` reports writes. `codex` does not: its only recorded tool output is synthetic, and it reads files through shell commands, which would make almost every run opaque anyway.
+- **A refused tool call counts** (Claude Code under `dontAsk` refusing `Bash` still makes the run opaque): the refusal arrives after the call, and over-attributing is the safe side. Not refined.

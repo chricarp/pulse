@@ -52,7 +52,13 @@ Scopes compare path **text**: only clean absolute paths can be in scope (anythin
 
 ### 3. Feedback loops
 
-An agent's output triggers the agent again. See "Loop protection" in [0002](0002-architecture.md): causation tracking, self-trigger blocking, chain depth, cooldown, rate limit, circuit breaker. Attribution of file events to runs is inferred, so the rate-based backstops exist precisely because inference can be wrong.
+An agent's output triggers the agent again. See "Loop protection" in [0002](0002-architecture.md): causation tracking, self-trigger blocking, chain depth, cooldown, rate limit, circuit breaker. Attribution of file events to runs is exact only for `pulse run` and `pulse ingest` reports. For files, it is **reported** where the adapter sees the agent's write tool calls (Claude Code) and **inferred** from the working directory where it does not (shell commands, MCP tools, the `command` and `codex` adapters, runs from before a restart). Both can be wrong, so the rate-based backstops stay; neither is a safety boundary.
+
+What a hostile or manipulated agent can do to attribution, and what it cannot:
+
+- **Hide its own writes from reported attribution.** It cannot through Pulse's parser: every tool call is classified, unknown tools and unreadable output make the run opaque. It can write through a channel the stream does not show (a hook in the project's `.claude/settings.json` that prints nothing, a process left running in the background that writes later, outside the grace period), and then its write is taken for the user's: the rule may fire again, bounded by cooldown, rate limit and the circuit breaker, not by chain depth.
+- **Claim a path it did not write.** A tool call naming a path, even a refused one, makes that path the run's until the grace period after the run ends. A change the user makes to exactly that path in that window is then skipped as a loop. It cannot claim anything else: attribution needs the event's own path in the reported set.
+- **Make reported paths lie about identity.** Paths are untrusted text: one with `..`, `~` or NUL, or over 4096 bytes, is not resolved and makes the run opaque; the rest are compared as text after the daemon adds their canonical spelling. A symlink the watcher sees by another name is a mismatch, which is again "taken for the user's".
 
 ### 4. Another local user or a web page reaching the daemon
 

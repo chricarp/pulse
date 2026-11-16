@@ -6,9 +6,9 @@ Status: v1, as built in `crates/pulse-agents`. Extends "Runs" and "Agent adapter
 ## The shape
 
 An adapter is pure: `invocation(agent config, run request) -> Invocation` (argv, env, cwd,
-stdin) and a parser from native output lines to `RunOutput { kind, text, data }`. One supervisor
-does all process I/O for every adapter. Provider quirks stay in the adapter's module; the
-supervisor knows nothing about Claude Code or Codex.
+stdin) and a parser from native output lines to `RunOutput { kind, text, data }` and, for loop
+protection, write facts. One supervisor does all process I/O for every adapter. Provider quirks
+stay in the adapter's module; the supervisor knows nothing about Claude Code or Codex.
 
 ## Default flags, and what an unattended run does
 
@@ -63,6 +63,30 @@ The tables are the module docs of `claude_code` and `codex`. The principles:
   silent gap.
 - Codex has no final-result event with text: `turn.completed` becomes `result` with the last
   agent message as its text and the usage in `data`.
+
+## Write facts
+
+What the agent's tools wrote is the best evidence loop protection has (0002, "Loop
+protection"). A parser that can see it reports, per line, `WriteFact::Wrote(path)` (the path as
+the agent gave it: untrusted text, absolute or relative) and `WriteFact::Opaque(what)` for
+anything whose writes it cannot see; `AgentAdapter::reports_writes` says whether it can at all.
+The supervisor sends a line's facts (`SupervisorEvent::Writes`) before its outputs.
+
+| Adapter | Reports writes | Why |
+|---|---|---|
+| `claude-code` | yes | Tool calls are in the stream with their input; `Write`, `Edit`, `MultiEdit`, `NotebookEdit` name their file. The table of tools is the module doc of `claude_code`. |
+| `codex` | no | `file_change` items list paths, but the only recorded example is synthetic (the sandbox did not run on the recording machine), and Codex reads files through shell commands, so nearly every run would be opaque from its first `cat`. Revisit with a real recording. |
+| `command` | no | Pulse cannot see inside an arbitrary program. |
+
+Classification is conservative: a tool is read-only only if it is on the adapter's list, a
+write tool without its path is opaque, and so is any stdout line the parser does not
+understand (a new event type, a line cut at `max_line_bytes`), because it could be a tool call
+in a shape it does not know. A refused call counts; a subagent's start (`Task`) is opaque.
+
+Verified once against the real CLI (Claude Code 2.1.325, haiku, `tests/fixtures/claude-code/
+write.jsonl`): the tool call is printed 30 to 50 ms before the file is written; paths are
+absolute; and with a working directory reached through a symlink, Claude Code reports (and
+writes through) the canonical path, which is why the daemon also matches canonical spellings.
 
 ## The supervisor
 
@@ -156,7 +180,8 @@ after literal text (`--title={{subject}}`) are unaffected, since the option ther
 2. Add a module in `pulse-agents` with an `AgentAdapter` (pure: argv as an array, values
    attached to flags, prompt on stdin if the CLI allows it, the most restrictive non-hanging
    permission default passed explicitly) and an `OutputParser` (known events mapped, everything
-   else raw; bounded `data`).
+   else raw; bounded `data`). Report write facts only if every tool call is visible in the
+   output and its writes can be classified; otherwise leave `reports_writes` false.
 3. Return it from `adapter_for`.
 4. Record at most three tiny real runs with the cheapest model into `tests/fixtures/<kind>/`,
    scrub them, and test the parser against them, plus truncated and unknown lines. Add a

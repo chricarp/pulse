@@ -109,7 +109,7 @@ It seeds three hours of history: fires, debounces, every block reason the UI exp
 
 It is only imported when the build mode is `mock` (`pnpm dev:mock`, `pnpm build:mock`). `import.meta.env.MODE` is a build-time constant, so the production bundle contains neither the mock nor its controls.
 
-Where the mock is simpler than the daemon: no dedupe, no `debounce_capacity`, no folding of file storms into `fs.burst`, no inferred causation from working directories, the circuit breaker is a fixed 20 fires in 10 minutes, permission paths are compared with a JavaScript glob matcher, and run output is pushed per chunk instead of read from the store every 100 ms. Like the daemon, a debounce elapsing records a second delivery (fired) after the first (debounced). Treat the rest as guesses about the daemon, not as its specification; when the daemon turns out to differ, change the mock.
+Where the mock is simpler than the daemon: no dedupe, no `debounce_capacity`, no folding of file storms into `fs.burst`, no causation from working directories or tool calls (two scripted cases stand in: a formatter's rewrite, inferred, and the study agent's cards file, reported), the circuit breaker is a fixed 20 fires in 10 minutes, permission paths are compared with a JavaScript glob matcher, and run output is pushed per chunk instead of read from the store every 100 ms. Like the daemon, a debounce elapsing records a second delivery (fired) after the first (debounced). Treat the rest as guesses about the daemon, not as its specification; when the daemon turns out to differ, change the mock.
 
 ## Wiring it to the real daemon
 
@@ -137,7 +137,7 @@ Decided as is for v1:
 
 - **Coalescing is a count.** `pulsecoalesced` says how many raw signals were folded, not which. The UI says so ("Pulse records how many, not which ones"). Keeping the signals would grow every event for little use.
 - **Projects are not discovered.** Trusting takes a directory the user types (`~` allowed). Discovering `pulse.toml` files would mean scanning, or guessing from git sources; the user knows which repository they mean.
-- **Inferred causation can block a legitimate event.** A new PDF that lands in `~/University` while a `lecture-notes` run (working directory `~/University`) is active is attributed to that run and blocked as a self-trigger. That is the engine's documented trade-off (0002, 0003); the UI shows it as a loop block with the inferred cause, which is what it is.
+- **Inferred causation can block a legitimate event.** A new PDF that lands in `~/University` while a `lecture-notes` run (working directory `~/University`) is active used to be attributed to that run and blocked as a self-trigger. Since adapters report their agents' writes, that happens only when the run did something whose writes Pulse cannot see (0002, "Loop protection"). The UI shows the cause's kind on the event (`exact`, `reported`, `inferred`, from one table in `lib/explain.ts`), so a block on an inferred cause reads as the guess it is.
 
 ## Testing
 
