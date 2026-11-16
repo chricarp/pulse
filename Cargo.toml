@@ -29,6 +29,9 @@ rusqlite = { version = "0.43.0", features = ["bundled", "fallible_uint"] }
 tokio = { version = "1.54.1", default-features = false }
 tokio-util = { version = "0.7.20", default-features = false }
 tempfile = "3.27.0"
+# The time zone database, compiled in (no I/O): the config validator and the schedule source
+# must agree on which names exist.
+chrono-tz = "0.10.1"
 
 [workspace.lints.rust]
 # `deny`, not `forbid`: one `#[allow]` sets a child's descriptor limit between fork and exec

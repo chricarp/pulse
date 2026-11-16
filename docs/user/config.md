@@ -9,6 +9,10 @@ CLI edit this same file: there is no second copy of a rule anywhere.
 - **A broken file does not stop Pulse.** If the file no longer parses, its last good version
   stays in effect and the errors (file, line, item, field) are shown by `pulse status`, in the
   UI, and in `$PULSE_HOME/logs/pulse.log`.
+- **Values a source cannot use are errors too**, reported the same way when the file loads or
+  when the UI or CLI saves: a cron step larger than its field, an unknown time zone, an
+  `every`, `lead` or `refresh` over its limit, an `ignore` glob that is not a clean path. A
+  source does not start with them and then fail.
 - **Unknown keys are errors.** A misspelt key is reported, never silently ignored. This page
   lists every key the parser accepts; the authoritative schema is
   [`crates/pulse-contracts/src/config/mod.rs`](../../crates/pulse-contracts/src/config/mod.rs).
@@ -118,9 +122,9 @@ One table per source. Keys every source has:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `cron` | | Five fields: minute hour day-of-month month day-of-week, e.g. `"0 9 * * 1-5"`. |
-| `every` | | A fixed interval, e.g. `"30m"`. |
-| `timezone` | the system zone | IANA zone name for `cron`, e.g. `"Europe/Rome"`. |
+| `cron` | | Five fields: minute hour day-of-month month day-of-week, e.g. `"0 9 * * 1-5"`. A step must fit its field (`*/90` in the minute field is an error; use `every = "90m"`), and a day none of its months has (`"0 0 30 2 *"`) is an error. |
+| `every` | | A fixed interval, e.g. `"30m"`. At most `"3650d"`. |
+| `timezone` | the system zone | IANA zone name for `cron`, e.g. `"Europe/Rome"`. An unknown name is an error. |
 
 `kind = "calendar"`: set exactly one of `url` and `path`.
 
@@ -128,8 +132,8 @@ One table per source. Keys every source has:
 |---|---|---|
 | `url` | | An `http://` or `https://` ICS feed. |
 | `path` | | A local `.ics` file. |
-| `refresh` | `"15m"` | How often to re-read it. |
-| `lead` | `"10m"` | How long before an event starts `calendar.event.starting` fires. |
+| `refresh` | `"15m"` | How often to re-read it. At most `"365d"`. |
+| `lead` | `"10m"` | How long before an event starts `calendar.event.starting` fires. At most `"365d"`. |
 
 What each source emits: [Sources](sources.md).
 

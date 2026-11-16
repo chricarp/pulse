@@ -267,4 +267,76 @@ mod tests {
         drop(rx);
         assert!(matches!(cx.events.send(ev(4)).await, Err(SourceError::SinkClosed)));
     }
+
+    /// A definition the config validator accepts is one the source starts with: a value the
+    /// source would refuse is a config error (file, line, field), not a failed source later.
+    /// The validator may be stricter than a source, never more lenient.
+    #[test]
+    fn what_the_validator_accepts_every_source_starts_with() {
+        use pulse_contracts::config::{ConfigFile, ConfigOrigin, SourceConfig, validate_file};
+        use serde_json::json;
+
+        let home = std::path::Path::new("/home/me");
+        let env = SourceEnv { home: home.into(), pulse_home: "/home/me/.pulse".into() };
+        let origin = ConfigOrigin::User { path: "/home/me/.pulse/pulse.toml".into() };
+        let fs = |extra: serde_json::Value| {
+            let mut v = json!({ "kind": "fs", "path": "~/w" });
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            v
+        };
+        let cases = [
+            fs(json!({})),
+            fs(json!({ "quiet": "0s" })),
+            fs(
+                json!({ "ignore": ["*.log", "build/", "docs/drafts/**", "~/elsewhere/**", "/abs"] }),
+            ),
+            fs(json!({ "ignore": ["./a/b"] })),
+            fs(json!({ "ignore": [""] })),
+            fs(json!({ "ignore": ["/"] })),
+            fs(json!({ "ignore": ["a/../b"] })),
+            fs(json!({ "ignore": ["~root/x"] })),
+            fs(json!({ "ignore": ["a/b**/c"] })),
+            fs(json!({ "ignore": ["{a,b"] })),
+            json!({ "kind": "fs", "path": "w" }),
+            json!({ "kind": "git", "path": "~/code/x" }),
+            json!({ "kind": "git", "path": "~/code/../x" }),
+            json!({ "kind": "schedule", "cron": "0 9 * * 1-5" }),
+            json!({ "kind": "schedule", "cron": "0 9 * * 1-5", "timezone": "Europe/Rome" }),
+            json!({ "kind": "schedule", "cron": "0 9 * * 1-5", "timezone": "Mars/Olympus" }),
+            json!({ "kind": "schedule", "cron": "*/60 * * * *" }),
+            json!({ "kind": "schedule", "cron": "*/90 * * * *" }),
+            json!({ "kind": "schedule", "cron": "0 0 */31 * *" }),
+            json!({ "kind": "schedule", "cron": "0 0 31 2 *" }),
+            json!({ "kind": "schedule", "cron": "0 0 29 2 *" }),
+            json!({ "kind": "schedule", "cron": "0 0 31 2 fri" }),
+            json!({ "kind": "schedule", "cron": "0 9 * * 1-5 *" }),
+            json!({ "kind": "schedule", "every": "3650d" }),
+            json!({ "kind": "schedule", "every": "3651d" }),
+            json!({ "kind": "schedule", "every": "0s" }),
+            json!({ "kind": "schedule", "every": "1h", "cron": "0 * * * *" }),
+            json!({ "kind": "schedule" }),
+            json!({ "kind": "calendar", "url": "https://example.com/c.ics" }),
+            json!({ "kind": "calendar", "url": "ftp://example.com/c.ics" }),
+            json!({ "kind": "calendar", "path": "~/c.ics", "lead": "365d", "refresh": "365d" }),
+            json!({ "kind": "calendar", "path": "~/c.ics", "lead": "366d" }),
+            json!({ "kind": "calendar", "path": "~/c.ics", "refresh": "366d" }),
+            json!({ "kind": "calendar", "path": "~/c.ics", "refresh": "0s" }),
+            json!({ "kind": "calendar", "path": "~/c.ics", "lead": "0s" }),
+            json!({ "kind": "calendar" }),
+        ];
+        for mut case in cases {
+            case["name"] = json!("s");
+            let source: SourceConfig = serde_json::from_value(case.clone()).unwrap();
+            let file = ConfigFile { sources: vec![source.clone()], ..ConfigFile::default() };
+            let errors = validate_file(&file, &origin, home);
+            let built = build(&source, &env);
+            if errors.is_empty() {
+                assert!(
+                    built.is_ok(),
+                    "{case}: accepted by the validator, refused at start: {}",
+                    built.err().unwrap()
+                );
+            }
+        }
+    }
 }

@@ -54,9 +54,6 @@ pub const MAX_ICS_BYTES: u64 = 10 * 1024 * 1024;
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const FIRST_RETRY: Duration = Duration::from_mins(1);
 const MAX_FIRED: usize = 50_000;
-/// The largest `refresh` and `lead`: a year. More is a typo, and would stretch the expansion
-/// window past anything the planner needs.
-const MAX_SETTING: Duration = Duration::from_days(365);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -185,9 +182,13 @@ impl CalendarSource {
             return Err(SourceError::Config("refresh must be positive".into()));
         }
         let lead = settings.lead.unwrap_or(DEFAULT_LEAD);
-        for (what, d) in [("refresh", refresh), ("lead", lead)] {
-            if d > MAX_SETTING {
-                return Err(SourceError::Config(format!("{what} must be at most {MAX_SETTING}")));
+        // The validator refuses these first; a source built some other way still checks.
+        for (what, d, max) in [
+            ("refresh", refresh, CalendarSourceSettings::MAX_REFRESH),
+            ("lead", lead, CalendarSourceSettings::MAX_LEAD),
+        ] {
+            if d > max {
+                return Err(SourceError::Config(format!("{what} must be at most {max}")));
             }
         }
         let source = SourceRef::new(SourceKind::Calendar, name);

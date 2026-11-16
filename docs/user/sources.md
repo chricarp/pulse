@@ -33,7 +33,8 @@ queue overflow, file names that are not valid UTF-8 and were skipped. A missing 
 repository is not an error: the source waits for it.
 
 Failed means the source stopped: it hit a problem it cannot work around (or a bug in Pulse),
-and the message says which. A failed source is not retried on its own, because the same input
+and the message says which. (Settings that cannot work are not a failed source: they are config
+errors, refused when you save them, see [the config file](config.md).) A failed source is not retried on its own, because the same input
 would usually fail it again. Once you have fixed the cause, restart it:
 
 ```console
@@ -140,7 +141,7 @@ when it ends. Data: `uid, title, start, end, location, minutes_until`. Recurring
 exceptions, cancellations and time zones (IANA, Outlook's Windows names) are handled. Each
 occurrence fires at most once per kind, even if it is moved; a fire up to 15 minutes late (after
 a suspend or restart) still happens and `minutes_until` shows how late. A URL is re-fetched every
-`refresh` (default 15 minutes) with caching headers; failures retry with backoff and show in the
+`refresh` (default 15 minutes; `refresh` and `lead` are at most `365d`) with caching headers; failures retry with backoff and show in the
 source's health. A feed may redirect (up to 5 times), but not from https to http, and not to an
 address on your machine or your local network unless the URL you configured is itself one (a
 calendar on your NAS); the source's health then says which address was refused. Calendar URLs

@@ -16,7 +16,7 @@
 use std::cell::RefCell;
 use std::path::Path;
 
-use pulse_contracts::pattern::{Glob, parse_path_glob, parse_text_glob};
+use pulse_contracts::pattern::{Glob, IgnorePattern, parse_ignore};
 
 /// Names ignored wherever they appear.
 const EXACT: &[&str] = &[
@@ -116,25 +116,9 @@ impl Ignore {
         let mut names = Vec::new();
         let mut paths = Vec::new();
         for raw in patterns {
-            let pat = raw.trim_end_matches('/');
-            if pat.is_empty() {
-                return Err(format!("ignore pattern {raw:?} is empty"));
-            }
-            let glob = if pat.starts_with('/') || pat.starts_with('~') {
-                parse_path_glob(pat, home).map(Some)
-            } else if pat.contains('/') {
-                let rel = pat.strip_prefix("./").unwrap_or(pat);
-                let joined = if root == "/" { format!("/{rel}") } else { format!("{root}/{rel}") };
-                parse_path_glob(&joined, home).map(Some)
-            } else {
-                names.push(
-                    parse_text_glob(pat).map_err(|e| format!("ignore pattern {raw:?}: {e}"))?,
-                );
-                Ok(None)
-            };
-            match glob {
-                Ok(Some(g)) => paths.push(g),
-                Ok(None) => {}
+            match parse_ignore(raw, root, home) {
+                Ok(IgnorePattern::Name(g)) => names.push(g),
+                Ok(IgnorePattern::Path(g)) => paths.push(g),
                 Err(e) => return Err(format!("ignore pattern {raw:?}: {e}")),
             }
         }
