@@ -73,6 +73,10 @@ Work down this list.
    `PATH` (Pulse warns), the agent's `cwd` does not exist (Pulse warns), the agent was denied a
    tool it needed (Claude Code's runs end with an error naming every denied tool), a `command`
    argument that would start with `-` (add `--` before it; the error says so).
+7. **It fired, but the run was cancelled without starting**, with "the agent was removed or
+   changed after this run was created" (or the rule was): its agent or rule changed while the run
+   waited for approval or a free slot, and a run never starts with a definition that is no
+   longer current. `pulse replay <event id>` routes the event again with what is configured now.
 
 ## It fired and I don't know why
 
@@ -86,6 +90,18 @@ fenced event data, and a snapshot of the rule and agent as they were when it ran
 
 If an event says it was caused by a run (`from run …` in the CLI), that run's activity is what
 triggered it. `~` means the cause was inferred, not observed (see [Loop protection](loop-protection.md#how-pulse-knows-who-caused-an-event)).
+
+## A save or `add` is refused
+
+- **"a rule named … already exists; pass --replace"**: `pulse rules add` (and `agents add`,
+  `sources add`) only create. Use `--replace` to replace the existing one.
+- **"This rule changed while you were editing it"** in the UI: someone (you in an editor, the
+  CLI, another window) changed it after the editor opened. Your form is kept; choose **Reload**
+  or **Save mine anyway**. See [Rules](rules.md#editing-while-something-else-edits).
+- **"… changed since that hash was printed"** from `pulse project trust --hash`: the project file
+  changed after you reviewed it. Run `pulse project trust <dir>` again and read what it says now.
+- **"project … changed since it was trusted"** when editing a project's rule: the file changed
+  (a `git pull`) and is inactive until you review and trust it again.
 
 ## Something keeps firing
 

@@ -14,8 +14,13 @@ pulse sources add schedule morning --cron "0 9 * * 1-5"
 pulse sources add schedule hourly --every 1h
 pulse sources add calendar lectures ~/Calendar/lectures.ics
 pulse sources                       # list them with their health
+pulse sources disable hourly        # stop watching, keep the definition
+pulse sources enable hourly
 pulse sources remove hourly
 ```
+
+`pulse sources add` only creates; if a source of that name exists it says so, and
+`pulse sources add --replace …` replaces it.
 
 ## Health
 

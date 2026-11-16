@@ -165,7 +165,7 @@ run = { agent = "counter" }
 ```
 
 Save it into `pulse.toml`, or pass the bare table (without `[[rule]]`) to `pulse rules add -f
-rule.toml`. Then `pulse rules show count-pdfs`, `pulse test-rule count-pdfs --event <id>`, and
+rule.toml` (`--replace` to change it later). Then `pulse rules show count-pdfs`, `pulse test-rule count-pdfs --event <id>`, and
 `pulse rules history count-pdfs`. If a rule can never fire as written (a typo in `on`, scopes that
 do not cover its events, a missing program), `pulse status` and the UI say so.
 
@@ -193,7 +193,8 @@ and run programs. The full threat model is
 - **Unattended runs cannot ask for more.** Claude Code runs with `--permission-mode=dontAsk`
   and Codex with a read-only sandbox and no approvals unless you configure otherwise; Pulse never
   adds a flag that skips checks. The templates pre-approve only what they need.
-- **Supervised rules** wait for you to approve each run, with the rendered prompt in front of you.
+- **Supervised rules** wait for you to approve each run, with the rendered prompt and the exact
+  command in front of you. A run whose agent or rule changed before it started does not start.
   Approving needs the daemon's token; an agent's MCP credentials cannot approve, edit rules or
   read outside its scopes.
 - **Loop protection** stops a rule from being triggered by its own run, limits chains of runs,
@@ -201,8 +202,8 @@ and run programs. The full threat model is
   partly a guess; see [Loop protection](docs/user/loop-protection.md).
 - **Local only.** The daemon listens on `127.0.0.1`, every endpoint needs a token (`token`, mode
   0600), and it checks `Host` and `Origin` against DNS rebinding and other web pages.
-- **Project files** in repositories do nothing until you `pulse project trust` them, and stop
-  again whenever their content changes.
+- **Project files** in repositories do nothing until you have reviewed what they define and
+  trusted that exact content (`pulse project trust`), and stop again whenever it changes.
 
 What is **not** a safety boundary:
 
