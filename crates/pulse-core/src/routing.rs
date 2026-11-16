@@ -177,6 +177,12 @@ impl Routing {
         self.agents.get(agent).is_some_and(|a| a.scopes.permits(event).is_ok())
     }
 
+    /// Whether `agent` could ever receive events of a catalog type (`ScopeSet::may_permit`).
+    /// Unknown agents receive nothing.
+    pub fn agent_may_receive(&self, agent: &str, catalog_type: &str, carries_paths: bool) -> bool {
+        self.agents.get(agent).is_some_and(|a| a.scopes.may_permit(catalog_type, carries_paths))
+    }
+
     pub fn agent_kind(&self, agent: &str) -> Option<AgentKind> {
         self.agents.get(agent).map(|a| a.kind)
     }
