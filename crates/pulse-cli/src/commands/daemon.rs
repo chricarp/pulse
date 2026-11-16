@@ -293,11 +293,15 @@ pub async fn open(ctx: &Ctx, args: OpenArgs) -> Res {
         Failure::NotRunning("Pulse is not running. Start it with `pulse start`.".into())
     })?;
     let token = home.read_token()?;
-    // A single-use code that expires in two minutes, not the token: URLs end up in process
-    // lists and browser history.
+    // The browser will trust whatever answers on the port with a login code; make sure it is
+    // this home's daemon first.
+    pulse_daemon::client::Client::verify(info.port, &token).await?;
+    // A single-use code that expires in two minutes, not the token.
     let code = pulse_daemon::auth::login_code(&token, now());
     let url = format!("http://127.0.0.1:{}/#login={code}", info.port);
     if args.print || ctx.json {
+        // Printed to the user's own terminal (or the desktop shell's pipe): no other user can
+        // read that, unlike a process's arguments.
         if ctx.json {
             print_json(&serde_json::json!({ "url": url }));
         } else {
@@ -305,17 +309,36 @@ pub async fn open(ctx: &Ctx, args: OpenArgs) -> Res {
         }
         return Ok(ExitCode::SUCCESS);
     }
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    match std::process::Command::new(opener)
-        .arg(&url)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        Ok(s) if s.success() => print_line(&format!("Opened the Pulse UI (port {}).", info.port)),
+    let (mut cmd, page) = browser_command(&home, &url)?;
+    match cmd.stdout(Stdio::null()).stderr(Stdio::null()).status() {
+        Ok(s) if s.success() => {
+            print_line(&format!("Opened the Pulse UI (port {}).", info.port));
+            let hidden =
+                page.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
+            if hidden && cfg!(target_os = "linux") {
+                print_line(&format!(
+                    "If the browser says it cannot read {} (snap and flatpak browsers cannot read hidden directories), run `pulse open --print` and paste the link into it.",
+                    page.display()
+                ));
+            }
+        }
         _ => print_line(&format!("Open this URL within two minutes: {url}")),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The command that opens `url` in the browser: through a mode-0600 page in the Pulse home that
+/// redirects to it, so the login code in `url` is never in the arguments of the opener or the
+/// browser (other users can read every process's arguments in `/proc/<pid>/cmdline`).
+fn browser_command(
+    home: &PulseHome,
+    url: &str,
+) -> std::io::Result<(std::process::Command, std::path::PathBuf)> {
+    let page = home.write_login_page(url)?;
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let mut cmd = std::process::Command::new(opener);
+    cmd.arg(&page);
+    Ok((cmd, page))
 }
 
 pub fn init(ctx: &Ctx, args: InitArgs) -> Res {
@@ -373,4 +396,31 @@ pub fn init(ctx: &Ctx, args: InitArgs) -> Res {
         ));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn the_login_code_is_in_a_private_file_not_in_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = PulseHome::new(dir.path());
+        let url = "http://127.0.0.1:7477/#login=1700000000000.c0ffee";
+        let (cmd, page) = browser_command(&home, url).unwrap();
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, [page.display().to_string()]);
+        assert!(!args.iter().any(|a| a.contains("c0ffee")), "{args:?}");
+        let text = std::fs::read_to_string(&page).unwrap();
+        assert!(text.contains(&format!("content=\"0;url={url}\"")), "{text}");
+        assert!(text.contains(&format!("location.replace(\"{url}\")")), "{text}");
+        let mode = std::fs::metadata(&page).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        // The next `pulse open` replaces it: the pages do not pile up.
+        browser_command(&home, "http://127.0.0.1:7477/#login=2.ab").unwrap();
+        assert!(!std::fs::read_to_string(&page).unwrap().contains("c0ffee"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
 }

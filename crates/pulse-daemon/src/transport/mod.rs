@@ -1,5 +1,5 @@
 //! The one local HTTP listener (bound to 127.0.0.1): `/ws` (JSON-RPC over WebSocket),
-//! `POST /ingest`, `POST /auth/login`, `/mcp`, and the web UI at `/`.
+//! `POST /ingest`, `GET /auth/proof`, `POST /auth/login`, `/mcp`, and the web UI at `/`.
 //!
 //! Every request passes [`guard`] first:
 //! - `Host` must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding: a page on
@@ -7,8 +7,8 @@
 //! - an `Origin`, when present (browsers), must be this daemon's own origin, and on `/mcp` no
 //!   `Origin` is accepted at all (MCP clients are not browsers; the UI never calls `/mcp`);
 //! - `/ws` and `/ingest` need the daemon token (`Authorization: Bearer`, or for a browser
-//!   WebSocket the subprotocol `pulse.token.<token>`); the static UI and the login exchange need
-//!   none. An agent token is not the daemon token, so it is refused on all of them. A
+//!   WebSocket the subprotocol `pulse.token.<token>`); the static UI, the proof and the login
+//!   exchange need none. An agent token is not the daemon token, so it is refused on all of them. A
 //!   browser-style upgrade (offering the `pulse` subprotocol) with a missing or wrong token is
 //!   not refused with a 401, which a browser cannot read, but upgraded and closed at once with
 //!   4401 (see [`pulse_contracts::auth`]).
@@ -30,8 +30,10 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use pulse_contracts::auth::{
+    DaemonProof, ProofQuery, RESUME_CODE_PREFIX, UiLoginRequest, UiLoginResponse, valid_proof_nonce,
+};
 use pulse_contracts::rpc::{IngestParams, RpcError};
-use pulse_contracts::status::{UiLoginRequest, UiLoginResponse};
 use pulse_sources::ingest::{IngestError, IngestLimits};
 use serde::Deserialize;
 
@@ -56,6 +58,7 @@ pub(crate) fn router(services: Services) -> Router {
         .route("/ws", get(rpc::upgrade))
         .route("/ingest", post(ingest).layer(DefaultBodyLimit::max(limits.max_body_bytes + 1)))
         .route("/auth/login", post(login))
+        .route("/auth/proof", get(proof))
         .fallback(ui::serve)
         .with_state(app.clone())
         .merge(mcp_routes)
@@ -182,14 +185,40 @@ async fn ingest(
     }
 }
 
-/// `POST /auth/login`: a login code from `pulse open` for the daemon token.
+fn no_store(mut res: Response) -> Response {
+    res.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+    res
+}
+
+/// `GET /auth/proof?nonce=<hex>[&agent=<name>|&resume=true]`: shows that this daemon knows the
+/// credential the client is about to send (see `pulse_contracts::auth`). It needs no credential,
+/// and its answer is a MAC under a key that is used for nothing else.
+async fn proof(State(app): State<App>, Query(q): Query<ProofQuery>) -> Response {
+    let shared = &app.services.shared;
+    if !valid_proof_nonce(&q.nonce) {
+        return deny(StatusCode::BAD_REQUEST, "the nonce must be 32 to 128 lowercase hex digits");
+    }
+    let credential = match (&q.agent, q.resume) {
+        (Some(_), true) => return deny(StatusCode::BAD_REQUEST, "ask for one credential"),
+        (Some(agent), false) => crate::auth::agent_token(&shared.secret, agent),
+        (None, true) => crate::auth::resume_code(&shared.secret, &shared.instance),
+        (None, false) => shared.secret.clone(),
+    };
+    let proof = crate::auth::proof(&credential, shared.port(), &shared.instance, &q.nonce);
+    no_store(Json(DaemonProof { instance: shared.instance.clone(), proof }).into_response())
+}
+
+/// `POST /auth/login`: a login code from `pulse open`, or a resume code from a tab that was
+/// connected to this daemon instance, for the daemon token.
 async fn login(State(app): State<App>, Json(req): Json<UiLoginRequest>) -> Response {
     let shared = &app.services.shared;
-    if shared.login_codes.redeem(&shared.secret, &req.code, shared.clock.now()) {
-        let mut res = Json(UiLoginResponse { token: shared.secret.clone() }).into_response();
-        res.headers_mut()
-            .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
-        res
+    let accepted = if req.code.starts_with(RESUME_CODE_PREFIX) {
+        crate::auth::verify_resume_code(&shared.secret, &shared.instance, &req.code)
+    } else {
+        shared.login_codes.redeem(&shared.secret, &req.code, shared.clock.now())
+    };
+    if accepted {
+        no_store(Json(UiLoginResponse { token: shared.secret.clone() }).into_response())
     } else {
         deny(
             StatusCode::UNAUTHORIZED,

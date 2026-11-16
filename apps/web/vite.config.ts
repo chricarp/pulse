@@ -8,6 +8,9 @@ const daemon = process.env.PULSE_DAEMON ?? "http://127.0.0.1:7477";
 
 export default defineConfig({
   plugins: [react()],
+  // The daemon proves itself for its own port (`rpc/proof.ts`); through the proxy that is not
+  // the page's port.
+  define: { __PULSE_DEV_DAEMON_PORT__: JSON.stringify(Number(new URL(daemon).port)) },
   server: {
     host: "127.0.0.1",
     proxy: {

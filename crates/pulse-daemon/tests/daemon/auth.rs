@@ -1,4 +1,5 @@
-//! The listener's access rules: token, Host, Origin, agent tokens, login codes.
+//! The listener's access rules: token, Host, Origin, agent tokens, login codes, and the proof a
+//! daemon gives before a client sends it a credential.
 
 use pulse_contracts::rpc::{Empty, method};
 use pulse_daemon::client::Client;
@@ -197,6 +198,45 @@ async fn tokens_hosts_and_origins() {
     assert!(got.contains(&token));
     assert_eq!(http(port, &login, &body).await.0, 401, "single use");
 
+    // The proof needs no credential; the nonce must be long hex. A resume code works only for
+    // this daemon instance, as often as a tab reloads.
+    let nonce = "0f".repeat(32);
+    let proof_req = |q: &str| format!("GET /auth/proof?{q} HTTP/1.1\r\n{host}");
+    for (q, want) in [
+        (format!("nonce={nonce}"), 200),
+        (format!("nonce={nonce}&agent=sh"), 200),
+        (format!("nonce={nonce}&resume=true"), 200),
+        (format!("nonce={nonce}&agent=sh&resume=true"), 400),
+        ("nonce=0f0f".to_owned(), 400),
+        (format!("nonce={}", "0F".repeat(32)), 400),
+        ("".to_owned(), 400),
+    ] {
+        assert_eq!(http(port, &proof_req(&q), "").await.0, want, "{q}");
+    }
+    let answer = |q: String| {
+        let req = proof_req(&q);
+        async move {
+            serde_json::from_str::<pulse_contracts::auth::DaemonProof>(
+                &http(port, &req, "").await.1,
+            )
+            .unwrap()
+        }
+    };
+    let p = answer(format!("nonce={nonce}")).await;
+    assert!(pulse_daemon::auth::proof_matches(&token, port, &nonce, &p));
+    let p = answer(format!("nonce={nonce}&agent=sh")).await;
+    assert!(pulse_daemon::auth::proof_matches(&agent_token, port, &nonce, &p));
+    let resume = pulse_daemon::auth::resume_code(&token, &p.instance);
+    let p = answer(format!("nonce={nonce}&resume=true")).await;
+    assert!(pulse_daemon::auth::proof_matches(&resume, port, &nonce, &p));
+    for _ in 0..2 {
+        let (status, got) = http(port, &login, &format!("{{\"code\":\"{resume}\"}}")).await;
+        assert_eq!(status, 200);
+        assert!(got.contains(&token));
+    }
+    let stale = pulse_daemon::auth::resume_code(&token, &"0".repeat(32));
+    assert_eq!(http(port, &login, &format!("{{\"code\":\"{stale}\"}}")).await.0, 401);
+
     // A browser cannot read the status of a refused upgrade (it sees 1006, like a daemon that
     // is down), so a browser-style upgrade with a wrong token is accepted and closed with 4401.
     for offered in ["pulse, pulse.token.nope", "pulse"] {
@@ -213,5 +253,54 @@ async fn tokens_hosts_and_origins() {
     // The typed client authenticates with the token file.
     let client = Client::connect(&t.home).await.unwrap();
     client.call::<method::SystemStatusGet>(Empty {}).await.unwrap();
+    t.stop().await;
+}
+
+/// The reviewer's scenario: the daemon is not on the port the client was told (it stopped, and
+/// `daemon.json` is stale), and another program listens there. The client must not send it the
+/// token, even when that program relays proofs from a real daemon on another port.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clients_never_send_the_token_to_a_program_that_cannot_prove_itself() {
+    let mut t = TestDaemon::start(COMMAND_AGENT).await;
+    let token = t.token();
+    let agent_token = pulse_daemon::auth::agent_token(&token, "sh");
+    for relay in [None, Some(t.port())] {
+        let squatter = Squatter::start(relay).await;
+        let err = Client::connect_to(squatter.port, &token).await.unwrap_err();
+        assert!(
+            matches!(err, pulse_daemon::client::ClientError::NotPulse { .. }),
+            "{relay:?}: {err}"
+        );
+        assert!(err.to_string().contains("something else is listening"), "{err}");
+        assert!(!squatter.saw(&token), "{relay:?}: the token reached the squatter");
+
+        // The `pulse mcp` bridge, with an agent token: at launch and for each message.
+        let url = format!("http://127.0.0.1:{}/mcp", squatter.port);
+        let target = crate::mcp::proven_target(&url, "sh", &agent_token);
+        let err = pulse_mcp::stdio::check(&target).await.unwrap_err();
+        assert!(err.to_string().contains("something else is listening"), "{err}");
+        let (mut ours, theirs) = tokio::io::duplex(1 << 16);
+        let (pr, pw) = tokio::io::split(theirs);
+        tokio::spawn(pulse_mcp::stdio::proxy(target, pr, pw));
+        ours.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n")
+            .await
+            .unwrap();
+        let mut reply = Vec::new();
+        within("the bridge's error", async {
+            let mut buf = [0u8; 1024];
+            while !reply.contains(&b'\n') {
+                let n = ours.read(&mut buf).await.unwrap();
+                reply.extend_from_slice(&buf[..n]);
+            }
+        })
+        .await;
+        assert!(String::from_utf8_lossy(&reply).contains("something else is listening"));
+        assert!(!squatter.saw(&agent_token), "{relay:?}: the agent token reached the squatter");
+    }
+    // The bridge gets past the real daemon's proof.
+    let url = format!("http://127.0.0.1:{}/mcp", t.port());
+    pulse_mcp::stdio::check(&crate::mcp::proven_target(&url, "sh", &agent_token)).await.unwrap();
+    // The real daemon proves itself, on the same connection that then carries the token.
+    Client::connect_to(t.port(), &token).await.unwrap();
     t.stop().await;
 }

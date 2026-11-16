@@ -14,6 +14,10 @@
 //!   streamable HTTP cancels (rmcp cancels the handler when the client disconnects).
 //! - Answers a request with a JSON-RPC error when the daemon cannot be reached, and keeps
 //!   running: the daemon may be started later.
+//! - With [`Target::with_proof`] (what `pulse mcp` uses), asks whatever listens on the port to
+//!   prove that it knows the agent token before sending it, on each connection, and sends the
+//!   token on that same connection (see `pulse_contracts::auth`). Without it the token goes to
+//!   whatever listens on the port.
 //! - Ends when stdin closes, aborting whatever is still in flight.
 
 use std::collections::HashMap;
@@ -24,7 +28,9 @@ use bytes::{Buf, Bytes};
 use futures_util::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use http_body_util::{BodyExt, Full};
+use hyper::client::conn::http1::SendRequest;
 use hyper_util::rt::TokioIo;
+use pulse_contracts::auth::{DaemonProof, PROOF_PATH};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -35,12 +41,18 @@ use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 const PROTOCOL_VERSION_META: &str = "io.modelcontextprotocol/protocolVersion";
 
+/// Checks a daemon's answer to a proof request for the agent token: `(nonce, answer, port)`.
+/// The computation lives with the daemon's credentials (`pulse_daemon::auth::proof_matches`).
+pub type ProofCheck = Arc<dyn Fn(&str, &DaemonProof, u16) -> bool + Send + Sync>;
+
 /// Where the daemon's MCP endpoint is and which agent token to present.
 #[derive(Clone)]
 pub struct Target {
     authority: String,
+    port: u16,
     path: String,
     token: String,
+    proof: Option<(String, ProofCheck)>,
 }
 
 impl std::fmt::Debug for Target {
@@ -73,15 +85,90 @@ impl Target {
             return Err(bad());
         }
         let authority = uri.authority().ok_or_else(bad)?;
-        if authority.port_u16().is_none() {
-            return Err(bad());
-        }
+        let port = authority.port_u16().ok_or_else(bad)?;
         Ok(Target {
             authority: authority.to_string(),
+            port,
             path: uri.path_and_query().map_or("/", |p| p.as_str()).to_owned(),
             token: token.into(),
+            proof: None,
         })
     }
+
+    /// Before the token goes out on a connection, require the peer to prove it knows the token
+    /// of `agent` (`GET /auth/proof?agent=<agent>`), checked by `check`.
+    pub fn with_proof(mut self, agent: &str, check: ProofCheck) -> Self {
+        self.proof = Some((agent.to_owned(), check));
+        self
+    }
+
+    /// A connection to the daemon, past the proof when one is required. Dropping the guard
+    /// closes it.
+    async fn connect(&self) -> Result<(SendRequest<Full<Bytes>>, AbortOnDrop), Refusal> {
+        let unreachable = |e: &dyn std::fmt::Display| Refusal::Unreachable(e.to_string());
+        let stream =
+            tokio::net::TcpStream::connect(&self.authority).await.map_err(|e| unreachable(&e))?;
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|e| unreachable(&e))?;
+        // Driving the connection ends when the response is done or the guard is dropped (the
+        // request's task was aborted), which closes the socket: the daemon sees the disconnect
+        // and cancels the request.
+        let guard = AbortOnDrop(tokio::spawn(connection).abort_handle());
+        let Some((agent, check)) = &self.proof else { return Ok((sender, guard)) };
+        let not_pulse = |why: &str| Refusal::NotPulse(why.to_owned());
+        let mut nonce = [0u8; 32];
+        getrandom::fill(&mut nonce).map_err(|e| unreachable(&e))?;
+        let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!("{PROOF_PATH}?nonce={nonce}&agent={}", query_escape(agent)))
+            .header(header::HOST, &self.authority)
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| unreachable(&e))?;
+        let response = sender.send_request(request).await.map_err(|e| unreachable(&e))?;
+        if response.status() != StatusCode::OK {
+            return Err(not_pulse(&format!("it answered HTTP {}", response.status())));
+        }
+        let body = http_body_util::Limited::new(response.into_body(), 4096)
+            .collect()
+            .await
+            .map_err(|_| not_pulse("its answer was unreadable or too long"))?
+            .to_bytes();
+        let answer: DaemonProof =
+            serde_json::from_slice(&body).map_err(|_| not_pulse("its answer is not a proof"))?;
+        if check(&nonce, &answer, self.port) {
+            // The connection takes the next request only once it has finished the last one.
+            sender.ready().await.map_err(|e| unreachable(&e))?;
+            Ok((sender, guard))
+        } else {
+            Err(not_pulse("its proof is wrong"))
+        }
+    }
+}
+
+/// Why no connection to the daemon could be used.
+enum Refusal {
+    Unreachable(String),
+    /// Something answered but could not prove it knows the token, which was not sent.
+    NotPulse(String),
+}
+
+fn query_escape(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+fn not_pulse_message(port: u16, why: &str) -> String {
+    format!(
+        "something else is listening on Pulse's port {port}: it could not prove that it knows this agent's token ({why}), so the token was not sent to it. If the Pulse daemon is stopped, find and stop the program on that port."
+    )
 }
 
 /// Why [`check`] failed.
@@ -89,6 +176,8 @@ impl Target {
 pub enum CheckError {
     #[error("cannot reach the Pulse daemon at {url}: {reason}")]
     Unreachable { url: String, reason: String },
+    #[error("{0}")]
+    NotPulse(String),
     #[error("the Pulse daemon rejected this agent's token")]
     Rejected,
 }
@@ -101,12 +190,10 @@ pub async fn check(target: &Target) -> Result<(), CheckError> {
         url: format!("http://{}{}", target.authority, target.path),
         reason: e.to_string(),
     };
-    let stream =
-        tokio::net::TcpStream::connect(&target.authority).await.map_err(|e| unreachable(&e))?;
-    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-        .await
-        .map_err(|e| unreachable(&e))?;
-    let _connection = AbortOnDrop(tokio::spawn(connection).abort_handle());
+    let (mut sender, _connection) = target.connect().await.map_err(|r| match r {
+        Refusal::Unreachable(e) => unreachable(&e),
+        Refusal::NotPulse(why) => CheckError::NotPulse(not_pulse_message(target.port, &why)),
+    })?;
     let request = Request::builder()
         .method(Method::GET)
         .uri(&target.path)
@@ -244,15 +331,10 @@ impl Proxy {
                 self.target.authority, self.target.path
             )
         };
-        let stream = tokio::net::TcpStream::connect(&self.target.authority)
-            .await
-            .map_err(|e| unreachable(&e))?;
-        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-            .await
-            .map_err(|e| unreachable(&e))?;
-        // Driving the connection ends when the response is done or this task is aborted, which
-        // closes the socket: the daemon sees the disconnect and cancels the request.
-        let _connection = AbortOnDrop(tokio::spawn(connection).abort_handle());
+        let (mut sender, _connection) = self.target.connect().await.map_err(|r| match r {
+            Refusal::Unreachable(e) => unreachable(&e),
+            Refusal::NotPulse(why) => not_pulse_message(self.target.port, &why),
+        })?;
         let response = sender.send_request(request).await.map_err(|e| unreachable(&e))?;
         let (parts, mut body) = response.into_parts();
         self.learn(&parts.headers, None);

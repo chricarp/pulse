@@ -3,7 +3,9 @@
 // on a temp home (see daemon.ts). Tests wait for conditions, never for time.
 
 import { writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage } from "node:http";
 import { join } from "node:path";
+import type { Duplex } from "node:stream";
 
 import { expect, test as base, type Page } from "@playwright/test";
 
@@ -15,6 +17,15 @@ const test = base.extend<{ daemon: Daemon }>({
     const d = await startDaemon();
     await use(d);
     await d.dispose();
+  },
+  // Every page runs under the daemon's Content-Security-Policy; anything it blocks fails the test.
+  page: async ({ page }, use) => {
+    const blocked: string[] = [];
+    page.on("console", (m) => {
+      if (/Content Security Policy/i.test(m.text())) blocked.push(m.text());
+    });
+    await use(page);
+    expect(blocked).toEqual([]);
   },
 });
 
@@ -30,8 +41,12 @@ test("login: a code is exchanged once, removed from the address bar, and kept pe
   await page.goto(url);
   await expect(page.locator(".conn-line")).toContainText("Connected");
   expect(page.url()).not.toContain("login=");
+  // The token lives in memory only: nothing stored holds it.
+  const stored = () => page.evaluate(() => JSON.stringify({ ...sessionStorage }) + JSON.stringify({ ...localStorage }));
+  expect(await stored()).not.toContain(daemon.token());
   await page.reload();
   await expect(page.locator(".conn-line")).toContainText("Connected");
+  expect(await stored()).not.toContain("pulse.resume");
 
   // The same link in a new tab: spent.
   const second = await context.newPage();
@@ -140,4 +155,58 @@ test("after a daemon restart the window says so and recovers without a reload", 
   await expect(page.locator(".conn-line")).toContainText("Connected");
   writeFileSync(join(daemon.home, "Inbox", "after-restart.txt"), "x");
   await expect(page.locator(".event-row", { hasText: "after-restart.txt" })).toBeVisible();
+});
+
+test("a program that takes the port gets no credential, on reconnect or on reload", async ({ page, daemon }) => {
+  await login(page, daemon);
+  const token = daemon.token();
+  const port = daemon.port;
+  await daemon.stop();
+  // It records everything, fakes proofs, and serves a page that reads this origin's storage.
+  const seen: string[] = [];
+  const squatter = createServer((req, res) => {
+    seen.push(`${req.url ?? ""} ${JSON.stringify(req.headers)}`);
+    if (req.url?.startsWith("/auth/proof")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ instance: "00".repeat(16), proof: "00".repeat(32) }));
+      return;
+    }
+    let body = "";
+    req.on("data", (d: Buffer) => (body += d.toString()));
+    req.on("end", () => {
+      seen.push(body);
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<!doctype html><title>x</title><script>document.title = 'stolen:' + JSON.stringify({ ...sessionStorage })</script>");
+    });
+  });
+  squatter.on("upgrade", (req: IncomingMessage, socket: Duplex) => {
+    seen.push(`${req.url ?? ""} ${JSON.stringify(req.headers)}`);
+    socket.destroy();
+  });
+  await new Promise<void>((r) => squatter.listen(port, "127.0.0.1", r));
+
+  // Reconnecting: the proof fails, the token is not sent, and the window says why.
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.locator(".banner[data-unproven]")).toContainText("could not prove it is your daemon");
+
+  // Reloading: the squatter's page runs on this origin and reads what the real page stored.
+  await page.reload();
+  await expect(page).toHaveTitle(/^stolen:/);
+  const stolen = JSON.parse((await page.title()).slice("stolen:".length)) as Record<string, string>;
+  expect(JSON.stringify(stolen)).not.toContain(token);
+  const resume = JSON.parse(stolen["pulse.resume"] ?? "null") as { code: string } | null;
+  expect(resume?.code).toMatch(/^r\.[0-9a-f]{64}$/);
+  expect(seen.join("\n")).toContain("/auth/proof?nonce=");
+  expect(seen.join("\n")).not.toContain(token);
+
+  // What it read works on no daemon: this one restarted, as any daemon must for it to get the port.
+  squatter.closeAllConnections();
+  await new Promise((r) => squatter.close(r));
+  await daemon.start();
+  const res = await fetch(`http://127.0.0.1:${port}/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: `http://127.0.0.1:${port}` },
+    body: JSON.stringify({ code: resume?.code }),
+  });
+  expect(res.status).toBe(401);
 });
