@@ -39,6 +39,15 @@ pub(crate) fn insert(tx: &Transaction<'_>, e: &Event) -> Result<()> {
     Ok(())
 }
 
+/// The newest event id in the log.
+pub(crate) fn last_id(conn: &rusqlite::Connection) -> Result<Option<EventId>> {
+    let id: Option<String> = conn
+        .prepare_cached("SELECT id FROM events ORDER BY id DESC LIMIT 1")?
+        .query_row([], |r| r.get(0))
+        .optional()?;
+    id.as_deref().map(parse_id).transpose()
+}
+
 pub(crate) fn insert_delivery(tx: &Transaction<'_>, d: &Delivery) -> Result<()> {
     tx.prepare_cached(
         "INSERT INTO deliveries (id, event_id, rule, agent, at, outcome, detail, run_id)
@@ -207,6 +216,11 @@ impl Queries<'_> {
             .query_row([id.to_string()], |r| r.get(0))
             .optional()?;
         body.map(|b| serde_json::from_str(&b).map_err(StoreError::from)).transpose()
+    }
+
+    /// The newest event id in the log: the daemon continues its id sequence after it.
+    pub fn last_event_id(&self) -> Result<Option<EventId>> {
+        last_id(self.conn)
     }
 
     /// Events matching a filter, by id (newest first by default), with cursor pagination.

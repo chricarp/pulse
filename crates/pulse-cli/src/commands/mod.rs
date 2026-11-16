@@ -2,6 +2,7 @@
 
 pub mod daemon;
 mod events;
+mod mcp;
 mod misc;
 mod rules;
 mod runs;
@@ -35,6 +36,7 @@ pub async fn run(ctx: &Ctx, command: Command) -> Res {
         Command::Rules(cmd) => rules::rules(ctx, cmd).await,
         Command::Runs(cmd) => runs::runs(ctx, cmd).await,
         Command::Agents(args) => misc::agents(ctx, args).await,
+        Command::Mcp(args) => mcp::bridge(ctx, args).await,
         Command::Sources(args) => misc::sources(ctx, args).await,
         Command::Project(cmd) => misc::project(ctx, cmd).await,
     }

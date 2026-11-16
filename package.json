@@ -1,0 +1,14 @@
+{
+  "name": "pulse",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "./scripts/build.sh",
+    "web": "pnpm --dir apps/web",
+    "desktop": "pnpm --dir apps/desktop"
+  }
+}

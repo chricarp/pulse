@@ -436,7 +436,9 @@ pub struct RunOutputParams {
 #[ts(optional_fields = nullable)]
 pub struct RunOutputPage {
     pub chunks: Vec<RunOutputChunk>,
-    /// Pass as `after` to continue; `None` when there is nothing more stored yet.
+    /// Pass as `after` to continue: the last chunk's `seq`, or the `after` that was passed when
+    /// nothing more is stored yet (`None` only for a run with no output at all). A page with no
+    /// chunks is the end, for now.
     #[ts(type = "number | null")]
     pub next_after: Option<u64>,
     pub stats: OutputStats,

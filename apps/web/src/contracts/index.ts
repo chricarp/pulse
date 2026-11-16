@@ -563,7 +563,9 @@ export type RunOutputChunk = { seq: number, at: Timestamp, kind: OutputKind, tex
 
 export type RunOutputPage = { chunks: Array<RunOutputChunk>, 
 /**
- * Pass as `after` to continue; `None` when there is nothing more stored yet.
+ * Pass as `after` to continue: the last chunk's `seq`, or the `after` that was passed when
+ * nothing more is stored yet (`None` only for a run with no output at all). A page with no
+ * chunks is the end, for now.
  */
 next_after: number | null, stats: OutputStats, 
 /**

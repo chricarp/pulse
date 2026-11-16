@@ -80,16 +80,12 @@ pub async fn agents(ctx: &Ctx, args: AgentsArgs) -> Res {
                 print_line(&format!("Removed agent {name}."));
             }
         }
-        AgentsCmd::Mcp { name } => {
+        AgentsCmd::McpCredentials { name } => {
             let c = client.call::<method::AgentsMcpCredentials>(NameParams { name }).await?;
             if ctx.json {
                 print_json(&c);
             } else {
-                print_line(&format!("url    {}", c.url));
-                print_line(&format!("token  {}", c.token));
-                print_line(
-                    "The token works only on /mcp, only as this agent: it cannot approve runs or edit rules.",
-                );
+                print_line(&super::mcp::credentials_text(ctx, &c));
             }
         }
     }

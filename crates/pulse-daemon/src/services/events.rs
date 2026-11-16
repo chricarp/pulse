@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use super::Services;
 use crate::engine::Input;
 use crate::error::{ServiceError, ServiceResult};
-use crate::hub::{Permit, Sent};
+use crate::hub::Sent;
 
 /// Events per `events.ingest` call.
 pub const MAX_INGEST_EVENTS: usize = 1000;
@@ -44,26 +44,19 @@ impl Services {
     }
 
     /// Live events matching `filter`, delivered in bounded, rate-limited batches (see
-    /// [`crate::hub`]). With `agent`, only events that agent's scopes cover, checked against
-    /// the configuration in effect at delivery time.
+    /// [`crate::hub`]). For RPC clients (the daemon token sees everything); MCP agents get
+    /// scoped wakeups instead (`mcp_wakeups`).
     pub(crate) fn events_subscribe(
         &self,
         filter: EventFilter,
-        agent: Option<String>,
         deliver: impl FnMut(&EventsBatch) -> Sent + Send + 'static,
         stop: CancellationToken,
         client: CancellationToken,
     ) -> ServiceResult<SubscriptionId> {
         let compiled = CompiledFilter::compile(&filter)
             .map_err(|e| ServiceError::Invalid(format!("invalid filter: {e}")))?;
-        let permit = agent.map(|agent| {
-            let shared = self.shared.clone();
-            Box::new(move |e: &pulse_contracts::Event| {
-                shared.snapshot().routing.agent_permits(&agent, e)
-            }) as Permit
-        });
         let id = self.shared.ids.subscription();
-        self.shared.hub.spawn_event_subscription(id, compiled, permit, deliver, stop, client);
+        self.shared.hub.spawn_event_subscription(id, compiled, deliver, stop, client);
         Ok(id)
     }
 

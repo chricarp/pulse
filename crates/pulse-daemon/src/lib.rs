@@ -16,7 +16,7 @@
 //!   Rust methods. Transports call exactly one of them per request.
 //! - `config`: loading, last-good, hot reload, project trust, format-preserving write-back.
 //! - `hub`: bounded, rate-limited fan-out to subscribers.
-//! - [`wiring`]: the injected edges (source builder, adapters, supervisor, MCP router).
+//! - [`wiring`]: the injected edges (source builder, adapters, supervisor).
 //! - [`client`]: the typed RPC client the CLI uses.
 //! - [`auth`]: daemon token, per-agent MCP tokens, UI login codes.
 //!
@@ -44,7 +44,7 @@ pub use daemon::{Daemon, DaemonOptions, StartError};
 pub use error::{ServiceError, ServiceResult};
 pub use home::PulseHome;
 pub use services::Services;
-pub use transport::{McpBackend, WS_PROTOCOL, WS_TOKEN_PROTOCOL_PREFIX};
+pub use transport::{WS_PROTOCOL, WS_TOKEN_PROTOCOL_PREFIX};
 pub use wiring::{RealSupervisor, Supervisor, Wiring};
 
 /// The daemon's version, reported by `system.status`.

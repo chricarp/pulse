@@ -47,6 +47,9 @@ pub enum Command {
     Runs(RunsCmd),
     /// Agents: list, show, add, remove, and their MCP credentials.
     Agents(AgentsArgs),
+    /// MCP over stdio, for MCP clients that launch a server: a bridge to the daemon's /mcp as
+    /// one agent. Stdout carries MCP messages only.
+    Mcp(McpArgs),
     /// Sources and their health: list, add, remove.
     Sources(SourcesArgs),
     /// Trust or untrust a repository's pulse.toml.
@@ -292,8 +295,9 @@ pub enum AgentsCmd {
     Remove {
         name: String,
     },
-    /// The /mcp URL and the agent's token (valid only for MCP, only as this agent).
-    Mcp {
+    /// The /mcp URL, the agent's token (valid only for MCP, only as this agent), and
+    /// configuration to paste into MCP clients.
+    McpCredentials {
         name: String,
     },
 }
@@ -345,6 +349,13 @@ pub enum SourcesCmd {
     Remove {
         name: String,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct McpArgs {
+    /// The agent to act as: its `allow` list scopes everything the client sees.
+    #[arg(long)]
+    pub agent: String,
 }
 
 #[derive(Debug, Subcommand)]

@@ -1,0 +1,8 @@
+packages:
+  - apps/*
+
+# Packages whose install scripts may run. esbuild verifies its native binary (desktop build);
+# electron-winstaller is Windows-only tooling pulled in by electron-builder and is not needed.
+allowBuilds:
+  esbuild: true
+  electron-winstaller: false

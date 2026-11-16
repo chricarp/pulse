@@ -19,7 +19,7 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 - Claimed `start_run` rows wait in a FIFO per agent and start while the agent is under `max_concurrent` (read from the current config, else the run's snapshot). A row stays `claimed` until its run starts, so a crash returns it to pending. The run is re-read before it starts; one cancelled while it waited is skipped.
 - **Global pause also holds queued runs.** 0002 says "nothing fires". A user who pauses because an agent misbehaves also expects runs already queued not to start; they start on resume. Running runs continue; cancel them explicitly.
 - **Default working directory is per run**: `$PULSE_HOME/runs/<run id>/`, which also holds `event.json` (`PULSE_EVENT_FILE`). 0002 said `runs/`; a shared directory would let one run's files be attributed to another and would mix their outputs. Retention removes the directories of pruned runs.
-- **Only the prompt text is stored** (`runs.prompt`), so a run started later gets a `RenderedPrompt` with the stored text and an empty `delimiter`. Adapters only send the text.
+- **Only the prompt text is stored** (`runs.prompt`), so a run started later gets a `RenderedPrompt` with the stored text and an empty `delimiter` field. The text already contains the fenced event block and its delimiter lines, and adapters send exactly the text, so what is stored is what the agent read (tested with `fake-claude` and `fake-codex` saving their stdin). The empty field is metadata nobody reads.
 - **Graceful shutdown records `interrupted`** (with "the daemon shut down"): every run is cancelled through its token, the supervisor terminates its group, and the worker waits for each to be reaped. This needed `running → interrupted` in `RunTransition::Finish`; before, interrupted was only written at the next start, with the wrong end time. A crash is still recovered at the next start.
 - A cancelled run is `cancelled`; one cancelled because of shutdown is `interrupted`.
 - **Reruns skip routing**: they are an explicit request with the daemon token, so no approval, cooldown or rate limit applies. The run keeps its rule only while that rule still exists.
@@ -46,7 +46,7 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 
 ## Transports and auth
 
-- One listener on `127.0.0.1`: `/ws`, `POST /ingest?source=<name>`, `POST /auth/login`, `/mcp`, and the UI. A guard runs first on every request: `Host` must be `127.0.0.1:<port>` or `localhost:<port>`; a present `Origin` must be this daemon's; `/ws` and `/ingest` need the daemon token; `/mcp` needs an agent token (the daemon token is refused there: MCP acts as an agent, and the identity is put into the request extensions for the MCP router).
+- One listener on `127.0.0.1`: `/ws`, `POST /ingest?source=<name>`, `POST /auth/login`, `/mcp`, and the UI. A guard runs first on every request: `Host` must be `127.0.0.1:<port>` or `localhost:<port>`; a present `Origin` must be this daemon's; `/ws` and `/ingest` need the daemon token; on `/mcp` no `Origin` is accepted at all, and the token is left to the MCP router's own bearer layer, which is the one place that decides the calling agent (`Services::mcp_agent`); the daemon token is not an agent token, so it gets 401 there.
 - **Browsers** cannot set headers on a WebSocket, so the token may also come as the subprotocol `pulse.token.<token>`, offered together with `pulse` (which the server selects). Cookies were rejected: they are not port-scoped, so another server on 127.0.0.1 would receive them.
 - **How the browser gets the token** (0002 suggested the token in the URL fragment): `pulse open` puts a **login code** in the fragment (`#login=<code>`), and the UI exchanges it at `POST /auth/login` for the token. The code is `expiry.HMAC(secret, expiry)`, valid for two minutes and once. The token itself would otherwise sit in `xdg-open`'s argument list, readable by other local users, and in browser history. The UI should then drop the fragment (`history.replaceState`) and keep the token in `sessionStorage`.
 - **Agent tokens** are `pa.<agent>.<hex HMAC-SHA256(secret, "pulse/agent-token/v1\0" + agent)>`: self-describing, so verification needs no lookup, and rotating the secret revokes all of them.
@@ -71,6 +71,6 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 
 ## Known limits
 
-- The real supervisor, sources, ingest parser, process wrapper and MCP router are other packages; until they are merged, runs fail with "the supervisor is not implemented yet", `pulse run` and `POST /ingest` answer "not implemented", and `/mcp` answers 501.
+- `[daemon] mcp_events_extension` is read at start, like the port.
 - Pending debounces are not persisted (0002, unchanged).
 - Live `dropped` counts are a summary, not an exact count, when a subscriber lags the broadcast (see Fan-out).
