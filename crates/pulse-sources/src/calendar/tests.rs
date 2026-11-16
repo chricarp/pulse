@@ -360,3 +360,15 @@ async fn a_url_calendar_fires_and_caches_for_conditional_requests() {
     assert!(rx.try_recv().is_err());
     stop.cancel();
 }
+
+#[test]
+fn absurd_lead_or_refresh_is_a_config_error() {
+    let env = SourceEnv { home: "/h".into(), pulse_home: "/p".into() };
+    let huge = Duration::from_millis(u64::MAX);
+    for (refresh, lead) in [(Some(huge), None), (None, Some(huge))] {
+        let settings =
+            CalendarSourceSettings { url: None, path: Some("/c.ics".into()), refresh, lead };
+        let err = CalendarSource::new("c", &settings, &env).unwrap_err();
+        assert!(matches!(err, SourceError::Config(_)), "{err}");
+    }
+}

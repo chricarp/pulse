@@ -40,6 +40,9 @@ pub const MAX_ICS_BYTES: u64 = 10 * 1024 * 1024;
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const FIRST_RETRY: Duration = Duration::from_mins(1);
 const MAX_FIRED: usize = 50_000;
+/// The largest `refresh` and `lead`: a year. More is a typo, and would stretch the expansion
+/// window past anything the planner needs.
+const MAX_SETTING: Duration = Duration::from_days(365);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -158,13 +161,19 @@ impl CalendarSource {
         if refresh.is_zero() {
             return Err(SourceError::Config("refresh must be positive".into()));
         }
+        let lead = settings.lead.unwrap_or(DEFAULT_LEAD);
+        for (what, d) in [("refresh", refresh), ("lead", lead)] {
+            if d > MAX_SETTING {
+                return Err(SourceError::Config(format!("{what} must be at most {MAX_SETTING}")));
+            }
+        }
         let source = SourceRef::new(SourceKind::Calendar, name);
         Ok(CalendarSource {
             state: StateFile::new(env, &source),
             source,
             origin,
             refresh,
-            lead: settings.lead.unwrap_or(DEFAULT_LEAD),
+            lead,
             zone: Zone::System,
             clock: Arc::new(SystemClock),
         })
@@ -361,9 +370,12 @@ async fn run(src: CalendarSource, cx: &SourceContext) -> Result<(), SourceError>
         let now = src.clock.now();
         let mut next = next_fetch;
         if let Some(cal) = &calendar {
-            let horizon = src.refresh.max(Duration::from_hours(1)).as_millis()
-                + src.lead.as_millis()
-                + Duration::from_days(1).as_millis();
+            let horizon = src
+                .refresh
+                .max(Duration::from_hours(1))
+                .as_millis()
+                .saturating_add(src.lead.as_millis())
+                .saturating_add(Duration::from_days(1).as_millis());
             let to = now.saturating_add(Duration::from_millis(horizon));
             let (occs, warnings) =
                 expand::occurrences(cal, src.zone, now.saturating_sub(Duration::from_days(1)), to);
@@ -383,7 +395,11 @@ async fn run(src: CalendarSource, cx: &SourceContext) -> Result<(), SourceError>
                     end: o.end,
                     location: o.location.clone(),
                     // Rounded to the nearest minute, so a fire exactly `lead` early says `lead`.
-                    minutes_until: (o.start.as_millis() - now.as_millis() + 30_000)
+                    minutes_until: o
+                        .start
+                        .as_millis()
+                        .saturating_sub(now.as_millis())
+                        .saturating_add(30_000)
                         .div_euclid(60_000),
                 };
                 let ev = match kind {

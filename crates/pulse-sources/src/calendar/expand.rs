@@ -51,6 +51,9 @@ pub(crate) struct Occurrence {
 }
 
 const MAX_INSTANCES_PER_EVENT: u16 = 2_000;
+/// The longest an event can last. Longer spans (a typo, or a hostile `DURATION:P99999999W`)
+/// are cut to this, with a warning.
+pub(crate) const MAX_SPAN: Duration = Duration::days(366);
 
 /// A time value with how to read it.
 #[derive(Clone, Copy, Debug)]
@@ -129,7 +132,7 @@ fn local(tz: Tz, n: NaiveDateTime) -> Option<DateTime<Tz>> {
     for _ in 0..(24 * 60) {
         match tz.from_local_datetime(&probe) {
             LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => return Some(dt),
-            LocalResult::None => probe += Duration::minutes(1),
+            LocalResult::None => probe = probe.checked_add_signed(Duration::minutes(1))?,
         }
     }
     None
@@ -202,14 +205,16 @@ fn offset_zone(offset: &str) -> Option<chrono_tz::Tz> {
     chrono_tz::Tz::from_str(&name).ok()
 }
 
-/// RFC 5545 durations: `P1D`, `PT1H30M`, `P2W`, `-PT15M`.
+/// RFC 5545 durations: `P1D`, `PT1H30M`, `P2W`, `-PT15M`. A span too large to represent
+/// saturates at `Duration::MAX` (callers clamp it to [`MAX_SPAN`]).
 pub(crate) fn parse_duration(s: &str) -> Option<Duration> {
     let (neg, s) = match s.strip_prefix('-') {
         Some(r) => (true, r),
         None => (false, s.strip_prefix('+').unwrap_or(s)),
     };
     let s = s.strip_prefix('P')?;
-    let mut total = Duration::zero();
+    // Whole seconds, saturating; far beyond any real event either way.
+    let mut total: i64 = 0;
     let mut num = String::new();
     let mut time = false;
     for c in s.chars() {
@@ -219,21 +224,23 @@ pub(crate) fn parse_duration(s: &str) -> Option<Duration> {
             _ => {
                 let n: i64 = num.parse().ok()?;
                 num.clear();
-                total += match (c, time) {
-                    ('W', false) => Duration::weeks(n),
-                    ('D', false) => Duration::days(n),
-                    ('H', true) => Duration::hours(n),
-                    ('M', true) => Duration::minutes(n),
-                    ('S', true) => Duration::seconds(n),
+                let unit: i64 = match (c, time) {
+                    ('W', false) => 7 * 86_400,
+                    ('D', false) => 86_400,
+                    ('H', true) => 3_600,
+                    ('M', true) => 60,
+                    ('S', true) => 1,
                     _ => return None,
                 };
+                total = total.saturating_add(n.saturating_mul(unit));
             }
         }
     }
     if !num.is_empty() {
         return None;
     }
-    Some(if neg { -total } else { total })
+    let d = Duration::try_seconds(total).unwrap_or(Duration::MAX);
+    Some(if neg { -d } else { d })
 }
 
 fn ts(dt: &DateTime<Tz>) -> Timestamp {
@@ -307,7 +314,7 @@ pub(crate) fn occurrences(
         }
         let Some(start_when) = ev.dtstart.as_ref().and_then(|p| ctx.value(p)) else { continue };
         let Some(start) = ctx.instant(start_when) else { continue };
-        let duration = span(ev, &mut ctx, start_when, &start);
+        let duration = span(ev, &mut ctx, start_when, &start, &title_of(ev));
         // Events without a UID get one from their position; they cannot be overridden anyway.
         let uid = ev.uid.clone().unwrap_or_else(|| format!("no-uid-{i}"));
         if let Some(u) = &ev.uid {
@@ -346,7 +353,9 @@ pub(crate) fn occurrences(
                 }
             }
         }
-        let window_start = from_dt - duration - Duration::seconds(1);
+        let Some(window_start) = from_dt.checked_sub_signed(duration + Duration::seconds(1)) else {
+            continue;
+        };
         let instances = set
             .after(window_start.with_timezone(&tz))
             .before(to_dt.with_timezone(&tz))
@@ -377,13 +386,15 @@ pub(crate) fn occurrences(
         let Some(start_when) = ev.dtstart.as_ref().and_then(|p| ctx.value(p)) else { continue };
         let Some(start) = ctx.instant(start_when) else { continue };
         let duration = if ev.dtend.is_some() || ev.duration.is_some() {
-            span(ev, &mut ctx, start_when, &start)
+            span(ev, &mut ctx, start_when, &start, &title_of(ev))
         } else {
             master
                 .dtstart
                 .as_ref()
                 .and_then(|p| ctx.value(p))
-                .and_then(|w| ctx.instant(w).map(|s| span(master, &mut ctx, w, &s)))
+                .and_then(|w| {
+                    ctx.instant(w).map(|s| span(master, &mut ctx, w, &s, &title_of(master)))
+                })
                 .unwrap_or_else(Duration::zero)
         };
         let title = ev.summary.clone().or_else(|| master.summary.clone()).unwrap_or_default();
@@ -404,15 +415,40 @@ pub(crate) fn occurrences(
     (out, ctx.warnings.into_iter().collect())
 }
 
-fn span(ev: &VEvent, ctx: &mut Ctx<'_>, start_when: When, start: &DateTime<Tz>) -> Duration {
-    if let Some(end) = ev.dtend.as_ref().and_then(|p| ctx.value(p)).and_then(|w| ctx.instant(w)) {
-        return (end.with_timezone(&Utc) - start.with_timezone(&Utc)).max(Duration::zero());
+fn title_of(ev: &VEvent) -> String {
+    ev.summary.clone().unwrap_or_default()
+}
+
+/// How long an event lasts: from `DTEND` or `DURATION`, never negative, at most [`MAX_SPAN`].
+fn span(
+    ev: &VEvent,
+    ctx: &mut Ctx<'_>,
+    start_when: When,
+    start: &DateTime<Tz>,
+    title: &str,
+) -> Duration {
+    let d = if let Some(end) =
+        ev.dtend.as_ref().and_then(|p| ctx.value(p)).and_then(|w| ctx.instant(w))
+    {
+        end.with_timezone(&Utc).signed_duration_since(start.with_timezone(&Utc))
+    } else if let Some(d) = ev.duration.as_deref().and_then(parse_duration) {
+        d
+    } else if matches!(start_when, When::Date(_)) {
+        // RFC 5545: an all-day event without an end lasts the day; a timed one is an instant.
+        Duration::days(1)
+    } else {
+        Duration::zero()
+    };
+    if d > MAX_SPAN {
+        ctx.warnings.insert(format!(
+            "event {:?} lasts longer than {} days; it is read as {} days long",
+            bounded(title),
+            MAX_SPAN.num_days(),
+            MAX_SPAN.num_days()
+        ));
+        return MAX_SPAN;
     }
-    if let Some(d) = ev.duration.as_deref().and_then(parse_duration) {
-        return d.max(Duration::zero());
-    }
-    // RFC 5545: an all-day event without an end lasts the day; a timed one is an instant.
-    if matches!(start_when, When::Date(_)) { Duration::days(1) } else { Duration::zero() }
+    d.max(Duration::zero())
 }
 
 #[allow(clippy::too_many_arguments)]

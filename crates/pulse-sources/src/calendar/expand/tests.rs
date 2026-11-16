@@ -223,3 +223,29 @@ fn a_huge_recurrence_is_capped() {
     let (got, _) = expand(ics, rome(), "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z");
     assert_eq!(got.len(), usize::from(MAX_INSTANCES_PER_EVENT));
 }
+
+#[test]
+fn absurd_spans_are_clamped_instead_of_panicking() {
+    // Saturates (and is clamped where it is used) rather than overflowing.
+    assert_eq!(parse_duration("P99999999999999W"), Some(Duration::MAX));
+    assert_eq!(parse_duration("PT9223372036854775807S"), Some(Duration::MAX));
+    assert_eq!(parse_duration("P99999999999999999999999D"), None, "not a number");
+    for (what, props) in [
+        ("weeks", "DTSTART:20261116T090000Z\nDURATION:P99999999999999W\n"),
+        ("days, recurring", "DTSTART:20261116T090000Z\nDURATION:P100000000D\nRRULE:FREQ=DAILY\n"),
+        ("dtend", "DTSTART:00010101T000000Z\nDTEND:99991231T000000Z\nRRULE:FREQ=YEARLY\n"),
+    ] {
+        let ics = format!("BEGIN:VEVENT\nUID:x\nSUMMARY:Long\n{props}END:VEVENT\n");
+        let cal = ics::parse(&ics);
+        let (occs, warnings) =
+            occurrences(&cal, rome(), t("2026-11-16T00:00:00Z"), t("2026-11-17T00:00:00Z"));
+        assert!(!occs.is_empty(), "{what}");
+        for o in &occs {
+            assert!(
+                o.end.as_millis() - o.start.as_millis() <= MAX_SPAN.num_milliseconds(),
+                "{what}"
+            );
+        }
+        assert!(warnings.iter().any(|w| w.contains("longer than")), "{what}: {warnings:?}");
+    }
+}

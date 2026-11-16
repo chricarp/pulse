@@ -26,6 +26,11 @@ it to appear"), a calendar URL that failed ("retrying in 2m"), the inotify watch
 queue overflow, file names that are not valid UTF-8 and were skipped. A missing folder or
 repository is not an error: the source waits for it.
 
+Failed means the source stopped: its settings are invalid, or it hit a problem it cannot work
+around (or a bug in Pulse), and the message says which. A failed source is not retried on its
+own; it starts again the next time the configuration changes (edit it, or re-add it) or the
+daemon restarts.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/sources-dark.png">
   <img alt="The Sources view: four healthy sources and two degraded ones, a folder that does not exist yet and a calendar file that does not exist" src="../images/sources-light.png">
