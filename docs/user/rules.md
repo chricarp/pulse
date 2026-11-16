@@ -180,9 +180,10 @@ Every way in has a way out:
 - **Pause** stops every rule from firing (matches are recorded as blocked, "Pulse is paused")
   and holds runs already queued; they start on resume. Runs already running continue: cancel
   them with `pulse runs cancel`. In the UI: **Pause all** (Shift+P).
-- `unsnooze` also releases a rule held by the circuit breaker. The fires that tripped it still
-  count until they are older than the breaker's `window`, so the next match may trip it again
-  at once; fix the cause first.
+- `unsnooze` also releases a rule held by the circuit breaker, and the breaker counts from zero
+  again (as it does when its hold runs out). The rule's `cooldown` and `rate_limit` still count
+  the fires before it. If the cause is still there, the breaker trips again after `max_fires`
+  more runs; fix the cause first.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/rules-dark.png">

@@ -671,7 +671,10 @@ export class MockDaemon {
           return blocked({ kind: "blocked", reason: { reason: "rate_limited", until: iso((inWindow[0] ?? at) + rate.perMs) } });
         }
       }
-      const recent = fires.filter((t) => t > at - 10 * 60_000);
+      // Like the daemon: once the breaker has closed (its hold ended, or an unsnooze), only
+      // later fires count toward it.
+      const closedAt = st.circuit_open_until ? Date.parse(st.circuit_open_until) : -Infinity;
+      const recent = fires.filter((t) => t > at - 10 * 60_000 && t > closedAt);
       if (recent.length >= 20) {
         const until = iso(at + 3_600_000);
         return blocked({ kind: "blocked", reason: { reason: "circuit_open", until } });
@@ -1007,7 +1010,11 @@ export class MockDaemon {
   }
 
   private ruleInfo(def: Def<RuleConfig>): RuleInfo {
-    return { config: ruleWire(def.config), origin: def.origin, revision: this.revision(def, (r) => ruleWire(ruleDefaults(r))), state: { snoozed_until: null, circuit_open_until: null, last_fired_at: null, ...this.ruleState[def.config.name] } };
+    const st = this.ruleState[def.config.name] ?? {};
+    // Like the daemon, snooze and breaker are reported only while they hold.
+    const holding = (t: string | null | undefined) => (t && Date.parse(t) > this.now() ? t : null);
+    const state = { last_fired_at: st.last_fired_at ?? null, snoozed_until: holding(st.snoozed_until), circuit_open_until: holding(st.circuit_open_until) };
+    return { config: ruleWire(def.config), origin: def.origin, revision: this.revision(def, (r) => ruleWire(ruleDefaults(r))), state };
   }
 
   private getRuleDef(name: string): Def<RuleConfig> {
@@ -1203,7 +1210,8 @@ export class MockDaemon {
       const def = this.getRuleDef(name);
       const st = (this.ruleState[name] ??= {});
       st.snoozed_until = null;
-      st.circuit_open_until = null;
+      // The breaker closes now and counts afresh (see `decide`).
+      if (st.circuit_open_until && Date.parse(st.circuit_open_until) > this.now()) st.circuit_open_until = iso(this.now());
       this.broadcast(["rules"]);
       return this.ruleInfo(def);
     },

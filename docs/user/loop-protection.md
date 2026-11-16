@@ -17,7 +17,7 @@ guess, and what to do when it guesses wrong.
    a rule's `cooldown` and `rate_limit`, and a **circuit breaker**: once a rule has fired 20
    times within 10 minutes, the next match trips it and the rule is held for an hour
    (`[limits.circuit_breaker]`). A held rule's matches are blocked as `circuit_open` until the
-   time runs out or you unsnooze it.
+   time runs out or you unsnooze it; either way the breaker then counts from zero.
 
 Every blocked delivery is kept in the log. A stopped loop is visible, not silent.
 
@@ -120,9 +120,11 @@ Replayed as 01M7HXZJQ31E8CJ8S324ZBE9B7
 What that run writes is attributed to it in turn, so a replay does not start a loop.
 
 If a circuit breaker is holding a rule, `pulse rules list` says `breaker open until …`, and
-`pulse rules unsnooze <rule>` (or **Unsnooze** in the UI) closes it. The fires that tripped it
-still count until they are older than the breaker's `window`, so the next match within that
-window trips it again: find out why it fired so often before releasing it.
+`pulse rules unsnooze <rule>` (or **Unsnooze** in the UI) closes it. Closing it, by hand or
+when the hold runs out, starts its count afresh: the rule fires again, and only another
+`max_fires` fires within `window` trip it again. The rule's own `cooldown` and `rate_limit`
+still count the earlier fires. If the cause is still there, the loop resumes and the breaker
+holds the rule again after `max_fires` more runs, so find out why it fired so often first.
 
 ## Settings
 

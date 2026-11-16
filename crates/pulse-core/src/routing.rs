@@ -17,7 +17,9 @@
 //! 6. **Cooldown**, then **rate limit** → `cooldown` / `rate_limited`. For an elapsed debounce,
 //!    these re-arm the debounce until the limit lifts instead of dropping the event.
 //! 7. **Circuit breaker**: one more fire would exceed `max_fires` within the window → the
-//!    breaker opens for `open_for` → `circuit_open`.
+//!    breaker opens for `open_for` → `circuit_open`. Only fires since the breaker last closed
+//!    (its hold ended, or `unsnooze`) count, so closing it is a fresh start, not a re-trip at
+//!    the next match.
 //! 8. **Agent backlog** (unsupervised rules): queued + running runs of the agent at
 //!    `max_concurrent + max_queued` → `agent_busy`. Concurrency itself is enforced by the
 //!    effect worker; queued runs wait for a slot.
@@ -196,6 +198,9 @@ fn rule_matches(rule: &CompiledRule, event: &Event) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuleRuntime {
     pub snoozed_until: Option<Timestamp>,
+    /// When the circuit breaker's latest hold ends (or ended): open while it is in the future.
+    /// Once past, it is when the breaker closed, and the breaker counts only later fires; an
+    /// unsnooze sets it to the moment of the unsnooze. Kept after it passes for that reason.
     pub circuit_open_until: Option<Timestamp>,
     pub fires: FireHistory,
 }
@@ -247,11 +252,16 @@ impl RouterState {
         self.rules.entry(rule.to_owned()).or_default().snoozed_until = Some(until);
     }
 
-    /// Clears a snooze and an open circuit breaker.
-    pub fn unsnooze(&mut self, rule: &str) {
+    /// Clears a snooze and closes an open circuit breaker. A breaker closed by hand counts
+    /// fires afresh from `now`, as it does when its hold ends: the fires that tripped it are
+    /// still in its window and would trip it again at the next match. Cooldown and rate limit
+    /// still count them.
+    pub fn unsnooze(&mut self, rule: &str, now: Timestamp) {
         if let Some(r) = self.rules.get_mut(rule) {
             r.snoozed_until = None;
-            r.circuit_open_until = None;
+            if r.circuit_open_until.is_some_and(|u| u > now) {
+                r.circuit_open_until = Some(now);
+            }
         }
     }
 
@@ -464,7 +474,7 @@ fn decide(
 
     // 7. Circuit breaker.
     let breaker = &limits.circuit_breaker;
-    if breaker_trips(breaker, &runtime.fires, now) {
+    if breaker_trips(breaker, &runtime.fires, runtime.circuit_open_until, now) {
         let until = now.saturating_add(breaker.open_for);
         runtime.circuit_open_until = Some(until);
         return blocked(BlockReason::CircuitOpen { until });

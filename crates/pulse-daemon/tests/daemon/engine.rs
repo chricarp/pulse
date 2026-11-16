@@ -385,6 +385,20 @@ run = { agent = "sh" }
     .await;
     let rule = client.call::<method::RulesGet>(NameParams { name: "hot".into() }).await.unwrap();
     assert!(rule.state.circuit_open_until.is_some());
+
+    // Unsnoozing closes it for good, across a restart: the fire that tripped it is rebuilt from
+    // the log at startup and is still inside the window, but no longer counts.
+    let rule =
+        client.call::<method::RulesUnsnooze>(NameParams { name: "hot".into() }).await.unwrap();
+    assert_eq!(rule.state.circuit_open_until, None);
+    drop((client, notes));
+    t.stop().await;
+    t.boot(Setup::default()).await;
+    let client = t.client().await;
+    let res = client.call::<method::EventsIngest>(ingest("third")).await.unwrap();
+    let detail =
+        client.call::<method::EventsGet>(EventIdParams { id: res.accepted[0] }).await.unwrap();
+    assert_eq!(detail.deliveries[0].outcome, DeliveryOutcome::Fired);
     t.stop().await;
 }
 

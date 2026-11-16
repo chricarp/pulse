@@ -57,7 +57,8 @@ Only in your own `pulse.toml`. Bounds for the engine and for loop protection.
 | `run_output_max_bytes` | `4194304` (4 MiB) | 4096–2³² | Output kept per run. Past it the first half and the most recent output are kept, with a marker saying how much was dropped. |
 
 `[limits.circuit_breaker]`: a rule that fires more than `max_fires` times within `window` is held
-for `open_for`. This works whether or not loop attribution is right.
+for `open_for`. This works whether or not loop attribution is right. When the hold ends, or
+`pulse rules unsnooze` ends it, the breaker counts only fires from then on.
 
 | Key | Default | Range |
 |---|---|---|

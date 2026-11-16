@@ -340,7 +340,7 @@ impl Engine {
             Control::Snooze { rule, until, reply } => {
                 match until {
                     Some(until) => self.state.snooze(&rule, until),
-                    None => self.state.unsnooze(&rule),
+                    None => self.state.unsnooze(&rule, self.shared.clock.now()),
                 }
                 let row = self.rule_row(&rule);
                 let result = self.shared.store.write(move |s| s.set_rule_state(&row)).await;

@@ -337,35 +337,83 @@ fn dry_runs_do_not_touch_the_real_state() {
 }
 
 #[test]
-fn breaker_stays_open_and_unsnooze_closes_it() {
-    let r = routing(
-        RULE,
-        "[limits]\ncircuit_breaker = { max_fires = 1, window = \"1m\", open_for = \"1h\" }",
-    );
-    let mut state = RouterState::new(r.limits());
-    let a = pdf(1, "a.pdf");
-    let labels: Vec<String> = (0..3)
-        .map(|i| label(&run_route(&a, RouteMode::AllRules, &r, &mut state, at(i))[0].outcome))
-        .collect();
-    assert_eq!(
-        labels,
-        [
-            "fire",
-            "CircuitOpen { until: Timestamp(3600001) }",
-            "CircuitOpen { until: Timestamp(3600001) }"
-        ]
-    );
-    state.unsnooze("lecture");
-    assert_eq!(state.rule("lecture").unwrap().circuit_open_until, None);
-    // Still within the window: the breaker trips again on the next fire.
-    assert!(
-        label(&run_route(&a, RouteMode::AllRules, &r, &mut state, at(3))[0].outcome)
-            .starts_with("CircuitOpen")
-    );
-    assert_eq!(
-        label(&run_route(&a, RouteMode::AllRules, &r, &mut state, at(3_600_004))[0].outcome),
-        "fire"
-    );
+fn breaker_stays_open_and_closing_it_starts_the_count_afresh() {
+    // `(time, expected)` routes the same event; `(time, "unsnooze")` closes the breaker by hand.
+    let trip_1h = [(0, "fire"), (1, "fire"), (2, "CircuitOpen { until: Timestamp(3600002) }")];
+    type Steps = Vec<(i64, &'static str)>;
+    let cases: Vec<(&str, &str, Steps)> = vec![
+        // Unsnoozed inside the window: the fires that tripped it no longer count toward the
+        // breaker, so the next two matches fire and the third trips it again.
+        (
+            "",
+            "max_fires = 2, window = \"1m\", open_for = \"1h\"",
+            [
+                &trip_1h[..],
+                &[
+                    (3, "CircuitOpen { until: Timestamp(3600002) }"),
+                    (10, "unsnooze"),
+                    (11, "fire"),
+                    (12, "fire"),
+                    (13, "CircuitOpen { until: Timestamp(3600013) }"),
+                ],
+            ]
+            .concat(),
+        ),
+        // The user's own limits still count every fire: the rate limit set by the fires that
+        // tripped the breaker holds after the unsnooze.
+        (
+            "rate_limit = \"3/1m\"",
+            "max_fires = 2, window = \"1m\", open_for = \"1h\"",
+            [
+                &trip_1h[..],
+                &[(3, "unsnooze"), (4, "fire"), (5, "RateLimited { until: Timestamp(60000) }")],
+            ]
+            .concat(),
+        ),
+        // The hold ends on its own while the window still covers the fires that tripped it
+        // (open_for shorter than window): it closes as an unsnooze would.
+        (
+            "",
+            "max_fires = 2, window = \"1h\", open_for = \"1m\"",
+            vec![
+                (0, "fire"),
+                (1, "fire"),
+                (2, "CircuitOpen { until: Timestamp(60002) }"),
+                (60_001, "CircuitOpen { until: Timestamp(60002) }"),
+                (60_003, "fire"),
+                (60_004, "fire"),
+                (60_005, "CircuitOpen { until: Timestamp(120005) }"),
+            ],
+        ),
+        // Unsnoozing a rule whose breaker is closed forgets nothing.
+        (
+            "",
+            "max_fires = 2, window = \"1m\", open_for = \"1h\"",
+            vec![
+                (0, "fire"),
+                (1, "fire"),
+                (2, "unsnooze"),
+                (3, "CircuitOpen { until: Timestamp(3600003) }"),
+            ],
+        ),
+    ];
+    for (extra, breaker, steps) in cases {
+        let r = routing(
+            &format!("{RULE}{extra}\n"),
+            &format!("[limits]\ncircuit_breaker = {{ {breaker} }}"),
+        );
+        let mut state = RouterState::new(r.limits());
+        let a = pdf(1, "a.pdf");
+        for (now, want) in steps {
+            if want == "unsnooze" {
+                state.unsnooze("lecture", t(now));
+                continue;
+            }
+            let got =
+                label(&run_route(&a, RouteMode::AllRules, &r, &mut state, at(now))[0].outcome);
+            assert_eq!(got, want, "{extra} {breaker} at {now}");
+        }
+    }
 }
 
 #[test]
