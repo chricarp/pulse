@@ -66,7 +66,6 @@ Status: Phase 2, 2026-11-16. How `pulse-daemon` and `pulse-cli` implement [0002]
 
 ## Known limits
 
-- The sources, ingest parser and process wrapper are another package; until it is merged, `pulse run` and `POST /ingest` answer "not implemented". The supervisor (`pulse-agents`) and the MCP router (`pulse-mcp`) are wired in.
 - `[daemon] mcp_events_extension` is read at start, like the port.
 - Pending debounces are not persisted (0002, unchanged).
 - Live `dropped` counts are a summary, not an exact count, when a subscriber lags the broadcast (see Fan-out).
