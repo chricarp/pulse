@@ -164,6 +164,7 @@ const layoutCache = new WeakMap<RunOutputChunk, { key: string; height: number; e
 
 // Characters whose width in a monospace font is one cell. Anything else (CJK, emoji, symbols
 // from a fallback font) makes the computed height a guess, so that row is measured instead.
+const PROSE: ReadonlySet<OutputKind> = new Set(["assistant", "thinking", "result", "error", "system"]);
 const ONE_CELL = /^[\n\u0020-\u007E\u00A0-\u024F]*$/;
 
 /** The pixel height of a chunk's row for a container `width` and a monospace `charWidth`. */
@@ -172,7 +173,10 @@ export function chunkLayout(chunk: RunOutputChunk, expanded: boolean, width: num
   const hit = layoutCache.get(chunk);
   if (hit?.key === key) return hit;
   const computed = computeLayout(chunk, expanded, width, charWidth);
-  const exact = chunk.kind === "marker" || chunk.kind === "tool_use" || ONE_CELL.test(displayText(chunk, expanded).text);
+  // Prose (what the agent says, thinks, concludes) wraps at words in the text font, so its
+  // height is a guess and the row is measured. Those rows are few next to plain output.
+  const prose = PROSE.has(chunk.kind);
+  const exact = !prose && (chunk.kind === "marker" || chunk.kind === "tool_use" || ONE_CELL.test(displayText(chunk, expanded).text));
   const entry = { key, height: computed.height, exact };
   layoutCache.set(chunk, entry);
   return entry;

@@ -936,7 +936,7 @@ kbd {
   white-space: nowrap;
 }
 .event-row {
-  grid-template-columns: 62px minmax(110px, 150px) minmax(60px, 96px) minmax(0, 1fr) auto minmax(0, max-content);
+  grid-template-columns: 62px minmax(110px, 150px) minmax(60px, 96px) minmax(160px, 1fr) auto minmax(0, max-content);
   cursor: default;
 }
 .event-row:hover {
@@ -976,6 +976,16 @@ kbd {
   display: flex;
   justify-content: flex-end;
   max-width: 46vw;
+}
+/* Next to the detail pane the list is narrow: drop the source, keep the subject readable. */
+.has-detail .event-row {
+  grid-template-columns: 62px minmax(100px, 140px) minmax(140px, 1fr) auto minmax(0, max-content);
+}
+.has-detail .event-row .c-source {
+  display: none;
+}
+.has-detail .c-markers {
+  max-width: 220px;
 }
 
 .gap-row {
@@ -1963,6 +1973,16 @@ dialog::backdrop {
   color: var(--error);
   box-shadow: inset 2px 0 0 var(--error-line);
 }
+/* Prose wraps at words in the text font; these rows are measured, not computed. */
+.ch-assistant,
+.ch-thinking,
+.ch-result,
+.ch-error {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 20px;
+  word-break: normal;
+}
 .ch-assistant {
   padding: 5px 16px;
   color: var(--fg);
@@ -1974,6 +1994,7 @@ dialog::backdrop {
 }
 .ch-system {
   color: var(--fg-faint);
+  word-break: normal;
 }
 .ch-box {
   border: 1px solid var(--line);
@@ -2727,4 +2748,7 @@ ul.plain {
     flex-direction: column;
     align-items: stretch;
   }
+}
+.tab-note {
+  padding: 16px;
 }

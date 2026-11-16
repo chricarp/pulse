@@ -226,7 +226,7 @@ export function RunList({
                     {dayAndTime(r.created_at, now)}
                   </span>
                   <span className="c-dur num" role="cell">
-                    {r.started_at ? span((r.ended_at ? Date.parse(r.ended_at) : now) - Date.parse(r.started_at)) : ""}
+                    {r.started_at ? span(Math.max(0, (r.ended_at ? Date.parse(r.ended_at) : Math.max(now, Date.now())) - Date.parse(r.started_at))) : ""}
                   </span>
                   <span className="c-id mono faint" role="cell">
                     {shortId(r.id)}

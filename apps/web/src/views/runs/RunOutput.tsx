@@ -83,6 +83,8 @@ export function RunOutput({ runId, live, droppedBytes, totalBytes }: { runId: st
     { keys: "shift+g", label: "Follow the output", group: "Runs", run: jumpToEnd, hidden: true },
   ]);
 
+  // `totalBytes` is from when the run was fetched; while it runs, what has arrived is newer.
+  const loadedBytes = useMemo(() => out.chunks.reduce((n, c) => n + c.text.length + 1, 0), [out.version, out.chunks]);
   const all = () => out.chunks.map((c) => c.text).join("\n");
   const toggleKind = (key: string) =>
     setHidden((h) => {
@@ -96,7 +98,7 @@ export function RunOutput({ runId, live, droppedBytes, totalBytes }: { runId: st
     <div className="output">
       <div className="output-bar">
         <span className="faint num">
-          {count(out.chunks.length)} chunks · {bytes(totalBytes)}
+          {count(out.chunks.length)} chunks · {bytes(Math.max(totalBytes, loadedBytes))}
           {droppedBytes > 0 && <span className="tone-text-attention"> · {bytes(droppedBytes)} dropped from the middle (output cap)</span>}
         </span>
         <span className="spacer" />

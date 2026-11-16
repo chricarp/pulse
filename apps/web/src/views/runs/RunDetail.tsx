@@ -153,7 +153,15 @@ export function RunDetail({ id, onClose }: { id: string; onClose: () => void }) 
             [
               "Process",
               <span key="p" className="num">
-                {run.exit_code !== null && run.exit_code !== undefined ? `exit ${run.exit_code}` : run.signal ? `signal ${run.signal}` : isActive(status) ? "–" : "no exit code"}
+                {run.exit_code !== null && run.exit_code !== undefined
+                  ? `exit ${run.exit_code}`
+                  : run.signal
+                    ? `signal ${run.signal}`
+                    : status === "pending_approval" || status === "queued"
+                      ? "not started"
+                      : status === "running"
+                        ? "running"
+                        : "no exit code"}
                 {run.pid ? <span className="faint"> · pid {run.pid}</span> : null}
                 <span className="faint"> · chain depth {run.chain_depth}</span>
               </span>,
@@ -179,7 +187,12 @@ export function RunDetail({ id, onClose }: { id: string; onClose: () => void }) 
         ))}
       </div>
       <div className="tab-panel" role="tabpanel">
-        {tab === "output" && <RunOutput runId={run.id} live={status === "running" || status === "queued"} droppedBytes={run.output.dropped_bytes} totalBytes={run.output.bytes} />}
+        {tab === "output" &&
+          (pending ? (
+            <p className="faint tab-note">Nothing has run yet. Approve the run to start it; its output streams here.</p>
+          ) : (
+            <RunOutput runId={run.id} live={status === "running" || status === "queued"} droppedBytes={run.output.dropped_bytes} totalBytes={run.output.bytes} />
+          ))}
         {tab === "prompt" && (
           <div className="tab-scroll">
             {run.prompt ? <PromptView text={run.prompt} /> : <p className="faint">No prompt: a command agent whose rule has none. It gets the event on stdin or in its environment.</p>}
