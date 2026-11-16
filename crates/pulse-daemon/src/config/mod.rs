@@ -103,7 +103,7 @@ pub(crate) struct TrustRecord {
 const KEEP_TRUSTED_TEXT: usize = 64 * 1024;
 /// Project files larger than this are refused: nobody reviews them, and a review must fit in
 /// one RPC response.
-const MAX_PROJECT_FILE: usize = 1024 * 1024;
+pub(crate) const MAX_PROJECT_FILE: usize = 1024 * 1024;
 
 fn kept_text(text: &str) -> Option<String> {
     (text.len() <= KEEP_TRUSTED_TEXT).then(|| text.to_owned())

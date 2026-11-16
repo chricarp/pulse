@@ -273,6 +273,133 @@ pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     sync_dir(dir)
 }
 
+/// A file in a directory, where neither the directory's path nor the file is followed through
+/// a symbolic link: write-back to a project's `pulse.toml`. A repository can be writable by
+/// someone else (the case project trust exists for), and its `pulse.toml` can be a link to
+/// anywhere, or be swapped for one at any moment. [`write_atomic`] resolves links and then
+/// writes by path, which would write the trusted content plus the user's edit wherever such a
+/// link points, with the user's authority.
+///
+/// Here the directory is opened once, one component at a time with `O_NOFOLLOW`, and both the
+/// read and the replacement happen relative to that handle: the read opens the file with
+/// `O_NOFOLLOW` (a link is [`NoFollowError::Link`]), and the replacement is a temporary file
+/// created in the directory and renamed over the name, which replaces whatever entry has the
+/// name then (a link swapped in after the read included) and never writes through it. So the
+/// check and the write cannot be raced. Linux and macOS both have these calls.
+#[derive(Debug)]
+pub(crate) struct NoFollowFile {
+    dir: rustix::fd::OwnedFd,
+    name: String,
+    /// For messages.
+    path: PathBuf,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum NoFollowError {
+    #[error("{0} is a symbolic link, or a directory on its path is")]
+    Link(PathBuf),
+    #[error("{0} is not a regular file")]
+    NotAFile(PathBuf),
+    #[error("{0} is larger than {1} bytes")]
+    TooLarge(PathBuf, u64),
+    #[error("{0}: {1}")]
+    Io(PathBuf, io::Error),
+}
+
+impl NoFollowFile {
+    /// `name` in the absolute directory `dir`, with no symbolic link anywhere in `dir`.
+    pub(crate) fn open(dir: &Path, name: &str) -> Result<NoFollowFile, NoFollowError> {
+        use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, openat, statat};
+        use std::path::Component;
+        let path = dir.join(name);
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let mut fd = openat(CWD, "/", flags, Mode::empty()).map_err(|e| io_at(&path, e))?;
+        for c in dir.components() {
+            let part = match c {
+                Component::RootDir => continue,
+                Component::Normal(part) => part,
+                _ => return Err(NoFollowError::Io(path, io::Error::other("not a clean path"))),
+            };
+            fd = match openat(&fd, part, flags, Mode::empty()) {
+                Ok(next) => next,
+                // A link opened with `O_DIRECTORY | O_NOFOLLOW` fails with `ELOOP` or, on
+                // Linux, `ENOTDIR`; it is not followed either way. Look, to say which.
+                Err(e @ (rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR)) => {
+                    let link = statat(&fd, part, AtFlags::SYMLINK_NOFOLLOW)
+                        .is_ok_and(|s| FileType::from_raw_mode(s.st_mode) == FileType::Symlink);
+                    return Err(if link { NoFollowError::Link(path) } else { io_at(&path, e) });
+                }
+                Err(e) => return Err(io_at(&path, e)),
+            };
+        }
+        Ok(NoFollowFile { dir: fd, name: name.to_owned(), path })
+    }
+
+    /// The file's text and permission bits, or `None` if it does not exist. At most `max`
+    /// bytes. A FIFO or device is refused without blocking on it.
+    pub(crate) fn read(&self, max: u64) -> Result<Option<(String, u32)>, NoFollowError> {
+        use rustix::fs::{Mode, OFlags, openat};
+        use std::io::Read;
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+        let fd = match openat(&self.dir, self.name.as_str(), flags, Mode::empty()) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(rustix::io::Errno::LOOP) => return Err(NoFollowError::Link(self.path.clone())),
+            Err(e) => return Err(self.io(e.into())),
+        };
+        let file = File::from(fd);
+        let meta = file.metadata().map_err(|e| self.io(e))?;
+        if !meta.is_file() {
+            return Err(NoFollowError::NotAFile(self.path.clone()));
+        }
+        let mut bytes = Vec::new();
+        file.take(max + 1).read_to_end(&mut bytes).map_err(|e| self.io(e))?;
+        if bytes.len() as u64 > max {
+            return Err(NoFollowError::TooLarge(self.path.clone(), max));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|e| self.io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        Ok(Some((text, meta.permissions().mode() & 0o777)))
+    }
+
+    /// Replaces the file with `bytes` (mode `mode`), atomically and durably, as
+    /// [`write_atomic`] does, but by its name in the directory opened: whatever has the name
+    /// now, a symbolic link included, is replaced, never followed.
+    pub(crate) fn replace(&self, bytes: &[u8], mode: u32) -> Result<(), NoFollowError> {
+        use rustix::fs::{AtFlags, Mode, OFlags, openat, renameat, unlinkat};
+        let mut nonce = [0u8; 6];
+        getrandom::fill(&mut nonce).map_err(|e| self.io(io::Error::other(e.to_string())))?;
+        let tmp = format!(".{}.{}.tmp", self.name, crate::auth::hex(&nonce));
+        let flags =
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let mode = Mode::from_raw_mode(mode as rustix::fs::RawMode);
+        let fd = openat(&self.dir, tmp.as_str(), flags, mode).map_err(|e| self.io(e.into()))?;
+        let result = (|| -> io::Result<()> {
+            let mut f = File::from(fd);
+            f.write_all(bytes)?;
+            f.sync_all()?;
+            renameat(&self.dir, tmp.as_str(), &self.dir, self.name.as_str())?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let _ = unlinkat(&self.dir, tmp.as_str(), AtFlags::empty());
+            return Err(self.io(e));
+        }
+        match rustix::fs::fsync(&self.dir) {
+            Ok(()) | Err(rustix::io::Errno::INVAL) | Err(rustix::io::Errno::NOTSUP) => Ok(()),
+            Err(e) => Err(self.io(e.into())),
+        }
+    }
+
+    fn io(&self, e: io::Error) -> NoFollowError {
+        NoFollowError::Io(self.path.clone(), e)
+    }
+}
+
+fn io_at(path: &Path, e: rustix::io::Errno) -> NoFollowError {
+    NoFollowError::Io(path.to_owned(), e.into())
+}
+
 /// Syncs a directory, so that names created or renamed in it survive a power loss. A
 /// filesystem that cannot sync directories (some network and FUSE ones refuse with `EINVAL`)
 /// gives no such guarantee and is not an error.
@@ -380,5 +507,55 @@ mod tests {
         // No temporary file is left next to the link.
         let names: Vec<_> = fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names.len(), 3, "{names:?}");
+    }
+
+    /// Write-back to a project file: links are not followed, not even one swapped in between
+    /// the read that was checked and the write.
+    #[test]
+    fn a_project_file_is_never_written_through_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let victim = root.join("victim");
+        fs::write(&victim, "precious").unwrap();
+        let file = repo.join("pulse.toml");
+        fs::write(&file, "trusted").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+
+        let f = NoFollowFile::open(&repo, "pulse.toml").unwrap();
+        assert_eq!(f.read(1024).unwrap(), Some(("trusted".to_owned(), 0o640)));
+        // Swapped for a link after the read: the link is replaced, its target is not written.
+        fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&victim, &file).unwrap();
+        f.replace(b"trusted, edited", 0o640).unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious");
+        assert!(fs::symlink_metadata(&file).unwrap().is_file());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "trusted, edited");
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o640);
+        let names: Vec<_> = fs::read_dir(&repo).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["pulse.toml"], "no temporary file is left");
+
+        // A link is refused when reading, and so is a directory on the path that is a link.
+        fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&victim, &file).unwrap();
+        let f = NoFollowFile::open(&repo, "pulse.toml").unwrap();
+        assert!(matches!(f.read(1024), Err(NoFollowError::Link(_))));
+        let linked_repo = root.join("linked-repo");
+        std::os::unix::fs::symlink(&repo, &linked_repo).unwrap();
+        assert!(matches!(
+            NoFollowFile::open(&linked_repo, "pulse.toml"),
+            Err(NoFollowError::Link(_))
+        ));
+
+        // A FIFO is refused without blocking on it; a missing file is `None`; size is capped.
+        fs::remove_file(&file).unwrap();
+        let made = std::process::Command::new("mkfifo").arg(&file).status().unwrap();
+        assert!(made.success());
+        assert!(matches!(f.read(1024), Err(NoFollowError::NotAFile(_))));
+        fs::remove_file(&file).unwrap();
+        assert_eq!(f.read(1024).unwrap(), None);
+        fs::write(&file, "0123456789").unwrap();
+        assert!(matches!(f.read(9), Err(NoFollowError::TooLarge(..))));
     }
 }

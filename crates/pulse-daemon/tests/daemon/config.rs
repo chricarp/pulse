@@ -418,5 +418,33 @@ async fn project_trust_is_bound_to_the_reviewed_content() {
     let p = client.call::<method::ProjectsUntrust>(ProjectDirParams { dir }).await.unwrap();
     assert_eq!(p.state, TrustState::Untrusted);
     assert_eq!(rule_names(&client).await, ["ci"]);
+
+    // A project's `pulse.toml` that is a symbolic link (to anywhere: someone who can write the
+    // repository chose where) is read and trusted for its content, but never written through.
+    let linked = t.user_home.join("linked");
+    let target = t.user_home.join("elsewhere.toml");
+    std::fs::create_dir_all(&linked).unwrap();
+    std::fs::write(&target, text).unwrap();
+    std::os::unix::fs::symlink(&target, linked.join("pulse.toml")).unwrap();
+    let dir = linked.display().to_string();
+    let r = review(&dir).await.unwrap();
+    trust(&dir, &r.hash).await.unwrap();
+    assert_eq!(rule_names(&client).await, ["ci", "linked/build"]);
+    let err = client
+        .call::<method::RulesSetEnabled>(SetEnabledParams {
+            name: "linked/build".into(),
+            enabled: false,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, ClientError::Rpc(e) if e.kind() == Some(ErrorCode::Conflict)), "{err}");
+    assert!(
+        err.to_string().contains("symbolic link") && err.to_string().contains("by hand"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), text, "the link's target is untouched");
+    assert!(std::fs::symlink_metadata(linked.join("pulse.toml")).unwrap().is_symlink());
+    let list = client.call::<method::ProjectsList>(Empty {}).await.unwrap();
+    assert!(list.projects.iter().all(|p| p.state == TrustState::Trusted || p.name == "repo"));
     t.stop().await;
 }
