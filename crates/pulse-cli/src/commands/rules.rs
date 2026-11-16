@@ -85,15 +85,20 @@ pub async fn rules(ctx: &Ctx, cmd: RulesCmd) -> Res {
             return Ok(ExitCode::SUCCESS);
         }
         RulesCmd::Show { name } => client.call::<method::RulesGet>(NameParams { name }).await?,
-        RulesCmd::Add { file, project } => {
+        RulesCmd::Add { file, project, replace } => {
             let rule: RuleConfig = super::read_definition(&file)?;
-            let info =
-                client.call::<method::RulesUpsert>(RuleUpsertParams { rule, project }).await?;
+            let what = format!("a rule named {:?}", rule.name);
+            let expected = super::add_expected(replace);
+            let info = client
+                .call::<method::RulesUpsert>(RuleUpsertParams { rule, project, expected })
+                .await
+                .map_err(|e| super::exists_hint(e, &what))?;
             super::warn_about(ctx, &client, &format!("rule {:?}", info.config.name)).await?;
             info
         }
         RulesCmd::Remove { name } => {
-            client.call::<method::RulesDelete>(NameParams { name: name.clone() }).await?;
+            let params = DeleteParams { name: name.clone(), expected: Expected::Any };
+            client.call::<method::RulesDelete>(params).await?;
             if ctx.json {
                 print_json(&serde_json::json!({ "removed": name }));
             } else {

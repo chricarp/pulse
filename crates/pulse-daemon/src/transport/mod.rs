@@ -131,7 +131,7 @@ fn status_of(e: &ServiceError) -> StatusCode {
     match e {
         ServiceError::NotFound { .. } => StatusCode::NOT_FOUND,
         ServiceError::Invalid(_) | ServiceError::ConfigInvalid(_) => StatusCode::BAD_REQUEST,
-        ServiceError::Conflict(_) => StatusCode::CONFLICT,
+        ServiceError::Conflict(_) | ServiceError::Stale { .. } => StatusCode::CONFLICT,
         ServiceError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         ServiceError::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
         ServiceError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,

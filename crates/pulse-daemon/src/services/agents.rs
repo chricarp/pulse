@@ -6,13 +6,27 @@ use pulse_contracts::rpc::{
     SourceUpsertParams,
 };
 
-use super::{Edit, Services};
-use crate::config::{DefKind, bare_name};
+use pulse_contracts::config::ConfigOrigin;
+use pulse_contracts::rpc::Expected;
+
+use super::{Edit, Services, written_revision};
+use crate::config::{DefKind, Snapshot, bare_name};
+
+fn agent_revision(snapshot: &Snapshot, a: &Sourced<AgentConfig>) -> String {
+    let bare = bare_name(&a.config.name, &a.origin);
+    written_revision(&snapshot.files, &a.origin, |f| f.agents.iter().find(|x| x.name == bare))
+}
+
+fn source_revision(snapshot: &Snapshot, s: &Sourced<SourceConfig>) -> String {
+    let bare = bare_name(&s.config.name, &s.origin);
+    written_revision(&snapshot.files, &s.origin, |f| f.sources.iter().find(|x| x.name == bare))
+}
 use crate::error::{ServiceError, ServiceResult};
 
 impl Services {
     async fn agent_info(&self, agent: &Sourced<AgentConfig>) -> ServiceResult<AgentInfo> {
         let name = agent.config.name.clone();
+        let revision = agent_revision(&self.shared.snapshot(), agent);
         let backlog = self
             .shared
             .store
@@ -25,6 +39,7 @@ impl Services {
         Ok(AgentInfo {
             config: agent.config.clone(),
             origin: agent.origin.clone(),
+            revision,
             running,
             queued: backlog.saturating_sub(running),
         })
@@ -43,6 +58,7 @@ impl Services {
                 AgentInfo {
                     config: a.config.clone(),
                     origin: a.origin.clone(),
+                    revision: agent_revision(&snapshot, a),
                     running,
                     queued: total.saturating_sub(running),
                 }
@@ -69,22 +85,21 @@ impl Services {
             DefKind::Agent,
             params.project.as_deref(),
             &agent.name,
-            Edit::Upsert(&agent),
+            &params.expected,
+            Edit::Put(&agent),
         )
         .await?;
         self.agents_get(&full).await
     }
 
     /// Fails with the config errors if rules still use the agent.
-    pub async fn agents_delete(&self, name: &str) -> ServiceResult<()> {
-        let snapshot = self.shared.snapshot();
-        let agent =
-            snapshot.config.agent(name).ok_or_else(|| ServiceError::not_found("agent", name))?;
-        let origin = agent.origin.clone();
+    pub async fn agents_delete(&self, name: &str, expected: &Expected) -> ServiceResult<()> {
+        let origin = self.origin_of(DefKind::Agent, name, expected)?;
         self.write_definition::<AgentConfig>(
             DefKind::Agent,
             origin.project(),
             bare_name(name, &origin),
+            expected,
             Edit::Delete,
         )
         .await
@@ -111,6 +126,7 @@ impl Services {
             .map(|s| SourceInfo {
                 config: s.config.clone(),
                 origin: s.origin.clone(),
+                revision: source_revision(&snapshot, s),
                 health: self.shared.sources.health(&s.config.name),
             })
             .collect();
@@ -128,32 +144,83 @@ impl Services {
             DefKind::Source,
             params.project.as_deref(),
             &source.name,
-            Edit::Upsert(&source),
+            &params.expected,
+            Edit::Put(&source),
         )
         .await?;
+        self.sources_get(&full)
+    }
+
+    fn sources_get(&self, name: &str) -> ServiceResult<SourceInfo> {
         let snapshot = self.shared.snapshot();
-        let s = snapshot
-            .config
-            .source(&full)
-            .ok_or_else(|| ServiceError::not_found("source", &full))?;
+        let s =
+            snapshot.config.source(name).ok_or_else(|| ServiceError::not_found("source", name))?;
         Ok(SourceInfo {
             config: s.config.clone(),
             origin: s.origin.clone(),
-            health: self.shared.sources.health(&full),
+            revision: source_revision(&snapshot, s),
+            health: self.shared.sources.health(name),
         })
     }
 
-    pub async fn sources_delete(&self, name: &str) -> ServiceResult<()> {
-        let snapshot = self.shared.snapshot();
-        let source =
-            snapshot.config.source(name).ok_or_else(|| ServiceError::not_found("source", name))?;
-        let origin = source.origin.clone();
+    /// Changes `enabled` of the source as it is in its file, nothing else.
+    pub async fn sources_set_enabled(
+        &self,
+        name: &str,
+        enabled: bool,
+    ) -> ServiceResult<SourceInfo> {
+        let origin = self.origin_of(DefKind::Source, name, &Expected::Any)?;
+        let set = move |s: &mut SourceConfig| s.enabled = enabled;
+        self.write_definition(
+            DefKind::Source,
+            origin.project(),
+            bare_name(name, &origin),
+            &Expected::Any,
+            Edit::Modify(&set),
+        )
+        .await?;
+        self.sources_get(name)
+    }
+
+    pub async fn sources_delete(&self, name: &str, expected: &Expected) -> ServiceResult<()> {
+        let origin = self.origin_of(DefKind::Source, name, expected)?;
         self.write_definition::<SourceConfig>(
             DefKind::Source,
             origin.project(),
             bare_name(name, &origin),
+            expected,
             Edit::Delete,
         )
         .await
+    }
+
+    /// The file a definition known by its full name lives in. A name the daemon does not know
+    /// is `not_found`, or `stale` when the client expected a revision of it (it was removed
+    /// since the client read it).
+    pub(crate) fn origin_of(
+        &self,
+        kind: DefKind,
+        name: &str,
+        expected: &Expected,
+    ) -> ServiceResult<ConfigOrigin> {
+        if matches!(expected, Expected::Absent) {
+            return Err(ServiceError::Invalid(format!(
+                "`expected` cannot be `absent` for an existing {}",
+                kind.array()
+            )));
+        }
+        let config = &self.shared.snapshot().config;
+        let origin = match kind {
+            DefKind::Rule => config.rule(name).map(|d| d.origin.clone()),
+            DefKind::Agent => config.agent(name).map(|d| d.origin.clone()),
+            DefKind::Source => config.source(name).map(|d| d.origin.clone()),
+        };
+        origin.ok_or_else(|| match expected {
+            Expected::Revision { .. } => ServiceError::Stale {
+                message: format!("the {} {name:?} was removed since it was read", kind.array()),
+                current: None,
+            },
+            _ => ServiceError::not_found(kind.array(), name),
+        })
     }
 }

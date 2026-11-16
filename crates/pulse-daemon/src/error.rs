@@ -12,6 +12,9 @@ pub enum ServiceError {
     Invalid(String),
     #[error("{0}")]
     Conflict(String),
+    /// What the request was based on is no longer so (see `ErrorCode::Stale`).
+    #[error("{message}")]
+    Stale { message: String, current: Option<String> },
     #[error("{0}")]
     ConfigInvalid(ConfigErrors),
     #[error("{0}")]
@@ -63,6 +66,9 @@ impl From<ServiceError> for RpcError {
             ServiceError::NotFound { .. } => RpcError::new(ErrorCode::NotFound, e.to_string()),
             ServiceError::Invalid(m) => RpcError::new(ErrorCode::InvalidParams, m),
             ServiceError::Conflict(m) => RpcError::new(ErrorCode::Conflict, m),
+            ServiceError::Stale { message, current } => {
+                RpcError::stale(message, &pulse_contracts::rpc::Stale { current })
+            }
             ServiceError::ConfigInvalid(errors) => RpcError::config_invalid(&errors),
             ServiceError::Unavailable(m) => RpcError::new(ErrorCode::Unavailable, m),
             ServiceError::NotImplemented(m) => RpcError::new(ErrorCode::NotImplemented, m),

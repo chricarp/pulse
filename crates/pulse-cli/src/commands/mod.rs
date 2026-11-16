@@ -55,6 +55,24 @@ pub fn read_definition<T: serde::de::DeserializeOwned>(
     toml::from_str(&text).map_err(|e| Failure::Message(format!("{}: {e}", file.display())))
 }
 
+/// What `add` expects: nothing of that name, unless the user asked to replace it.
+pub fn add_expected(replace: bool) -> pulse_contracts::rpc::Expected {
+    use pulse_contracts::rpc::Expected;
+    if replace { Expected::Any } else { Expected::Absent }
+}
+
+/// `add` refused because the name exists: say how to replace it.
+pub fn exists_hint(e: pulse_daemon::client::ClientError, what: &str) -> Failure {
+    match e {
+        pulse_daemon::client::ClientError::Rpc(err)
+            if err.kind() == Some(pulse_contracts::rpc::ErrorCode::Stale) =>
+        {
+            Failure::Message(format!("{what} already exists; pass --replace to replace it"))
+        }
+        other => other.into(),
+    }
+}
+
 /// After a write: prints the config warnings about `item` (`rule "x"`, `agent "y"`), so a
 /// definition that cannot work is pointed out when it is added.
 pub async fn warn_about(

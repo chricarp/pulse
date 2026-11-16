@@ -90,6 +90,10 @@ pub struct Run {
     pub ended_at: Option<Timestamp>,
     /// The rendered prompt, exactly as sent.
     pub prompt: Option<String>,
+    /// What the run executes, rendered when the run is created (so an approval shows it) from
+    /// the snapshot; the run starts only if rendering it again gives the same result and the
+    /// agent is still defined as in the snapshot. `None` if it could not be rendered (the run
+    /// then fails to start).
     pub invocation: Option<InvocationSummary>,
     pub pid: Option<u32>,
     pub exit_code: Option<i32>,
@@ -100,7 +104,8 @@ pub struct Run {
     pub chain_depth: u32,
     pub rerun_of: Option<RunId>,
     pub output: OutputStats,
-    /// What the run executed, as configured when it was created.
+    /// The rule and agent as configured when it was created. A run never starts with an agent
+    /// definition that differs from the current one: see `docs/internals/0002-architecture.md`.
     pub snapshot: RunSnapshot,
 }
 

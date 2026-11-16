@@ -163,14 +163,18 @@ pub enum RulesCmd {
     Reopen {
         name: String,
     },
-    /// Add a rule from a TOML file (`name = …`, `on = …`, `[run]` …; what `rules show` prints),
-    /// or replace the rule of that name. `-` reads stdin. Written to pulse.toml, comments kept.
+    /// Add a rule from a TOML file (`name = …`, `on = …`, `[run]` …; what `rules show` prints).
+    /// `-` reads stdin. Written to pulse.toml, comments kept. Refused if a rule of that name
+    /// exists, unless --replace.
     Add {
         #[arg(long, short, value_name = "FILE")]
         file: PathBuf,
         /// Add it to this trusted project's pulse.toml instead.
         #[arg(long)]
         project: Option<String>,
+        /// Replace the rule of that name, whatever it is now.
+        #[arg(long)]
+        replace: bool,
     },
     /// Delete a rule from its config file (`archive` keeps it and its history visible).
     Remove {
@@ -284,12 +288,16 @@ pub enum AgentsCmd {
         name: String,
     },
     /// Add an agent from a TOML file (`name = …`, `adapter = …`, `allow = […]` …; what
-    /// `agents show` prints), or replace the agent of that name. `-` reads stdin.
+    /// `agents show` prints). `-` reads stdin. Refused if an agent of that name exists, unless
+    /// --replace.
     Add {
         #[arg(long, short, value_name = "FILE")]
         file: PathBuf,
         #[arg(long)]
         project: Option<String>,
+        /// Replace the agent of that name, whatever it is now.
+        #[arg(long)]
+        replace: bool,
     },
     /// Delete an agent from its config file. Refused while rules use it.
     Remove {
@@ -319,9 +327,9 @@ pub enum SourceKindArg {
 #[derive(Debug, Subcommand)]
 pub enum SourcesCmd {
     List,
-    /// Add a source (or replace the one of that name):
-    /// `fs NAME DIR`, `git NAME REPO`, `schedule NAME --cron "0 9 * * 1-5"` or `--every 1h`,
-    /// `calendar NAME FILE.ics|URL`.
+    /// Add a source: `fs NAME DIR`, `git NAME REPO`, `schedule NAME --cron "0 9 * * 1-5"` or
+    /// `--every 1h`, `calendar NAME FILE.ics|URL`. Refused if a source of that name exists,
+    /// unless --replace.
     Add {
         kind: SourceKindArg,
         name: String,
@@ -344,6 +352,9 @@ pub enum SourcesCmd {
         lead: Option<String>,
         #[arg(long)]
         project: Option<String>,
+        /// Replace the source of that name, whatever it is now.
+        #[arg(long)]
+        replace: bool,
     },
     /// Delete a source from its config file.
     Remove {
@@ -360,12 +371,17 @@ pub struct McpArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ProjectCmd {
-    /// Trust DIR/pulse.toml as it is now. Any later change makes it inactive again.
+    /// Trust DIR/pulse.toml. Without --hash, shows what it would load and its content hash,
+    /// and trusts nothing; with --hash, trusts the file only if it still has that content.
+    /// Any later change makes it inactive again.
     Trust {
         dir: PathBuf,
         /// Prefix for its definitions (default: the directory name).
         #[arg(long)]
         name: Option<String>,
+        /// The content hash a review printed: trust exactly that content.
+        #[arg(long)]
+        hash: Option<String>,
     },
     Untrust {
         dir: PathBuf,

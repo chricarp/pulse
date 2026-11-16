@@ -11,6 +11,7 @@
 //! - **Write-back** edits the owning file with [`edit`], validates the result as the loader
 //!   would, and replaces the file atomically. The file stays the only copy of a definition.
 
+mod diff;
 pub(crate) mod edit;
 pub(crate) mod watch;
 
@@ -22,6 +23,7 @@ use pulse_contracts::config::{
     Sourced, parse_config_file, resolve, validate_file, validate_name,
 };
 use pulse_contracts::pattern::expand_path;
+use pulse_contracts::rpc::ProjectReview;
 use pulse_contracts::status::{Project, TrustState};
 use pulse_core::Routing;
 use serde::{Deserialize, Serialize};
@@ -91,6 +93,20 @@ pub(crate) struct TrustRecord {
     pub dir: PathBuf,
     pub hash: String,
     pub trusted_at: Timestamp,
+    /// The trusted text, kept (up to [`KEEP_TRUSTED_TEXT`]) so a review of a changed file can
+    /// say what differs. Absent in records written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// Trusted texts up to this size are kept for showing what changed.
+const KEEP_TRUSTED_TEXT: usize = 64 * 1024;
+/// Project files larger than this are refused: nobody reviews them, and a review must fit in
+/// one RPC response.
+const MAX_PROJECT_FILE: usize = 1024 * 1024;
+
+fn kept_text(text: &str) -> Option<String> {
+    (text.len() <= KEEP_TRUSTED_TEXT).then(|| text.to_owned())
 }
 
 impl TrustRecord {
@@ -107,6 +123,16 @@ pub(crate) const TRUST_KEY: &str = "trusted_projects";
 
 pub(crate) fn hash(bytes: &[u8]) -> String {
     crate::auth::hex(&Sha256::digest(bytes))
+}
+
+/// A definition's revision: a hash of its meaning as written (the typed definition, so a
+/// change of formatting or comments is not a new revision, and a write-back that changes no
+/// meaning keeps it). Handed out with every rule, agent and source; edits name the revision
+/// they were based on.
+pub(crate) fn revision<T: Serialize>(def: &T) -> String {
+    // Serializing config types cannot fail: they hold strings, numbers, lists and string maps.
+    let json = serde_json::to_vec(def).unwrap_or_default();
+    hash(&json)[..16].to_owned()
 }
 
 /// What one load produced.
@@ -228,30 +254,43 @@ impl Loader {
         Loaded { snapshot, errors, projects }
     }
 
-    /// Whether the user file's text differs from what was last loaded.
-    pub(crate) fn user_file_changed(&self) -> bool {
-        let current = read_text(&self.home.config_file()).ok().flatten().unwrap_or_default();
-        self.user_good.as_ref().is_none_or(|(h, _)| *h != hash(current.as_bytes()))
-    }
-
-    /// The file a definition goes into: the user file, or a project's file while it is trusted.
-    pub(crate) fn target(&self, project: Option<&str>) -> ServiceResult<(ConfigOrigin, PathBuf)> {
+    /// The file a definition goes into: the user file, or a trusted project's file. For a
+    /// project, also the trusted hash, which the text that is about to be edited must have
+    /// (see [`Loader::check_trusted`]).
+    pub(crate) fn target(
+        &self,
+        project: Option<&str>,
+    ) -> ServiceResult<(ConfigOrigin, PathBuf, Option<String>)> {
         match project {
-            None => Ok((user_origin(&self.home), self.home.config_file())),
+            None => Ok((user_origin(&self.home), self.home.config_file(), None)),
             Some(name) => {
                 let t = self
                     .trust
                     .iter()
                     .find(|t| t.name == name)
                     .ok_or_else(|| ServiceError::not_found("trusted project", name))?;
-                if self.project_status(t).0.state != TrustState::Trusted {
-                    return Err(ServiceError::Conflict(format!(
-                        "project {name:?} changed since it was trusted; review it and run `pulse project trust {}` first",
-                        t.dir.display()
-                    )));
-                }
-                Ok((t.origin(), t.file()))
+                Ok((t.origin(), t.file(), Some(t.hash.clone())))
             }
+        }
+    }
+
+    /// Refuses to edit a project file whose `text` (read once, and the very text that is then
+    /// edited) is not the trusted content: writing it back would trust whatever a `git pull`
+    /// put there.
+    pub(crate) fn check_trusted(
+        origin: &ConfigOrigin,
+        trusted: Option<&str>,
+        text: &str,
+    ) -> ServiceResult<()> {
+        match trusted {
+            Some(h) if hash(text.as_bytes()) != h => {
+                let dir = origin.base_dir().map(|d| d.display().to_string()).unwrap_or_default();
+                Err(ServiceError::Conflict(format!(
+                    "project {:?} changed since it was trusted; review it and trust it again (`pulse project trust {dir}`) first",
+                    origin.project().unwrap_or_default(),
+                )))
+            }
+            _ => Ok(()),
         }
     }
 
@@ -279,19 +318,20 @@ impl Loader {
         match self.trust.iter_mut().find(|t| t.name == name) {
             Some(t) => {
                 t.hash = hash(text.as_bytes());
+                t.text = kept_text(text);
                 true
             }
             None => false,
         }
     }
 
-    /// Records trust for `dir`'s `pulse.toml` as it is now. The file must be valid on its own.
-    pub(crate) fn trust(
-        &mut self,
+    /// The project at `dir`: its canonical directory, the name its definitions would get, and
+    /// the file's text, read once.
+    fn read_project(
+        &self,
         dir: &Path,
         name: Option<&str>,
-        now: Timestamp,
-    ) -> ServiceResult<Project> {
+    ) -> ServiceResult<(PathBuf, String, String)> {
         if !dir.is_absolute() {
             return Err(ServiceError::Invalid(format!(
                 "{} is not an absolute path",
@@ -303,22 +343,105 @@ impl Loader {
             .map_err(|e| ServiceError::Invalid(format!("cannot open {}: {e}", dir.display())))?;
         let name = match name {
             Some(n) => n.to_owned(),
-            None => dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_owned(),
+            None => match self.trust.iter().find(|t| t.dir == dir) {
+                Some(t) => t.name.clone(),
+                None => dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_owned(),
+            },
         };
         validate_name(&name)
             .map_err(|m| ServiceError::Invalid(format!("project {m}; choose one with --name")))?;
+        let file = dir.join("pulse.toml");
+        let text = read_text(&file)
+            .map_err(|e| ServiceError::Invalid(format!("cannot read {}: {e}", file.display())))?
+            .ok_or_else(|| ServiceError::Invalid(format!("{} does not exist", file.display())))?;
+        if text.len() > MAX_PROJECT_FILE {
+            return Err(ServiceError::Invalid(format!(
+                "{} is larger than {} KiB; Pulse does not load project files that size",
+                file.display(),
+                MAX_PROJECT_FILE / 1024
+            )));
+        }
+        Ok((dir, name, text))
+    }
+
+    /// What trusting `dir`'s `pulse.toml` would load, for the user to read first.
+    pub(crate) fn review(&self, dir: &Path, name: Option<&str>) -> ServiceResult<ProjectReview> {
+        let (dir, name, text) = self.read_project(dir, name)?;
+        let existing = self.trust.iter().find(|t| t.dir == dir);
+        let record = TrustRecord {
+            name: name.clone(),
+            dir: dir.clone(),
+            hash: hash(text.as_bytes()),
+            trusted_at: Timestamp::from_millis(0),
+            text: None,
+        };
+        let parsed = parse_config_file(&text, &record.origin(), &self.user_home);
+        let state = match existing {
+            None => TrustState::Untrusted,
+            Some(t) if t.hash == record.hash => TrustState::Trusted,
+            Some(_) => TrustState::Changed,
+        };
+        let changes = match (existing, &parsed) {
+            (Some(t), Ok(now)) if t.hash != record.hash => t
+                .text
+                .as_deref()
+                .and_then(|old| toml::from_str::<ConfigFile>(old).ok())
+                .map(|old| diff::changes(&old, now)),
+            _ => None,
+        };
+        let (file, errors) = match parsed {
+            Ok(f) => (f, Vec::new()),
+            Err(e) => (ConfigFile::default(), e.0),
+        };
+        Ok(ProjectReview {
+            name,
+            dir: dir.display().to_string(),
+            file: record.file().display().to_string(),
+            state,
+            hash: record.hash,
+            text,
+            rules: file.rules,
+            agents: file.agents,
+            sources: file.sources,
+            errors,
+            changes,
+        })
+    }
+
+    /// Records trust for `dir`'s `pulse.toml`, if its content still has `expected` (the hash
+    /// the user reviewed). The file is read once, and that text is what is checked, parsed
+    /// and bound. It must be valid on its own.
+    pub(crate) fn trust(
+        &mut self,
+        dir: &Path,
+        name: Option<&str>,
+        expected: &str,
+        now: Timestamp,
+    ) -> ServiceResult<Project> {
+        let (dir, name, text) = self.read_project(dir, name)?;
         if let Some(other) = self.trust.iter().find(|t| t.name == name && t.dir != dir) {
             return Err(ServiceError::Conflict(format!(
                 "the project name {name:?} is already used by {}",
                 other.dir.display()
             )));
         }
-        let file = dir.join("pulse.toml");
-        let text = read_text(&file)
-            .map_err(|e| ServiceError::Invalid(format!("cannot read {}: {e}", file.display())))?
-            .ok_or_else(|| ServiceError::Invalid(format!("{} does not exist", file.display())))?;
-        let record =
-            TrustRecord { name, dir: dir.clone(), hash: hash(text.as_bytes()), trusted_at: now };
+        let current = hash(text.as_bytes());
+        if current != expected {
+            return Err(ServiceError::Stale {
+                message: format!(
+                    "{} changed since it was reviewed; review it again before trusting it",
+                    dir.join("pulse.toml").display()
+                ),
+                current: Some(current),
+            });
+        }
+        let record = TrustRecord {
+            name,
+            dir: dir.clone(),
+            hash: current,
+            trusted_at: now,
+            text: kept_text(&text),
+        };
         parse_config_file(&text, &record.origin(), &self.user_home)
             .map_err(ServiceError::ConfigInvalid)?;
         self.trust.retain(|t| t.dir != dir);

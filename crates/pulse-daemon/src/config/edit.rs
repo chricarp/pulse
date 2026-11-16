@@ -56,15 +56,51 @@ fn ser(e: impl std::fmt::Display) -> EditError {
     EditError::Serialize(e.to_string())
 }
 
-/// The table's meaning, normalized through `T` (defaults filled in, canonical forms).
-fn normalized<T: Serialize + DeserializeOwned>(table: &Table) -> Option<toml::Table> {
+/// The table as TOML text of its own.
+fn table_text(table: &Table) -> String {
     let mut doc = DocumentMut::new();
     for (k, v) in table.iter() {
         doc.insert(k, v.clone());
     }
-    let parsed: toml::Table = toml::from_str(&doc.to_string()).ok()?;
-    let typed: T = parsed.try_into().ok()?;
-    toml::Table::try_from(&typed).ok()
+    doc.to_string()
+}
+
+/// The table read as `T`, the way a whole file is read.
+fn typed<T: DeserializeOwned>(table: &Table) -> Option<T> {
+    toml::from_str(&table_text(table)).ok()
+}
+
+/// The table's meaning, normalized through `T` (defaults filled in, canonical forms).
+fn normalized<T: Serialize + DeserializeOwned>(table: &Table) -> Option<toml::Table> {
+    toml::Table::try_from(&typed::<T>(table)?).ok()
+}
+
+/// A definition as it is in a file's text.
+#[derive(Debug)]
+pub(crate) struct Found<T> {
+    /// [`super::revision`] of the definition; for one that does not read as `T`, a hash of its
+    /// text (it was never handed out, so no client can expect it by accident).
+    pub revision: String,
+    /// `None` when it does not read as a valid `T`.
+    pub def: Option<T>,
+}
+
+/// The definition named `name` (bare, as written) in `text`, if there is one.
+pub(crate) fn find<T>(text: &str, kind: DefKind, name: &str) -> Result<Option<Found<T>>, EditError>
+where
+    T: Serialize + DeserializeOwned,
+{
+    let doc: DocumentMut = text.parse().map_err(|e| EditError::Parse(format!("{e}")))?;
+    let Some(item) = doc.get(kind.array()) else { return Ok(None) };
+    let tables = item.as_array_of_tables().ok_or(EditError::Shape(kind.array()))?;
+    let Some(table) = tables.iter().find(|t| t.get("name").and_then(Item::as_str) == Some(name))
+    else {
+        return Ok(None);
+    };
+    Ok(Some(match typed::<T>(table) {
+        Some(def) => Found { revision: super::revision(&def), def: Some(def) },
+        None => Found { revision: super::hash(table_text(table).as_bytes()), def: None },
+    }))
 }
 
 fn inline(item: Item) -> Option<Value> {

@@ -11,8 +11,10 @@ use pulse_core::{Cause, RouteContext, RouteMode, RuleRuntime, route};
 use pulse_store::RuleStateRow;
 use tokio::sync::oneshot;
 
-use super::{Edit, Services, as_written};
-use crate::config::{DefKind, bare_name};
+use pulse_contracts::rpc::Expected;
+
+use super::{Edit, Services, written_revision};
+use crate::config::{DefKind, Snapshot, bare_name};
 use crate::engine::{Control, OsNonces};
 use crate::error::{ServiceError, ServiceResult};
 
@@ -25,10 +27,14 @@ fn runtime(rows: &[RuleStateRow], name: &str) -> RuleRuntimeStatus {
     }
 }
 
-fn info(rule: &Sourced<RuleConfig>, rows: &[RuleStateRow]) -> RuleInfo {
+fn info(snapshot: &Snapshot, rule: &Sourced<RuleConfig>, rows: &[RuleStateRow]) -> RuleInfo {
+    let bare = bare_name(&rule.config.name, &rule.origin);
     RuleInfo {
         config: rule.config.clone(),
         origin: rule.origin.clone(),
+        revision: written_revision(&snapshot.files, &rule.origin, |f| {
+            f.rules.iter().find(|r| r.name == bare)
+        }),
         state: runtime(rows, &rule.config.name),
     }
 }
@@ -46,7 +52,7 @@ impl Services {
             .rules
             .iter()
             .filter(|r| include_archived || !r.config.archived)
-            .map(|r| info(r, &rows))
+            .map(|r| info(&snapshot, r, &rows))
             .collect();
         Ok(RuleList { rules })
     }
@@ -55,7 +61,7 @@ impl Services {
         let snapshot = self.shared.snapshot();
         let rule =
             snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
-        Ok(info(rule, &self.rule_rows().await?))
+        Ok(info(&snapshot, rule, &self.rule_rows().await?))
     }
 
     /// Writes the rule into the user file (or a trusted project's file) and reloads.
@@ -70,21 +76,20 @@ impl Services {
             DefKind::Rule,
             params.project.as_deref(),
             &rule.name,
-            Edit::Upsert(&rule),
+            &params.expected,
+            Edit::Put(&rule),
         )
         .await?;
         self.rules_get(&full).await
     }
 
-    pub async fn rules_delete(&self, name: &str) -> ServiceResult<()> {
-        let snapshot = self.shared.snapshot();
-        let rule =
-            snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
-        let origin = rule.origin.clone();
+    pub async fn rules_delete(&self, name: &str, expected: &Expected) -> ServiceResult<()> {
+        let origin = self.origin_of(DefKind::Rule, name, expected)?;
         self.write_definition::<RuleConfig>(
             DefKind::Rule,
             origin.project(),
             bare_name(name, &origin),
+            expected,
             Edit::Delete,
         )
         .await?;
@@ -93,36 +98,35 @@ impl Services {
         Ok(())
     }
 
-    /// Changes one field of a rule as written in its file.
+    /// Changes one field of a rule as it is in its file now.
     async fn edit_rule(
         &self,
         name: &str,
-        change: impl FnOnce(&mut RuleConfig),
+        change: &(dyn Fn(&mut RuleConfig) + Sync),
     ) -> ServiceResult<RuleInfo> {
-        let snapshot = self.shared.snapshot();
-        let rule =
-            snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
-        let origin = rule.origin.clone();
-        let bare = bare_name(name, &origin).to_owned();
-        let mut written =
-            as_written(&snapshot.files, &origin, |f| f.rules.iter().find(|r| r.name == bare))
-                .ok_or_else(|| ServiceError::not_found("rule", name))?;
-        change(&mut written);
-        self.write_definition(DefKind::Rule, origin.project(), &bare, Edit::Upsert(&written))
-            .await?;
+        let origin = self.origin_of(DefKind::Rule, name, &Expected::Any)?;
+        let bare = bare_name(name, &origin);
+        self.write_definition(
+            DefKind::Rule,
+            origin.project(),
+            bare,
+            &Expected::Any,
+            Edit::Modify(change),
+        )
+        .await?;
         self.rules_get(name).await
     }
 
     pub async fn rules_set_enabled(&self, name: &str, enabled: bool) -> ServiceResult<RuleInfo> {
-        self.edit_rule(name, |r| r.enabled = enabled).await
+        self.edit_rule(name, &move |r| r.enabled = enabled).await
     }
 
     pub async fn rules_archive(&self, name: &str) -> ServiceResult<RuleInfo> {
-        self.edit_rule(name, |r| r.archived = true).await
+        self.edit_rule(name, &|r| r.archived = true).await
     }
 
     pub async fn rules_reopen(&self, name: &str) -> ServiceResult<RuleInfo> {
-        self.edit_rule(name, |r| r.archived = false).await
+        self.edit_rule(name, &|r| r.archived = false).await
     }
 
     async fn set_snooze(&self, name: &str, until: Option<Timestamp>) -> ServiceResult<RuleInfo> {

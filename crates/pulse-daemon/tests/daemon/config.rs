@@ -119,7 +119,14 @@ async fn edits_through_the_daemon_rewrite_the_file_and_keep_comments() {
         "name = \"deploys\"\non = \"ext.deploy.*\"\ncooldown = \"5m\"\nrun = { agent = \"sh\" }",
     )
     .unwrap();
-    client.call::<method::RulesUpsert>(RuleUpsertParams { rule, project: None }).await.unwrap();
+    client
+        .call::<method::RulesUpsert>(RuleUpsertParams {
+            rule,
+            project: None,
+            expected: Expected::Absent,
+        })
+        .await
+        .unwrap();
     let text = t.read_config();
     assert!(text.contains("# Reacts to CI.") && text.contains("# any CI event"), "{text}");
     assert!(text.ends_with("[[rule]]\nname = \"deploys\"\non = [\"ext.deploy.*\"]\ncooldown = \"5m\"\nrun = { agent = \"sh\" }\n"), "{text}");
@@ -139,7 +146,11 @@ async fn edits_through_the_daemon_rewrite_the_file_and_keep_comments() {
     let bad: RuleConfig =
         toml::from_str("name = \"bad\"\non = \"ext.*\"\nrun = { agent = \"ghost\" }").unwrap();
     let err = client
-        .call::<method::RulesUpsert>(RuleUpsertParams { rule: bad, project: None })
+        .call::<method::RulesUpsert>(RuleUpsertParams {
+            rule: bad,
+            project: None,
+            expected: Expected::Absent,
+        })
         .await
         .unwrap_err();
     match err {
@@ -156,7 +167,13 @@ async fn edits_through_the_daemon_rewrite_the_file_and_keep_comments() {
     let active = client.call::<method::RulesList>(RulesListParams::default()).await.unwrap();
     assert!(active.rules.iter().all(|r| r.config.name != "deploys"));
     client.call::<method::RulesReopen>(NameParams { name: "deploys".into() }).await.unwrap();
-    client.call::<method::RulesDelete>(NameParams { name: "deploys".into() }).await.unwrap();
+    client
+        .call::<method::RulesDelete>(DeleteParams {
+            name: "deploys".into(),
+            expected: Expected::Any,
+        })
+        .await
+        .unwrap();
     client
         .call::<method::RulesSetEnabled>(SetEnabledParams { name: "ci".into(), enabled: true })
         .await
@@ -165,8 +182,112 @@ async fn edits_through_the_daemon_rewrite_the_file_and_keep_comments() {
     t.stop().await;
 }
 
+fn stale(err: ClientError) -> Stale {
+    match err {
+        ClientError::Rpc(e) if e.kind() == Some(ErrorCode::Stale) => {
+            serde_json::from_value(e.data.clone().unwrap()).unwrap()
+        }
+        other => panic!("expected a stale error, got {other}"),
+    }
+}
+
+async fn rule(client: &Client, name: &str) -> RuleInfo {
+    client.call::<method::RulesGet>(NameParams { name: name.into() }).await.unwrap()
+}
+
+/// An editor opened on a definition must not silently undo a change made elsewhere: every
+/// write names what it was based on, and toggles change one field of the current definition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn project_trust_is_bound_to_content() {
+async fn edits_are_refused_when_the_definition_changed_since_it_was_read() {
+    let mut t = TestDaemon::start(BASE).await;
+    let client = t.client().await;
+    let mut notes = client.notifications().unwrap();
+
+    // The editor opens on `ci`; meanwhile `pulse rules disable ci` runs.
+    let opened = rule(&client, "ci").await;
+    let disabled = client
+        .call::<method::RulesSetEnabled>(SetEnabledParams { name: "ci".into(), enabled: false })
+        .await
+        .unwrap();
+    assert_ne!(disabled.revision, opened.revision);
+    // Saving the untouched form is refused, with the current revision; the rule stays disabled.
+    let save = |rule: RuleConfig, revision: &str| RuleUpsertParams {
+        rule,
+        project: None,
+        expected: Expected::Revision { revision: revision.to_owned() },
+    };
+    let err = client
+        .call::<method::RulesUpsert>(save(opened.config.clone(), &opened.revision))
+        .await
+        .unwrap_err();
+    assert_eq!(stale(err).current.as_deref(), Some(disabled.revision.as_str()));
+    assert!(t.read_config().contains("enabled = false"));
+    // Overwriting deliberately means naming the revision the user was shown in the conflict.
+    let overwritten = client
+        .call::<method::RulesUpsert>(save(opened.config.clone(), &disabled.revision))
+        .await
+        .unwrap();
+    assert!(overwritten.config.enabled);
+    assert_eq!(overwritten.revision, opened.revision, "a revision is the content, not a counter");
+
+    // Creating a name that exists is refused; so is deleting what changed or is gone.
+    let err = client
+        .call::<method::RulesUpsert>(RuleUpsertParams {
+            rule: opened.config.clone(),
+            project: None,
+            expected: Expected::Absent,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(stale(err).current.as_deref(), Some(opened.revision.as_str()));
+    let delete = |revision: &str| DeleteParams {
+        name: "ci".into(),
+        expected: Expected::Revision { revision: revision.to_owned() },
+    };
+    let err = client.call::<method::RulesDelete>(delete(&disabled.revision)).await.unwrap_err();
+    assert_eq!(stale(err).current.as_deref(), Some(opened.revision.as_str()));
+
+    // A hand edit the daemon has not reloaded yet: a toggle keeps it, because it changes one
+    // field of the file as it is, not of the cached copy.
+    t.write_config(&BASE.replace("on = \"ext.ci.*\"", "on = \"ext.build.*\"\nsupervised = true"));
+    client
+        .call::<method::RulesSetEnabled>(SetEnabledParams { name: "ci".into(), enabled: false })
+        .await
+        .unwrap();
+    let text = t.read_config();
+    assert!(text.contains("supervised = true") && text.contains("enabled = false"), "{text}");
+    until_state(&mut notes, StateTopic::Rules, |_| async {
+        rule(&client, "ci").await.config.supervised
+    })
+    .await;
+    // The same for sources.
+    t.write_config(&t.read_config().replace("every = \"1h\"", "every = \"3h\""));
+    let s = client
+        .call::<method::SourcesSetEnabled>(SetEnabledParams { name: "fake".into(), enabled: false })
+        .await
+        .unwrap();
+    assert!(!s.config.enabled);
+    assert!(t.read_config().contains("every = \"3h\""));
+
+    // A comment is not a change: the revision is the definition's meaning.
+    let before = rule(&client, "ci").await.revision;
+    t.write_config(&t.read_config().replace("# Reacts to CI.", "# Reacts to builds."));
+    let after = client
+        .call::<method::RulesUpsert>(save(rule(&client, "ci").await.config, &before))
+        .await
+        .unwrap();
+    assert_eq!(after.revision, before);
+
+    // Removed while an editor had it open.
+    let current = rule(&client, "ci").await.revision;
+    client.call::<method::RulesDelete>(delete(&current)).await.unwrap();
+    let err = client.call::<method::RulesDelete>(delete(&current)).await.unwrap_err();
+    assert_eq!(stale(err).current, None);
+    t.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_trust_is_bound_to_the_reviewed_content() {
     let mut t = TestDaemon::start(BASE).await;
     let client = t.client().await;
     let mut notes = client.notifications().unwrap();
@@ -178,27 +299,56 @@ async fn project_trust_is_bound_to_content() {
     assert_eq!(rule_names(&client).await, ["ci"], "an untrusted project is inert");
 
     let dir = project.display().to_string();
-    let p = client
-        .call::<method::ProjectsTrust>(ProjectTrustParams { dir: dir.clone(), name: None })
-        .await
-        .unwrap();
+    let review = |dir: &str| {
+        client.call::<method::ProjectsReview>(ProjectReviewParams { dir: dir.into(), name: None })
+    };
+    let trust = |dir: &str, hash: &str| {
+        client.call::<method::ProjectsTrust>(ProjectTrustParams {
+            dir: dir.into(),
+            name: None,
+            hash: hash.into(),
+        })
+    };
+    let r = review(&dir).await.unwrap();
+    assert_eq!((r.name.as_str(), r.state, r.text.as_str()), ("repo", TrustState::Untrusted, text));
+    assert_eq!(r.rules.len(), 1);
+    assert_eq!(r.changes, None);
+
+    // The file is replaced while the user reads the review: trusting what they read fails, and
+    // nothing from the new content is loaded.
+    let swapped = text.replace("ext.ci.*", "ext.*");
+    std::fs::write(&file, &swapped).unwrap();
+    let err = trust(&dir, &r.hash).await.unwrap_err();
+    let current = stale(err).current.unwrap();
+    assert_ne!(current, r.hash);
+    assert_eq!(rule_names(&client).await, ["ci"]);
+    std::fs::write(&file, text).unwrap();
+    let p = trust(&dir, &r.hash).await.unwrap();
     assert_eq!((p.name.as_str(), p.state), ("repo", TrustState::Trusted));
     assert_eq!(rule_names(&client).await, ["ci", "repo/build"]);
 
-    // A `git pull` that changes the file: inert again until re-trusted.
-    std::fs::write(&file, text.replace("ext.ci.*", "ext.*")).unwrap();
+    // A `git pull` that changes the file: inert again until re-trusted, and the review says
+    // what changed.
+    std::fs::write(&file, &swapped).unwrap();
     until_state(&mut notes, StateTopic::Projects, |_| async {
         let list = client.call::<method::ProjectsList>(Empty {}).await.unwrap();
         list.projects[0].state == TrustState::Changed
     })
     .await;
     assert_eq!(rule_names(&client).await, ["ci"]);
+    let r = review("~/repo").await.unwrap();
+    assert_eq!(r.state, TrustState::Changed);
+    assert_eq!(
+        r.changes,
+        Some(vec![DefinitionChange {
+            kind: DefinitionKind::Rule,
+            name: "build".into(),
+            change: ChangeKind::Changed { fields: vec!["on".into()] },
+        }])
+    );
 
     // `~` is the user's home, as everywhere else (the UI suggests `~/code/my-repo`).
-    client
-        .call::<method::ProjectsTrust>(ProjectTrustParams { dir: "~/repo".into(), name: None })
-        .await
-        .unwrap();
+    trust("~/repo", &r.hash).await.unwrap();
     assert_eq!(rule_names(&client).await, ["ci", "repo/build"]);
 
     // Editing a project rule through the daemon keeps the project trusted.
@@ -212,6 +362,20 @@ async fn project_trust_is_bound_to_content() {
     assert!(std::fs::read_to_string(&file).unwrap().contains("enabled = false"));
     let list = client.call::<method::ProjectsList>(Empty {}).await.unwrap();
     assert_eq!(list.projects[0].state, TrustState::Trusted);
+
+    // But not when the file changed underneath: the text that would be edited is the text
+    // whose hash is checked, so write-back never trusts content nobody reviewed.
+    let pulled = std::fs::read_to_string(&file).unwrap().replace("ext.*", "ext.deploy.*");
+    std::fs::write(&file, &pulled).unwrap();
+    let err = client
+        .call::<method::RulesSetEnabled>(SetEnabledParams {
+            name: "repo/build".into(),
+            enabled: true,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, ClientError::Rpc(e) if e.kind() == Some(ErrorCode::Conflict)), "{err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), pulled);
 
     let p = client.call::<method::ProjectsUntrust>(ProjectDirParams { dir }).await.unwrap();
     assert_eq!(p.state, TrustState::Untrusted);

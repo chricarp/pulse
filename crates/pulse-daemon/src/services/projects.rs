@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use pulse_contracts::rpc::ProjectReview;
 use pulse_contracts::status::Project;
 
 use super::Services;
@@ -13,11 +14,26 @@ impl Services {
         self.shared.projects()
     }
 
-    /// Trusts `dir/pulse.toml` exactly as it is now. Any later change makes it inert again.
-    /// `dir` may start with `~`, like paths in config.
-    pub async fn projects_trust(&self, dir: &str, name: Option<&str>) -> ServiceResult<Project> {
+    /// What trusting `dir/pulse.toml` would load, as it is now. `dir` may start with `~`.
+    pub async fn projects_review(
+        &self,
+        dir: &str,
+        name: Option<&str>,
+    ) -> ServiceResult<ProjectReview> {
         let dir = PathBuf::from(super::expand_tilde(dir, &self.shared.user_home));
-        self.change_trust(|loader, now| loader.trust(&dir, name, now)).await
+        self.shared.loader.lock().await.review(&dir, name)
+    }
+
+    /// Trusts `dir/pulse.toml` if its content still has `hash` (what the user reviewed). Any
+    /// later change makes it inert again. `dir` may start with `~`, like paths in config.
+    pub async fn projects_trust(
+        &self,
+        dir: &str,
+        name: Option<&str>,
+        hash: &str,
+    ) -> ServiceResult<Project> {
+        let dir = PathBuf::from(super::expand_tilde(dir, &self.shared.user_home));
+        self.change_trust(|loader, now| loader.trust(&dir, name, hash, now)).await
     }
 
     pub async fn projects_untrust(&self, dir: &str) -> ServiceResult<Project> {

@@ -55,6 +55,41 @@ pub struct NameParams {
     pub name: String,
 }
 
+// ---- editing definitions ----
+
+/// What an edit of a rule, agent or source is based on. The daemon compares it with the
+/// definition as it is in its file at the moment it writes, and refuses with a `stale` error
+/// ([`Stale`]) when they differ, so an editor never silently undoes a change made elsewhere
+/// (by hand in the file, from the CLI, from another window).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Expected {
+    /// Creating: no definition of this kind has this name.
+    Absent,
+    /// Editing what the client was shown: the definition still has this `revision`.
+    Revision { revision: String },
+    /// Whatever is there, if anything. For deliberate replacement without looking first (the
+    /// CLI's `--replace`, removal by name); editors send `revision`.
+    Any,
+}
+
+/// `data` of a `stale` error.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(optional_fields = nullable)]
+pub struct Stale {
+    /// The current revision of the definition (for `projects.trust`, the file's current content
+    /// hash); `None` when it does not exist.
+    pub current: Option<String>,
+}
+
+/// Removes a definition by its full name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct DeleteParams {
+    pub name: String,
+    /// `revision` from an editor or detail view; `any` from the CLI. `absent` is invalid.
+    pub expected: Expected,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RunIdParams {
     pub id: RunId,
@@ -270,6 +305,9 @@ pub struct RuleInfo {
     /// `config.name` is the full name (`project/rule` for project rules).
     pub config: RuleConfig,
     pub origin: ConfigOrigin,
+    /// Identifies this definition's content as written in its file (a hash). Send it back in
+    /// [`Expected::Revision`] when saving an edit of it.
+    pub revision: String,
     pub state: RuleRuntimeStatus,
 }
 
@@ -290,6 +328,7 @@ pub struct RuleUpsertParams {
     pub rule: RuleConfig,
     #[serde(default)]
     pub project: Option<String>,
+    pub expected: Expected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -384,6 +423,8 @@ pub struct AgentList {
 pub struct AgentInfo {
     pub config: AgentConfig,
     pub origin: ConfigOrigin,
+    /// See [`RuleInfo::revision`].
+    pub revision: String,
     pub running: u32,
     pub queued: u32,
 }
@@ -394,6 +435,7 @@ pub struct AgentUpsertParams {
     pub agent: AgentConfig,
     #[serde(default)]
     pub project: Option<String>,
+    pub expected: Expected,
 }
 
 /// What an MCP client needs to act as an agent. The token is derived from the daemon secret and
@@ -416,6 +458,8 @@ pub struct SourceList {
 pub struct SourceInfo {
     pub config: SourceConfig,
     pub origin: ConfigOrigin,
+    /// See [`RuleInfo::revision`].
+    pub revision: String,
     pub health: SourceHealth,
 }
 
@@ -425,6 +469,7 @@ pub struct SourceUpsertParams {
     pub source: SourceConfig,
     #[serde(default)]
     pub project: Option<String>,
+    pub expected: Expected,
 }
 
 // ---- runs ----
@@ -513,6 +558,7 @@ pub struct ProjectList {
     pub projects: Vec<Project>,
 }
 
+/// Trusts a project file's content, exactly the content the user reviewed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(optional_fields)]
 pub struct ProjectTrustParams {
@@ -521,6 +567,72 @@ pub struct ProjectTrustParams {
     /// The prefix for its definitions. Default: the directory's name.
     #[serde(default)]
     pub name: Option<String>,
+    /// The `hash` of the [`ProjectReview`] the user was shown. If the file no longer has it,
+    /// nothing is trusted and the call fails with a `stale` error.
+    pub hash: String,
+}
+
+/// What trusting a project file would load.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(optional_fields)]
+pub struct ProjectReviewParams {
+    pub dir: String,
+    /// The prefix its definitions would get. Default: the trusted name, else the directory's.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// A project file as it is now, for the user to read before trusting it. Everything in it
+/// comes from the repository and is untrusted text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(optional_fields = nullable)]
+pub struct ProjectReview {
+    /// The prefix its definitions would get.
+    pub name: String,
+    pub dir: String,
+    pub file: String,
+    pub state: crate::status::TrustState,
+    /// SHA-256 of `text`. `projects.trust` with this hash trusts exactly this content.
+    pub hash: String,
+    /// The file's text.
+    pub text: String,
+    /// What it defines, as written (bare names). Empty when it does not parse.
+    pub rules: Vec<RuleConfig>,
+    pub agents: Vec<AgentConfig>,
+    pub sources: Vec<SourceConfig>,
+    /// Why it cannot be trusted as it is (it must parse on its own).
+    pub errors: Vec<ConfigError>,
+    /// For a file that changed since it was trusted: what differs from the trusted version, by
+    /// definition. `None` when there is no trusted version or Pulse did not keep its text
+    /// (it keeps it only for files up to 64 KiB).
+    pub changes: Option<Vec<DefinitionChange>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DefinitionKind {
+    Rule,
+    Agent,
+    Source,
+}
+
+/// One definition that differs between two versions of a file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct DefinitionChange {
+    pub kind: DefinitionKind,
+    pub name: String,
+    pub change: ChangeKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChangeKind {
+    Added,
+    Removed,
+    /// The top-level keys whose values differ (`run`, `command`, `allow`…).
+    Changed {
+        fields: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -749,7 +861,9 @@ rpc_methods! {
     "rules.list" => RulesList, rules_list(RulesListParams) -> RuleList;
     "rules.get" => RulesGet, rules_get(NameParams) -> RuleInfo;
     "rules.upsert" => RulesUpsert, rules_upsert(RuleUpsertParams) -> RuleInfo;
-    "rules.delete" => RulesDelete, rules_delete(NameParams) -> Empty;
+    "rules.delete" => RulesDelete, rules_delete(DeleteParams) -> Empty;
+    /// Changes `enabled` of the definition as it is in its file, nothing else (so do archive
+    /// and reopen with `archived`).
     "rules.set_enabled" => RulesSetEnabled, rules_set_enabled(SetEnabledParams) -> RuleInfo;
     "rules.snooze" => RulesSnooze, rules_snooze(SnoozeParams) -> RuleInfo;
     /// Clears a snooze and an open circuit breaker.
@@ -764,13 +878,15 @@ rpc_methods! {
     "agents.list" => AgentsList, agents_list(Empty) -> AgentList;
     "agents.get" => AgentsGet, agents_get(NameParams) -> AgentInfo;
     "agents.upsert" => AgentsUpsert, agents_upsert(AgentUpsertParams) -> AgentInfo;
-    "agents.delete" => AgentsDelete, agents_delete(NameParams) -> Empty;
+    "agents.delete" => AgentsDelete, agents_delete(DeleteParams) -> Empty;
     /// The MCP URL and derived token for an agent.
     "agents.mcp_credentials" => AgentsMcpCredentials, agents_mcp_credentials(NameParams) -> McpCredentials;
 
     "sources.list" => SourcesList, sources_list(Empty) -> SourceList;
     "sources.upsert" => SourcesUpsert, sources_upsert(SourceUpsertParams) -> SourceInfo;
-    "sources.delete" => SourcesDelete, sources_delete(NameParams) -> Empty;
+    "sources.delete" => SourcesDelete, sources_delete(DeleteParams) -> Empty;
+    /// Changes `enabled` of the definition as it is in its file, nothing else.
+    "sources.set_enabled" => SourcesSetEnabled, sources_set_enabled(SetEnabledParams) -> SourceInfo;
 
     "runs.list" => RunsList, runs_list(RunsListParams) -> RunPage;
     "runs.get" => RunsGet, runs_get(RunIdParams) -> Run;
@@ -784,10 +900,13 @@ rpc_methods! {
     "runs.cancel" => RunsCancel, runs_cancel(RunIdParams) -> RunSummary;
     "runs.approve" => RunsApprove, runs_approve(RunIdParams) -> RunSummary;
     "runs.reject" => RunsReject, runs_reject(RejectParams) -> RunSummary;
-    /// A new run with the same snapshot and prompt.
+    /// A new run with the same event and prompt, executed with the agent as it is now. Refused
+    /// if the agent no longer exists.
     "runs.rerun" => RunsRerun, runs_rerun(RunIdParams) -> RunSummary;
 
     "projects.list" => ProjectsList, projects_list(Empty) -> ProjectList;
+    /// The file as it is now and what trusting it would load. No side effects.
+    "projects.review" => ProjectsReview, projects_review(ProjectReviewParams) -> ProjectReview;
     "projects.trust" => ProjectsTrust, projects_trust(ProjectTrustParams) -> Project;
     "projects.untrust" => ProjectsUntrust, projects_untrust(ProjectDirParams) -> Project;
 

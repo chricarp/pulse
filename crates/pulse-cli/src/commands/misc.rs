@@ -61,10 +61,14 @@ pub async fn agents(ctx: &Ctx, args: AgentsArgs) -> Res {
                 print_line(&toml::to_string_pretty(&a.config).unwrap_or_default());
             }
         }
-        AgentsCmd::Add { file, project } => {
+        AgentsCmd::Add { file, project, replace } => {
             let agent: AgentConfig = super::read_definition(&file)?;
-            let a =
-                client.call::<method::AgentsUpsert>(AgentUpsertParams { agent, project }).await?;
+            let what = format!("an agent named {:?}", agent.name);
+            let expected = super::add_expected(replace);
+            let a = client
+                .call::<method::AgentsUpsert>(AgentUpsertParams { agent, project, expected })
+                .await
+                .map_err(|e| super::exists_hint(e, &what))?;
             if ctx.json {
                 print_json(&a);
             } else {
@@ -73,7 +77,8 @@ pub async fn agents(ctx: &Ctx, args: AgentsArgs) -> Res {
             super::warn_about(ctx, &client, &format!("agent {:?}", a.config.name)).await?;
         }
         AgentsCmd::Remove { name } => {
-            client.call::<method::AgentsDelete>(NameParams { name: name.clone() }).await?;
+            let params = DeleteParams { name: name.clone(), expected: Expected::Any };
+            client.call::<method::AgentsDelete>(params).await?;
             if ctx.json {
                 print_json(&serde_json::json!({ "removed": name }));
             } else {
@@ -97,7 +102,8 @@ pub async fn sources(ctx: &Ctx, args: SourcesArgs) -> Res {
     match args.cmd.unwrap_or(SourcesCmd::List) {
         SourcesCmd::List => {}
         SourcesCmd::Remove { name } => {
-            client.call::<method::SourcesDelete>(NameParams { name: name.clone() }).await?;
+            let params = DeleteParams { name: name.clone(), expected: Expected::Any };
+            client.call::<method::SourcesDelete>(params).await?;
             if ctx.json {
                 print_json(&serde_json::json!({ "removed": name }));
             } else {
@@ -105,11 +111,25 @@ pub async fn sources(ctx: &Ctx, args: SourcesArgs) -> Res {
             }
             return Ok(ExitCode::SUCCESS);
         }
-        SourcesCmd::Add { kind, name, target, cron, every, timezone, ignore, lead, project } => {
+        SourcesCmd::Add {
+            kind,
+            name,
+            target,
+            cron,
+            every,
+            timezone,
+            ignore,
+            lead,
+            project,
+            replace,
+        } => {
             let source = source_config(kind, name, target, cron, every, timezone, ignore, lead)?;
+            let what = format!("a source named {:?}", source.name);
+            let expected = super::add_expected(replace);
             let s = client
-                .call::<method::SourcesUpsert>(SourceUpsertParams { source, project })
-                .await?;
+                .call::<method::SourcesUpsert>(SourceUpsertParams { source, project, expected })
+                .await
+                .map_err(|e| super::exists_hint(e, &what))?;
             if ctx.json {
                 print_json(&s);
             } else {
@@ -223,6 +243,68 @@ fn print_project(p: &Project) {
     print_line(&format!("{:<16} {}  {state}", p.name, p.dir));
 }
 
+/// A directory for a command line the user may paste.
+fn shell_word(s: &str) -> String {
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-~+".contains(c)) {
+        s.to_owned()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// A project file's review: what it would load, then what changed. Every string in it comes
+/// from the repository; `print_line` escapes terminal control characters.
+fn print_review(r: &ProjectReview) {
+    let state = match r.state {
+        TrustState::Untrusted => "not trusted",
+        TrustState::Trusted => "trusted, unchanged",
+        TrustState::Changed => "changed since it was trusted",
+        TrustState::Missing => "missing",
+    };
+    print_line(&format!("# {} ({state})", r.file));
+    print_line(&format!("# definitions are named {}/…", r.name));
+    for e in &r.errors {
+        print_line(&format!("error: {e}"));
+    }
+    if let Some(changes) = &r.changes {
+        print_line("");
+        if changes.is_empty() {
+            print_line(
+                "Changes since it was trusted: none in its definitions (only formatting or comments).",
+            );
+        } else {
+            print_line("Changes since it was trusted:");
+        }
+        for c in changes {
+            let kind = match c.kind {
+                DefinitionKind::Rule => "rule",
+                DefinitionKind::Agent => "agent",
+                DefinitionKind::Source => "source",
+            };
+            let what = match &c.change {
+                ChangeKind::Added => "added".to_owned(),
+                ChangeKind::Removed => "removed".to_owned(),
+                ChangeKind::Changed { fields } => format!("changed: {}", fields.join(", ")),
+            };
+            print_line(&format!("  {kind} {}: {what}", c.name));
+        }
+    }
+    let defs = [
+        ("agent", r.agents.iter().map(|a| toml::to_string_pretty(a)).collect::<Vec<_>>()),
+        ("rule", r.rules.iter().map(|x| toml::to_string_pretty(x)).collect()),
+        ("source", r.sources.iter().map(|x| toml::to_string_pretty(x)).collect()),
+    ];
+    for (kind, items) in defs {
+        for item in items {
+            print_line("");
+            print_line(&format!("# {kind}"));
+            print_line(item.unwrap_or_default().trim_end());
+        }
+    }
+    print_line("");
+    print_line(&format!("# content hash {}", r.hash));
+}
+
 pub async fn project(ctx: &Ctx, cmd: ProjectCmd) -> Res {
     let client = ctx.client().await?;
     match cmd {
@@ -236,10 +318,42 @@ pub async fn project(ctx: &Ctx, cmd: ProjectCmd) -> Res {
                 list.projects.iter().for_each(print_project);
             }
         }
-        ProjectCmd::Trust { dir, name } => {
-            let p = client
-                .call::<method::ProjectsTrust>(ProjectTrustParams { dir: absolute(dir)?, name })
+        ProjectCmd::Trust { dir, name, hash: None } => {
+            // Looking and trusting are two calls; binding the second to the hash the first
+            // printed is what makes the user trust what they read, interactively or not.
+            let dir = absolute(dir)?;
+            let review = client
+                .call::<method::ProjectsReview>(ProjectReviewParams { dir: dir.clone(), name })
                 .await?;
+            if ctx.json {
+                print_json(&review);
+            } else {
+                print_review(&review);
+                if review.errors.is_empty() {
+                    let name_arg = format!(" --name {}", review.name);
+                    crate::eprint_line(&format!(
+                        "Nothing was trusted. To trust exactly this content:\n  pulse project trust {}{name_arg} --hash {}",
+                        shell_word(&review.dir),
+                        review.hash
+                    ));
+                } else {
+                    crate::eprint_line("Nothing was trusted: the file has errors.");
+                }
+            }
+            return Ok(ExitCode::FAILURE);
+        }
+        ProjectCmd::Trust { dir, name, hash: Some(hash) } => {
+            let params = ProjectTrustParams { dir: absolute(dir)?, name, hash };
+            let p = client.call::<method::ProjectsTrust>(params).await.map_err(|e| match e {
+                pulse_daemon::client::ClientError::Rpc(err)
+                    if err.kind() == Some(ErrorCode::Stale) =>
+                {
+                    Failure::Message(
+                        "the file changed since that hash was printed; nothing was trusted. Run `pulse project trust` without --hash to review it again.".into(),
+                    )
+                }
+                other => other.into(),
+            })?;
             if ctx.json {
                 print_json(&p);
             } else {

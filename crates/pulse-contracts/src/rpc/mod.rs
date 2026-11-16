@@ -109,6 +109,11 @@ pub enum ErrorCode {
     /// The daemon is shutting down or a dependency is down.
     Unavailable,
     NotImplemented,
+    /// What the request was based on is no longer so: a definition changed since the client
+    /// read it (or a name it meant to create now exists), or a project file no longer has the
+    /// content hash the client reviewed. `data` is a [`Stale`]. Reload, show the user what
+    /// changed, and let them decide.
+    Stale,
 }
 
 impl ErrorCode {
@@ -125,6 +130,7 @@ impl ErrorCode {
             ErrorCode::ConfigInvalid => -32004,
             ErrorCode::Unavailable => -32005,
             ErrorCode::NotImplemented => -32006,
+            ErrorCode::Stale => -32007,
         }
     }
 
@@ -142,6 +148,7 @@ impl ErrorCode {
             ConfigInvalid,
             Unavailable,
             NotImplemented,
+            Stale,
         ]
         .into_iter()
         .find(|c| c.code() == code)
@@ -188,6 +195,10 @@ impl RpcError {
         RpcError::new(ErrorCode::ConfigInvalid, errors.to_string())
             .with_data(serde_json::json!({ "errors": errors.0 }))
     }
+    pub fn stale(message: impl Into<String>, data: &Stale) -> Self {
+        RpcError::new(ErrorCode::Stale, message)
+            .with_data(serde_json::to_value(data).unwrap_or(Value::Null))
+    }
     pub fn not_implemented(what: &str) -> Self {
         RpcError::new(ErrorCode::NotImplemented, format!("{what} is not implemented yet"))
     }
@@ -221,6 +232,14 @@ pub fn decode_response<M: RpcMethod>(resp: JsonRpcResponse) -> Result<M::Result,
         }),
         ResponsePayload::Error(e) => Err(e),
     }
+}
+
+/// The TypeScript constants for error codes clients branch on.
+pub(crate) fn typescript_constants() -> String {
+    format!(
+        "/** The `code` of a `stale` RPC error; its `data` is a `Stale`. */\nexport const ERROR_STALE = {};\n",
+        ErrorCode::Stale.code()
+    )
 }
 
 fn decode_params<T: DeserializeOwned>(params: Value) -> Result<T, RpcError> {
