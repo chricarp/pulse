@@ -99,7 +99,12 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
                         if o.done {
                             let run = client.call::<method::RunsGet>(RunIdParams { id }).await?;
                             if !ctx.json {
-                                eprint_line(&format!("[run {}]", run.status.as_str()));
+                                match &run.error {
+                                    Some(e) => {
+                                        eprint_line(&format!("[run {}: {e}]", run.status.as_str()))
+                                    }
+                                    None => eprint_line(&format!("[run {}]", run.status.as_str())),
+                                }
                             }
                             return Ok(ExitCode::SUCCESS);
                         }
@@ -117,6 +122,13 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
                     break;
                 }
                 after = page.next_after;
+            }
+            // A run that never started has no output; say why instead of printing nothing.
+            if !ctx.json && after.is_none() {
+                let run = client.call::<method::RunsGet>(RunIdParams { id }).await?;
+                if let Some(e) = &run.error {
+                    eprint_line(&format!("[run {}: {e}]", run.status.as_str()));
+                }
             }
             return Ok(ExitCode::SUCCESS);
         }

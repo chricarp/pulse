@@ -11,6 +11,7 @@
 
 mod support;
 
+mod cli;
 mod loops;
 mod restart;
 mod sources;
