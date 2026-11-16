@@ -192,7 +192,7 @@ pub static CATALOG: &[CatalogEntry] = &[
         description: "A schedule reached its time.",
         subject: "the schedule (source) name",
         paths: &[],
-        example: || json!({ "cron": "0 9 * * 1-5", "every": null, "scheduled_for": "2026-11-16T09:00:00.000Z" }),
+        example: || json!({ "cron": "0 9 * * 1-5", "every": null, "scheduled_for": "2026-11-16T09:00:00.000Z", "late": false }),
     },
     CatalogEntry {
         type_: "calendar.event.starting",
@@ -373,6 +373,10 @@ pub struct ScheduleFiredData {
     pub cron: Option<String>,
     pub every: Option<Duration>,
     pub scheduled_for: Timestamp,
+    /// A catch-up for a time that passed while the machine slept or the daemon was down. At most
+    /// one per schedule, for the latest missed time.
+    #[serde(default)]
+    pub late: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -555,6 +559,7 @@ mod tests {
             cron: Some("0 9 * * *".into()),
             every: None,
             scheduled_for: Timestamp::from_millis(0),
+            late: false,
         })
         .into_new_event(src, Timestamp::from_millis(5));
         assert_eq!(ev.type_.as_str(), "schedule.fired");

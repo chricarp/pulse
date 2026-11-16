@@ -8,13 +8,25 @@ rust-version.workspace = true
 
 [dependencies]
 pulse-contracts.workspace = true
+pulse-core.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time", "net", "macros", "rt", "process", "signal", "io-util", "io-std"] }
 tokio-util.workspace = true
 
+chrono = { version = "0.4.39", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10.1"
+miniz_oxide = "0.8"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+pty-process = { version = "0.5", features = ["async"] }
+rrule = "0.14"
+rustix = { version = "1", features = ["fs", "process", "pty", "termios", "time", "stdio"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
+
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "test-util"] }
 
 [lints]
 workspace = true

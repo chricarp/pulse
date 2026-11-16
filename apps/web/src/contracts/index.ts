@@ -598,7 +598,12 @@ export type RunsOutput = { subscription: SubscriptionId, run: RunId, chunks: Arr
 
 export type RunsSubscribeParams = { filter: RunFilter, };
 
-export type ScheduleFiredData = { cron?: string | null, every?: Duration | null, scheduled_for: Timestamp, };
+export type ScheduleFiredData = { cron?: string | null, every?: Duration | null, scheduled_for: Timestamp, 
+/**
+ * A catch-up for a time that passed while the machine slept or the daemon was down. At most
+ * one per schedule, for the latest missed time.
+ */
+late: boolean, };
 
 export type ScheduleSourceSettings = { 
 /**
