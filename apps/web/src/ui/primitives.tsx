@@ -366,6 +366,7 @@ export function ListInput({
 /** A modal on the native <dialog>: focus is trapped and Escape closes it. */
 export function Modal({ open, onClose, title, children, actions, wide }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; actions?: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -376,6 +377,7 @@ export function Modal({ open, onClose, title, children, actions, wide }: { open:
     <dialog
       ref={ref}
       className={cx("modal", wide && "modal-wide")}
+      aria-labelledby={titleId}
       onClose={onClose}
       onCancel={(e) => {
         e.preventDefault();
@@ -387,7 +389,9 @@ export function Modal({ open, onClose, title, children, actions, wide }: { open:
     >
       {open && (
         <div className="modal-inner">
-          <h2 className="modal-title">{title}</h2>
+          <h2 className="modal-title" id={titleId}>
+            {title}
+          </h2>
           <div className="modal-body">{children}</div>
           {actions && <div className="modal-actions">{actions}</div>}
         </div>

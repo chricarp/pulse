@@ -58,6 +58,8 @@ function inField(target: EventTarget | null): boolean {
 
 function onKeyDown(e: KeyboardEvent): void {
   if (e.defaultPrevented || e.isComposing) return;
+  // A modal dialog (palette, confirmation) owns the keyboard; Escape must reach it.
+  if (document.querySelector("dialog[open]")) return;
   const name = keyName(e);
   const typing = inField(e.target);
   const lists = [...registry].reverse(); // Latest registered (innermost view) wins.

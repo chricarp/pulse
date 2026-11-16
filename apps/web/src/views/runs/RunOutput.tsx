@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useApp } from "../../app/context";
 import { useBindings } from "../../app/keys";
@@ -7,10 +7,7 @@ import type { RunOutputChunk } from "../../contracts";
 import { bytes, clockTime, count, visible } from "../../lib/format";
 import { Icon } from "../../ui/icons";
 import { Button, Empty, cx } from "../../ui/primitives";
-import { KIND_GROUPS, isToolError, toolSummary, useRunOutput } from "./output";
-
-const COLLAPSE_LINES = 8;
-const MAX_INLINE_CHARS = 20_000;
+import { KIND_GROUPS, chunkLayout, displayText, isToolError, toolSummary, useRunOutput, LINE } from "./output";
 
 export function RunOutput({ runId, live, droppedBytes, totalBytes }: { runId: string; live: boolean; droppedBytes: number; totalBytes: number }) {
   const { client } = useApp();
@@ -19,28 +16,63 @@ export function RunOutput({ runId, live, droppedBytes, totalBytes }: { runId: st
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
   const [following, setFollowing] = useState(true);
   const parent = useRef<HTMLDivElement>(null);
+  const probe = useRef<HTMLSpanElement>(null);
+  const [metrics, setMetrics] = useState({ width: 0, charWidth: 7.2 });
 
-  const hiddenKinds = new Set(KIND_GROUPS.filter((g) => hidden.has(g.key)).flatMap((g) => g.kinds));
-  // Indices into `out.chunks` that are shown. Recomputed when output or filters change.
-  const shown: number[] = [];
-  for (let i = 0; i < out.chunks.length; i++) {
-    const c = out.chunks[i];
-    if (c && !hiddenKinds.has(c.kind)) shown.push(i);
-  }
+  // Row heights are computed from the text (fixed line height, monospace, wrapping at any
+  // character), not measured: measuring rows as they scroll by costs a synchronous re-render
+  // per row, which made scrolling through 40k rows stutter. Rows the arithmetic cannot predict
+  // (wide characters) are still measured.
+  useLayoutEffect(() => {
+    const el = parent.current;
+    if (!el) return;
+    const read = () => {
+      const cw = probe.current ? probe.current.getBoundingClientRect().width / 100 : 7.2;
+      setMetrics((m) => (m.width === el.clientWidth && m.charWidth === cw ? m : { width: el.clientWidth, charWidth: cw || 7.2 }));
+    };
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    void document.fonts?.ready.then(read);
+    return () => ro.disconnect();
+  }, []);
 
-  const virtualizer = useVirtualizer({
-    count: shown.length,
-    getScrollElement: () => parent.current,
-    estimateSize: () => 20,
-    overscan: 20,
-    getItemKey: (i) => out.chunks[shown[i] ?? 0]?.seq ?? i,
-  });
+  const shown = useMemo(() => {
+    const hiddenKinds = new Set(KIND_GROUPS.filter((g) => hidden.has(g.key)).flatMap((g) => g.kinds));
+    const idx: number[] = [];
+    for (let i = 0; i < out.chunks.length; i++) {
+      const c = out.chunks[i];
+      if (c && !hiddenKinds.has(c.kind)) idx.push(i);
+    }
+    return idx;
+    // `out.version` changes whenever chunks are appended (the array is appended in place).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [out.version, out.chunks, hidden]);
+
+  // Stable callbacks: the virtualizer recomputes every row's position when they change, which
+  // must happen when the rows change, not on every scroll-driven render.
+  const chunks = out.chunks;
+  const estimateSize = useCallback(
+    (i: number) => {
+      const c = chunks[shown[i] ?? 0];
+      return c ? chunkLayout(c, expanded.has(c.seq), metrics.width, metrics.charWidth).height : LINE;
+    },
+    [chunks, shown, expanded, metrics],
+  );
+  const getItemKey = useCallback((i: number) => chunks[shown[i] ?? 0]?.seq ?? i, [chunks, shown]);
+  const getScrollElement = useCallback(() => parent.current, []);
+  const virtualizer = useVirtualizer({ count: shown.length, getScrollElement, estimateSize, overscan: 12, getItemKey });
+
+  // New widths or expanded chunks change heights: recompute.
+  useLayoutEffect(() => {
+    virtualizer.measure();
+  }, [metrics, expanded, hidden, virtualizer]);
 
   // Follow the tail: after new output renders, stay pinned to the bottom.
   useLayoutEffect(() => {
     if (!following || shown.length === 0) return;
     virtualizer.scrollToIndex(shown.length - 1, { align: "end" });
-  }, [out.version, following, shown.length, virtualizer]);
+  }, [out.version, following, shown.length, virtualizer, metrics]);
 
   const jumpToEnd = () => {
     setFollowing(true);
@@ -74,7 +106,7 @@ export function RunOutput({ runId, live, droppedBytes, totalBytes }: { runId: st
             {g.label}
           </label>
         ))}
-        <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard?.writeText(all())} title="Copy the output loaded so far">
+        <Button size="sm" variant="ghost" icon="copy" onClick={() => void navigator.clipboard?.writeText(all())} title="Copy the output loaded so far">
           Copy
         </Button>
       </div>
@@ -91,6 +123,9 @@ export function RunOutput({ runId, live, droppedBytes, totalBytes }: { runId: st
           if (atEnd !== following) setFollowing(atEnd);
         }}
       >
+        <span ref={probe} className="ch-probe" aria-hidden="true">
+          {"0".repeat(100)}
+        </span>
         {shown.length === 0 ? (
           <Empty title={out.done ? "No output" : live ? "Waiting for output…" : out.connected ? "No output yet" : "Loading output…"}>
             {out.error && <p className="tone-text-attention">{out.error}</p>}
@@ -100,11 +135,15 @@ export function RunOutput({ runId, live, droppedBytes, totalBytes }: { runId: st
             {virtualizer.getVirtualItems().map((v) => {
               const chunk = out.chunks[shown[v.index] ?? 0];
               if (!chunk) return null;
+              // Only rows whose height cannot be computed exactly are measured.
+              const exact = chunkLayout(chunk, expanded.has(chunk.seq), metrics.width, metrics.charWidth).exact;
               return (
-                <div key={v.key} data-index={v.index} ref={virtualizer.measureElement} className="vout" style={{ transform: `translateY(${v.start}px)` }}>
+                <div key={v.key} data-index={v.index} ref={exact ? undefined : virtualizer.measureElement} className="vout" style={{ transform: `translateY(${v.start}px)` }}>
                   <Chunk
                     chunk={chunk}
                     expanded={expanded.has(chunk.seq)}
+                    width={metrics.width}
+                    charWidth={metrics.charWidth}
                     onExpand={() => setExpanded((s) => new Set(s).add(chunk.seq))}
                   />
                 </div>
@@ -125,7 +164,7 @@ export function RunOutput({ runId, live, droppedBytes, totalBytes }: { runId: st
   );
 }
 
-const Chunk = memo(function Chunk({ chunk, expanded, onExpand }: { chunk: RunOutputChunk; expanded: boolean; onExpand: () => void }) {
+const Chunk = memo(function Chunk({ chunk, expanded, width, charWidth, onExpand }: { chunk: RunOutputChunk; expanded: boolean; width: number; charWidth: number; onExpand: () => void }) {
   const time = clockTime(chunk.at, true);
   if (chunk.kind === "marker") {
     return (
@@ -138,34 +177,32 @@ const Chunk = memo(function Chunk({ chunk, expanded, onExpand }: { chunk: RunOut
     const { name, args } = toolSummary(chunk);
     return (
       <div className="ch ch-tool" title={time}>
-        <Icon name="tool" size={12} />
-        <span className="ch-tool-name">{visible(name, { singleLine: true })}</span>
-        <span className="ch-tool-args">{visible(args, { singleLine: true })}</span>
+        <div className="ch-box">
+          <Icon name="tool" size={12} />
+          <span className="ch-tool-name">{visible(name, { singleLine: true })}</span>
+          <span className="ch-tool-args">{visible(args, { singleLine: true })}</span>
+        </div>
       </div>
     );
   }
-  let text = chunk.text;
-  let clipped = false;
-  const lines = text.split("\n");
-  const collapsible = chunk.kind === "tool_result" && lines.length > COLLAPSE_LINES;
-  if (!expanded && collapsible) {
-    text = lines.slice(0, COLLAPSE_LINES).join("\n");
-    clipped = true;
-  }
-  if (!expanded && text.length > MAX_INLINE_CHARS) {
-    text = text.slice(0, MAX_INLINE_CHARS);
-    clipped = true;
-  }
-  return (
-    <div className={cx("ch", `ch-${chunk.kind}`, chunk.kind === "tool_result" && isToolError(chunk) && "is-error")} title={time}>
+  const layout = chunkLayout(chunk, expanded, width, charWidth);
+  const text = displayText(chunk, expanded);
+  const body = (
+    <>
       {chunk.kind === "result" && <span className="ch-label">Result</span>}
       {chunk.kind === "error" && <span className="ch-label">Error</span>}
-      <span className="ch-text">{visible(text)}</span>
-      {clipped && (
+      <span className="ch-text">{text.text}</span>
+      {text.clipped && (
         <button type="button" className="link-btn ch-more" onClick={onExpand}>
-          Show all ({collapsible ? `${count(lines.length)} lines` : bytes(chunk.text.length)})
+          Show all ({text.lines > 1 ? `${count(text.lines)} lines` : bytes(chunk.text.length)})
         </button>
       )}
+    </>
+  );
+  const boxed = chunk.kind === "tool_result" || chunk.kind === "result" || chunk.kind === "error";
+  return (
+    <div className={cx("ch", `ch-${chunk.kind}`, chunk.kind === "tool_result" && isToolError(chunk) && "is-error")} title={time} data-height={layout.height}>
+      {boxed ? <div className="ch-box">{body}</div> : body}
     </div>
   );
 });

@@ -5,6 +5,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 import type { OutputKind, RunOutputChunk } from "../../contracts";
+import { visible } from "../../lib/format";
 import type { RpcClient } from "../../rpc/client";
 
 export interface OutputSnapshot {
@@ -109,6 +110,100 @@ export function useRunOutput(client: RpcClient, runId: string): OutputSnapshot {
 }
 
 const noopSubscribe = () => () => {};
+
+// ---- layout: must match the `.ch` rules in styles.css ----
+
+/** Line height of output text, px. */
+export const LINE = 18;
+const COLLAPSE_LINES = 8;
+const MAX_INLINE_CHARS = 20_000;
+
+function expandTabs(text: string): string {
+  if (!text.includes("\t")) return text;
+  return text
+    .split("\n")
+    .map((line) => {
+      let out = "";
+      for (const ch of line) out += ch === "\t" ? " ".repeat(8 - (out.length % 8)) : ch;
+      return out;
+    })
+    .join("\n");
+}
+
+/** The text a chunk shows (hidden characters made visible, tabs expanded, long ones clipped). */
+export function displayText(chunk: RunOutputChunk, expanded: boolean): { text: string; clipped: boolean; lines: number } {
+  let text = expandTabs(visible(chunk.text));
+  const all = text.split("\n");
+  let clipped = false;
+  if (!expanded && chunk.kind === "tool_result" && all.length > COLLAPSE_LINES) {
+    text = all.slice(0, COLLAPSE_LINES).join("\n");
+    clipped = true;
+  }
+  if (!expanded && text.length > MAX_INLINE_CHARS) {
+    text = text.slice(0, MAX_INLINE_CHARS);
+    clipped = true;
+  }
+  return { text, clipped, lines: all.length };
+}
+
+function wrappedLines(text: string, width: number, charWidth: number): number {
+  const per = width > 0 ? Math.max(1, Math.floor(width / charWidth)) : 120;
+  let n = 0;
+  let start = 0;
+  for (;;) {
+    const end = text.indexOf("\n", start);
+    const len = (end < 0 ? text.length : end) - start;
+    n += Math.max(1, Math.ceil(len / per));
+    if (end < 0) return n;
+    start = end + 1;
+  }
+}
+
+// The virtualizer asks for every row's height whenever the row count changes; cache them.
+const layoutCache = new WeakMap<RunOutputChunk, { key: string; height: number; exact: boolean }>();
+
+// Characters whose width in a monospace font is one cell. Anything else (CJK, emoji, symbols
+// from a fallback font) makes the computed height a guess, so that row is measured instead.
+const ONE_CELL = /^[\n\u0020-\u007E\u00A0-\u024F]*$/;
+
+/** The pixel height of a chunk's row for a container `width` and a monospace `charWidth`. */
+export function chunkLayout(chunk: RunOutputChunk, expanded: boolean, width: number, charWidth: number): { height: number; exact: boolean } {
+  const key = `${width}|${charWidth}|${expanded ? 1 : 0}`;
+  const hit = layoutCache.get(chunk);
+  if (hit?.key === key) return hit;
+  const computed = computeLayout(chunk, expanded, width, charWidth);
+  const exact = chunk.kind === "marker" || chunk.kind === "tool_use" || ONE_CELL.test(displayText(chunk, expanded).text);
+  const entry = { key, height: computed.height, exact };
+  layoutCache.set(chunk, entry);
+  return entry;
+}
+
+function computeLayout(chunk: RunOutputChunk, expanded: boolean, width: number, charWidth: number): { height: number } {
+  switch (chunk.kind) {
+    case "marker":
+      return { height: 36 };
+    case "tool_use":
+      return { height: 32 };
+    default:
+      break;
+  }
+  const { text, clipped } = displayText(chunk, expanded);
+  const more = clipped ? LINE : 0;
+  const pad = 32; // 16px each side
+  switch (chunk.kind) {
+    case "tool_result":
+      return { height: 6 + 1 + 6 + more + LINE * wrappedLines(text, width - pad - 2 - 16, charWidth) };
+    case "result":
+    case "error":
+      return { height: 8 + 10 + LINE + more + LINE * wrappedLines(text, width - pad - 3 - 20, charWidth) };
+    case "assistant":
+      return { height: 10 + more + LINE * wrappedLines(text, width - pad, charWidth) };
+    case "thinking":
+      return { height: 6 + more + LINE * wrappedLines(text, width - pad, charWidth) };
+    default:
+      return { height: 2 + more + LINE * wrappedLines(text, width - pad, charWidth) };
+  }
+}
 
 export const KIND_GROUPS: { key: string; label: string; kinds: OutputKind[] }[] = [
   { key: "thinking", label: "Thinking", kinds: ["thinking"] },

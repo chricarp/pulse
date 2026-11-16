@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
 import { useBindings } from "../../app/keys";
@@ -157,6 +157,8 @@ export function RunsView({ runId }: { runId: string | null }) {
   );
 }
 
+const runRowHeight = () => 30;
+
 export function RunList({
   items,
   selected,
@@ -176,13 +178,9 @@ export function RunList({
 }) {
   const parent = useRef<HTMLDivElement>(null);
   const now = useNow();
-  const virtualizer = useVirtualizer({
-    count: items.length + (more ? 1 : 0),
-    getScrollElement: () => parent.current,
-    estimateSize: () => 30,
-    overscan: 10,
-    getItemKey: (i) => items[i]?.id ?? "more",
-  });
+  const getItemKey = useCallback((i: number) => items[i]?.id ?? "more", [items]);
+  const getScrollElement = useCallback(() => parent.current, []);
+  const virtualizer = useVirtualizer({ count: items.length + (more ? 1 : 0), getScrollElement, estimateSize: runRowHeight, overscan: 10, getItemKey });
   const last = virtualizer.getVirtualItems().at(-1)?.index ?? 0;
   useEffect(() => {
     if (more && !loading && last >= items.length - 10) loadMore();

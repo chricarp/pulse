@@ -1,7 +1,8 @@
 // Formatting for machine data. Everything here is pure; `now` is a parameter.
 
-const BIDI_AND_INVISIBLE = /[​-‏‪-‮⁠-⁤⁦-⁩﻿]/g;
+const BIDI_AND_INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
 // C0 and C1 controls except tab and newline.
+// oxlint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
 
 function codepoint(ch: string): string {
@@ -11,7 +12,7 @@ function codepoint(ch: string): string {
 /**
  * Untrusted text made visible: bidi overrides, zero-width and control characters are shown as
  * `‹U+202E›` instead of silently reordering or hiding what is around them. A file called
- * `invoice‮fdp.exe` must not read as `invoiceexe.pdf`.
+ * `invoice\u202Efdp.exe` (with a right-to-left override) must not read as `invoiceexe.pdf`.
  */
 export function visible(text: string, opts: { singleLine?: boolean } = {}): string {
   let out = text.replace(BIDI_AND_INVISIBLE, codepoint).replace(CONTROL, codepoint);

@@ -134,7 +134,8 @@ export function CommandPalette({ open, onClose, onHelp }: { open: boolean; onClo
   for (const s of sources ?? []) {
     commands.push({ id: `source-${s.config.name}`, group: "Sources", label: s.config.name, detail: `${s.config.kind} · ${s.health.state}`, icon: "sources", run: () => navigate({ view: "sources", name: s.config.name, mode: "show" }) });
   }
-  if (mock) {
+  // Mock controls exist only in `--mode mock` builds; the constant drops this from production.
+  if (import.meta.env.MODE === "mock" && mock) {
     commands.push(
       { id: "mock-storm", group: "Mock daemon", label: "Event storm: 10,000 events in 3 seconds", icon: "alert", run: () => mock.storm(10_000, 3) },
       { id: "mock-big", group: "Mock daemon", label: "Run with 6 MB of output", icon: "runs", run: () => navigate({ view: "runs", runId: mock.bigRun() }) },

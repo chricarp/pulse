@@ -1937,13 +1937,24 @@ dialog::backdrop {
   left: 0;
   right: 0;
 }
+/* Output rows. Heights are computed in views/runs/output.ts (chunkLayout) from these numbers:
+   change one, change both. */
 .ch {
   padding: 1px 16px;
   font-family: var(--mono);
-  font-size: var(--text-sm);
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 18px;
   white-space: pre-wrap;
+  word-break: break-all;
   overflow-wrap: anywhere;
+}
+.ch-probe {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  font-family: var(--mono);
+  font-size: 12px;
+  pointer-events: none;
 }
 .ch-text {
   display: block;
@@ -1953,36 +1964,37 @@ dialog::backdrop {
   box-shadow: inset 2px 0 0 var(--error-line);
 }
 .ch-assistant {
-  font-family: var(--font);
-  font-size: var(--text);
-  padding-top: 6px;
-  padding-bottom: 6px;
+  padding: 5px 16px;
   color: var(--fg);
 }
 .ch-thinking {
-  font-family: var(--font);
+  padding: 3px 16px;
   font-style: italic;
   color: var(--fg-faint);
-  padding-top: 4px;
-  padding-bottom: 4px;
 }
 .ch-system {
   color: var(--fg-faint);
-  font-size: var(--text-xs);
-  padding-top: 4px;
-  padding-bottom: 4px;
+}
+.ch-box {
+  border: 1px solid var(--line);
 }
 .ch-tool {
+  padding: 6px 16px 0;
+  white-space: nowrap;
+}
+.ch-tool .ch-box {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 6px 16px 0;
-  padding: 4px 8px;
-  border: 1px solid var(--line);
+  height: 26px;
+  padding: 3px 8px;
   border-radius: 6px 6px 0 0;
   background: var(--bg-elev);
-  white-space: nowrap;
   color: var(--fg-muted);
+  overflow: hidden;
+}
+.ch-tool .ch-box > svg {
+  flex: none;
 }
 .ch-tool-name {
   font-weight: 600;
@@ -1994,33 +2006,34 @@ dialog::backdrop {
   min-width: 0;
 }
 .ch-tool_result {
-  margin: 0 16px 6px;
-  padding: 4px 8px;
-  border: 1px solid var(--line);
+  padding: 0 16px 6px;
+}
+.ch-tool_result .ch-box {
   border-top: 0;
+  padding: 3px 8px;
   border-radius: 0 0 6px 6px;
   background: var(--bg-sunken);
   color: var(--fg-muted);
 }
-.ch-tool_result.is-error {
+.ch-tool_result.is-error .ch-box {
   color: var(--error);
   background: var(--error-bg);
 }
-.ch-result {
-  margin: 8px 16px;
-  padding: 8px 10px;
+.ch-result,
+.ch-error {
+  padding: 4px 16px;
+}
+.ch-result .ch-box,
+.ch-error .ch-box {
+  border: 0;
   border-left: 3px solid var(--ok);
+  padding: 5px 10px;
   background: var(--ok-bg);
   border-radius: 0 6px 6px 0;
-  font-family: var(--font);
-  font-size: var(--text);
 }
-.ch-error {
-  margin: 6px 16px;
-  padding: 6px 10px;
-  border-left: 3px solid var(--error);
+.ch-error .ch-box {
+  border-left-color: var(--error);
   background: var(--error-bg);
-  border-radius: 0 6px 6px 0;
   color: var(--error);
 }
 .ch-label {
@@ -2028,26 +2041,35 @@ dialog::backdrop {
   font-family: var(--font);
   font-size: var(--text-xs);
   font-weight: 600;
-  text-transform: none;
-  margin-bottom: 2px;
+  line-height: 18px;
+  height: 18px;
 }
 .ch-marker {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 10px 16px;
+  padding: 9px 16px;
+  height: 36px;
   color: var(--attention);
   font-family: var(--font);
-  font-size: var(--text-sm);
-  white-space: normal;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ch-marker span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ch-marker::before,
 .ch-marker::after {
   content: "";
   flex: 1;
+  min-width: 16px;
   border-top: 1px dashed var(--attention-line);
 }
 .ch-more {
+  display: block;
+  height: 18px;
+  line-height: 18px;
   font-family: var(--font);
   font-size: var(--text-sm);
 }

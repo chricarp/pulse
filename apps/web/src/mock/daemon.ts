@@ -240,6 +240,8 @@ export class MockDaemon {
 
   /** Drops every connection, as a daemon restart or a network blip would. */
   dropConnections(): void {
+    // A copy: `disconnect` removes from the set while this loop runs.
+    // oxlint-disable-next-line unicorn/no-useless-spread
     for (const conn of [...this.conns]) {
       const close = this.closers.get(conn.id);
       this.disconnect(conn);
@@ -529,7 +531,8 @@ export class MockDaemon {
         return "";
       }
       let s = typeof v === "string" ? v : JSON.stringify(v);
-      s = s.replace(/[\u0000-\u001f\u007f​-‏‪-‮⁦-⁩]/g, " ").replace(/\s+/g, " ");
+      // oxlint-disable-next-line no-control-regex -- stripping control characters, like pulse-core
+      s = s.replace(/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ");
       if (s.length > 200) {
         s = `${s.slice(0, 199)}…`;
         truncated = true;

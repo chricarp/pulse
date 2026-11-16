@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { useApp } from "../../app/context";
 import { OLDER_MAX, type FeedState } from "../../app/feed";
@@ -12,6 +12,7 @@ import { Button, Empty, cx } from "../../ui/primitives";
 import { EventRow } from "./EventRow";
 
 export const ROW_HEIGHT = 30;
+const rowHeight = () => ROW_HEIGHT;
 
 type Item = FeedRow | { kind: "footer" };
 
@@ -35,16 +36,19 @@ export function FeedList({
     const e = older[i - rows.length];
     return e ? { kind: "event", event: e } : { kind: "footer" };
   };
-  const virtualizer = useVirtualizer({
-    count: total,
-    getScrollElement: () => parent.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 10,
-    getItemKey: (i) => {
-      const it = itemAt(i);
-      return it.kind === "event" ? it.event.id : it.kind === "gap" ? it.key : "footer";
+  // Stable callbacks: a new one makes the virtualizer recompute every row's position.
+  const getItemKey = useCallback(
+    (i: number) => {
+      if (i < rows.length) {
+        const r = rows[i];
+        return r?.kind === "event" ? r.event.id : (r?.key ?? i);
+      }
+      return older[i - rows.length]?.id ?? "footer";
     },
-  });
+    [rows, older],
+  );
+  const getScrollElement = useCallback(() => parent.current, []);
+  const virtualizer = useVirtualizer({ count: total, getScrollElement, estimateSize: rowHeight, overscan: 10, getItemKey });
   const items = virtualizer.getVirtualItems();
   const lastIndex = items.at(-1)?.index ?? 0;
 

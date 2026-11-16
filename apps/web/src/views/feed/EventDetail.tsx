@@ -9,7 +9,6 @@ import { deliveryLabel, deliveryTone, outcomeSentence, RUN_STATUS_LABEL, runTone
 import { EMPTY_FILTER, type FeedFilter } from "../../lib/filter";
 import { count, dayAndTime, hasHiddenCharacters, shortId, sourceName, visible } from "../../lib/format";
 import { typeGlobMatches } from "../../lib/syntax";
-import { Icon } from "../../ui/icons";
 import { Ago, Button, CopyButton, Dl, IconButton, Modal, Notice, Pill, Section, Toggle, Trunc, cx } from "../../ui/primitives";
 import { typeFamily } from "./EventRow";
 
