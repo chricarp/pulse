@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/pulse-dev/pulse"
+rust-version = "1.85"
+
+[workspace.dependencies]
+pulse-contracts = { path = "crates/pulse-contracts" }
+pulse-core = { path = "crates/pulse-core" }
+pulse-store = { path = "crates/pulse-store" }
+pulse-sources = { path = "crates/pulse-sources" }
+pulse-agents = { path = "crates/pulse-agents" }
+pulse-mcp = { path = "crates/pulse-mcp" }
+
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+toml = "1.2.1"
+ts-rs = { version = "12.0.1", features = ["serde-json-impl", "no-serde-warnings"] }
+ulid = "3.0.0"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+tokio = { version = "1.54.1", default-features = false }
+tokio-util = { version = "0.7.20", default-features = false }
+tempfile = "3.27.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+print_stderr = "warn"

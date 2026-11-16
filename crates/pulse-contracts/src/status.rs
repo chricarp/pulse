@@ -1,0 +1,113 @@
+//! Health and status: sources, projects, the daemon as a whole.
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+use crate::time::Timestamp;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceState {
+    Starting,
+    Healthy,
+    /// Working, with a problem worth showing (a watch limit hit, a calendar fetch failing and
+    /// retrying).
+    Degraded,
+    /// Stopped by an error; will not recover without a config change or restart.
+    Failed,
+    Stopped,
+    Disabled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(optional_fields = nullable)]
+pub struct SourceHealth {
+    pub state: SourceState,
+    /// Human-readable detail for the current state.
+    pub message: Option<String>,
+    /// When `state` last changed.
+    pub since: Timestamp,
+    pub last_event_at: Option<Timestamp>,
+    pub last_error: Option<SourceErrorInfo>,
+    #[ts(type = "number")]
+    pub events_emitted: u64,
+}
+
+impl SourceHealth {
+    pub fn starting(at: Timestamp) -> Self {
+        SourceHealth {
+            state: SourceState::Starting,
+            message: None,
+            since: at,
+            last_event_at: None,
+            last_error: None,
+            events_emitted: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SourceErrorInfo {
+    pub at: Timestamp,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustState {
+    /// Never trusted.
+    Untrusted,
+    /// Trusted, and the file still has the trusted content hash. Active.
+    Trusted,
+    /// Was trusted, but the file changed since. Inactive until trusted again.
+    Changed,
+    /// Was trusted, but the file is gone.
+    Missing,
+}
+
+/// A directory with a `pulse.toml` that Pulse knows about.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(optional_fields = nullable)]
+pub struct Project {
+    /// The prefix for its definitions (`<name>/<rule>`).
+    pub name: String,
+    pub dir: String,
+    pub file: String,
+    pub state: TrustState,
+    /// SHA-256 of the trusted content, hex.
+    pub trusted_hash: Option<String>,
+    pub current_hash: Option<String>,
+    pub trusted_at: Option<Timestamp>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SystemStatus {
+    pub version: String,
+    pub started_at: Timestamp,
+    /// Global pause: rules are evaluated and recorded but nothing fires.
+    pub paused: bool,
+    pub pulse_home: String,
+    pub port: u16,
+    pub sources: SourceCounts,
+    pub runs: RunCounts,
+    pub rules: u32,
+    pub agents: u32,
+    /// Problems in config files; see `system.config_errors`. Definitions from a file with errors
+    /// are not loaded.
+    pub config_errors: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SourceCounts {
+    pub healthy: u32,
+    pub degraded: u32,
+    pub failed: u32,
+    pub other: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RunCounts {
+    pub running: u32,
+    pub queued: u32,
+    pub pending_approval: u32,
+}
