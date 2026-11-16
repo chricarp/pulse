@@ -85,7 +85,7 @@ async fn a_dropped_pdf_runs_the_study_agent_and_output_streams_while_it_runs() {
     let full = watch.get_run(run.id).await;
     let inv = full.invocation.unwrap();
     assert_eq!(inv.cwd, env.user_path("University").display().to_string());
-    for flag in ["--permission-mode=dontAsk", "--allowedTools=Read", "--allowedTools=Write"] {
+    for flag in ["--permission-mode=dontAsk", "--allowedTools=Read", "--allowedTools=Edit(./**)"] {
         assert!(inv.args.iter().any(|a| a == flag), "{flag} in {:?}", inv.args);
     }
     let prompt = std::fs::read_to_string(&prompt_file).unwrap();
