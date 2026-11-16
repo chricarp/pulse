@@ -84,6 +84,18 @@ fn lint_rule(
             let known = builtin
                 .iter()
                 .any(|t| entry(t).is_some_and(|e| (e.example)().get(first).is_some()));
+            if known && is_path_field(&builtin, key) {
+                if let Some(glob) = relative_glob(&rule.where_[key]) {
+                    out.push(warning(
+                        origin,
+                        &rule.name,
+                        &format!("where.{key}"),
+                        format!(
+                            "{glob:?} is not an absolute path glob, and event paths are absolute, so this never matches; write it from / or ~/ (relative paths in `where` are not resolved, even in a project file)"
+                        ),
+                    ));
+                }
+            }
             if !known {
                 out.push(warning(
                     origin,
@@ -122,6 +134,34 @@ fn lint_rule(
                 allow.join(", ")
             ),
         ));
+    }
+}
+
+/// Whether `key` is a path-carrying field of every one of `types`.
+fn is_path_field(types: &[&str], key: &str) -> bool {
+    use pulse_contracts::catalog::PathField;
+    let field = key.strip_prefix("data.").unwrap_or(key);
+    types.iter().all(|t| {
+        entry(t).is_some_and(|e| {
+            e.paths.iter().any(|p| match p {
+                PathField::Subject => key == "subject",
+                PathField::Data(k) | PathField::DataArray(k) => *k == field,
+            })
+        })
+    })
+}
+
+/// A string condition that can never match an absolute path: not starting with `/`, `~` or a
+/// wildcard.
+fn relative_glob(c: &WhereCondition) -> Option<&str> {
+    let relative = |s: &str| !s.starts_with(['/', '~', '*', '?', '{', '[']);
+    match c {
+        WhereCondition::Match(WhereScalar::String(s)) if relative(s) => Some(s),
+        WhereCondition::AnyOf(list) => list.iter().find_map(|v| match v {
+            WhereScalar::String(s) if relative(s) => Some(s.as_str()),
+            _ => None,
+        }),
+        _ => None,
     }
 }
 
@@ -233,6 +273,11 @@ mod tests {
             ("ext.ci.failed", "", "\"ext.ci.*\"", &[]),
             ("ext.ci.failed", "", "\"ext.deploy.*\"", &["run.agent"]),
             ("ext.ci.*", "", "\"fs.*\"", &[]),
+            // A relative glob on a path field never matches an absolute path; on other fields
+            // (a branch name) it is an ordinary text glob.
+            ("fs.file.created", "path = \"notes/**\"", "\"fs.*\"", &["where.path"]),
+            ("fs.file.created", "path = \"**/*.pdf\"", "\"fs.*\"", &[]),
+            ("git.branch.switched", "to = \"feature/*\"", "\"git.*\"", &[]),
             // A glob over several types is fine if any of them is covered.
             ("fs.*", "", "\"fs.file.deleted\"", &[]),
         ];
