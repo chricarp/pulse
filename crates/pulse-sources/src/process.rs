@@ -488,6 +488,14 @@ mod tests {
         }
     }
 
+    /// A fifo, by the `mkfifo` command: rustix has no `mknodat` or `mkfifoat` on macOS.
+    fn make_fifo(dir: &Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let ok = std::process::Command::new("mkfifo").arg(&path).status().unwrap().success();
+        assert!(ok, "mkfifo {}", path.display());
+        path
+    }
+
     fn sh(script: &str) -> Vec<String> {
         vec!["sh".into(), "-c".into(), script.into()]
     }
@@ -636,15 +644,7 @@ mod tests {
         // The background process holds the output until the test opens the FIFO for writing,
         // which it only does once the wrapper has returned: returning at all is the proof.
         let dir = tempfile::tempdir().unwrap();
-        let fifo = dir.path().join("release");
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            &fifo,
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-            0,
-        )
-        .unwrap();
+        let fifo = make_fifo(dir.path(), "release");
         let script = format!("read x < '{}' & echo started", fifo.display());
         let (d, cap) = go(&script, 4096, PIPES).await;
         assert_eq!(d.exit_code, Some(0));

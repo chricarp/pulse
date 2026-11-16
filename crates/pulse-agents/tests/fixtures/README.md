@@ -1,7 +1,8 @@
 # Agent fixtures
 
 Tests never run a real agent (it costs money). They run these instead. Everything here is POSIX
-`sh` plus `sleep`, `awk`, `head -c` and `tr`, so it works on Linux and macOS.
+`sh` plus `sleep`, `awk`, `head -c`, `tr`, `mkfifo` and `perl` (for `setsid(2)`), so it works on
+Linux and macOS.
 
 From another crate, the directory is `concat!(env!("CARGO_MANIFEST_DIR"), "/../pulse-agents/tests/fixtures")`.
 
@@ -19,7 +20,8 @@ A stand-in for any `command` agent. Use it as `command[0]`.
 | `hang` | prints `ready`, then sleeps until killed | timeout, cancel, shutdown |
 | `ignore-term` | prints `ready`; on each SIGTERM prints `term-ignored` and keeps running | the SIGKILL after the grace period |
 | `grandchild [--ignore-term] [--detached] [--hang]` | starts a sleeping grandchild (ignoring SIGTERM; with its output on `/dev/null`), prints `grandchild <pid>`, then exits 0 or (`--hang`) sleeps until killed | orphans: the group must be gone afterwards |
-| `escape` | starts a grandchild that leaves the group with `setsid` (Linux only) and keeps stdout open, prints `escaped <pid>`, then `partial` without newline, exits 0 | the documented limit: escapees survive, the run still ends |
+| `escape` | starts a grandchild that leaves the group (a new session) and keeps stdout open, prints `escaped <pid>`, then `partial` without newline, exits 0 | the documented limit: escapees survive, the run still ends |
+| `new-session CMD [ARG…]` | runs `CMD` in a new session, out of the run's process group (`setsid(2)` through `perl`: macOS has no `setsid` command) | a process that outlives its run's group |
 | `write-file PATH [TEXT]` | writes `TEXT` to `PATH`, prints `wrote PATH` | loop protection (a run that causes an fs event) |
 | `flood LINES [DONE_FILE]` | prints `LINES` numbered 100-byte lines, then creates `DONE_FILE` | backpressure (`DONE_FILE` cannot exist while nobody reads) |
 | `long-line BYTES` | one line of `BYTES` × `x`, then `after` | the line-length cap |

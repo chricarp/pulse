@@ -43,6 +43,14 @@ learnt the hard way:
   blocking `open` runs on a plain thread, not tokio's blocking pool: a pool thread stuck in
   `open` (the agent died) keeps the runtime, and so the test binary, from ever exiting.
 
+**Linux and macOS.** Tests and fixtures use only what both ship: POSIX `sh` and utilities,
+`mkfifo`, `perl` for `setsid(2)` (`fake-agent new-session`; macOS has no `setsid` command),
+signal 0 instead of `/proc` to see whether a process is gone. `git` and `python3` come with
+macOS's Command Line Tools. What only Linux has (a subreaper, to wait for orphaned grandchildren
+instead of racing init) is behind `#[cfg(target_os = "linux")]` with the reason beside it.
+Nothing has run on macOS yet; `cargo clippy --workspace --all-targets --target
+aarch64-apple-darwin` at least proves that every test compiles there.
+
 Durations that have to pass are configured short (`quiet = "100ms"`, `debounce = "200ms"`). Where
 time itself is the subject (the schedule), the test waits for the event that time produces. A
 failing test keeps its temp directory and prints its path (config, `logs/pulse.log`, the

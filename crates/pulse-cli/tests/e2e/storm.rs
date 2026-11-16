@@ -77,6 +77,8 @@ fn probe(
     })
 }
 
+/// Python's `zipfile`, because Linux distributions do not all ship `zip`; on macOS, `python3`
+/// comes with the Command Line Tools, as `git` does.
 fn python(script: &str, args: &[&Path]) {
     let ok = std::process::Command::new("python3")
         .arg("-I")

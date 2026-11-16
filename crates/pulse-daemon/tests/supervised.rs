@@ -3,8 +3,9 @@
 //! supervisor itself handles signals, pipes and line limits is tested in `pulse-agents`.
 //!
 //! A separate test binary, because it makes the test process the subreaper of orphaned
-//! descendants (Linux) to wait for killed grandchildren deterministically; that must not leak
-//! into other tests. Real time only (see `support`).
+//! descendants (Linux; the test that needs it does not run elsewhere) to wait for killed
+//! grandchildren deterministically; that must not leak into other tests. Real time only (see
+//! `support`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -17,7 +18,6 @@ use pulse_agents::{AgentAdapter, Stream};
 use pulse_contracts::rpc::*;
 use pulse_contracts::run::{OutputStats, RunOutputChunk};
 use pulse_contracts::{OutputKind, RunId, RunStatus, Timestamp};
-use pulse_store::Store;
 use serde_json::json;
 use support::*;
 
@@ -194,8 +194,10 @@ async fn a_run_past_its_timeout_is_terminated_and_recorded() {
     t.stop().await;
 }
 
-/// Makes this test process the reaper of orphaned descendants (Linux), so a killed grandchild
-/// can be waited for instead of racing init.
+/// Makes this test process the reaper of orphaned descendants, so a killed grandchild can be
+/// waited for instead of racing init. Linux only (`PR_SET_CHILD_SUBREAPER`; macOS has no
+/// equivalent), and so is the test that needs it.
+#[cfg(target_os = "linux")]
 fn reap_orphans_here() {
     rustix::process::set_child_subreaper(Some(rustix::process::getpid())).unwrap();
 }
@@ -203,6 +205,7 @@ fn reap_orphans_here() {
 /// Waits until every process in group `pgid` has exited (they are our children, through the
 /// subreaper), then checks the group and `pids` are gone. On a failure it kills the group it
 /// started rather than leaving it behind.
+#[cfg(target_os = "linux")]
 fn assert_group_gone(pgid: u32, pids: &[u32]) {
     use rustix::io::Errno;
     use rustix::process::{
@@ -234,7 +237,9 @@ fn assert_group_gone(pgid: u32, pids: &[u32]) {
 
 /// Graceful shutdown with a run in flight whose grandchild ignores SIGTERM: the group is
 /// killed after the grace period, nothing is left (checked by the pids the fixture and the
-/// run report), and the run is recorded `interrupted`.
+/// run report), and the run is recorded `interrupted`. Linux only: proving the grandchild is
+/// gone, rather than racing init for it, needs the subreaper (see `reap_orphans_here`).
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_with_a_run_in_flight_leaves_no_process_behind() {
     reap_orphans_here();
@@ -285,7 +290,7 @@ run = {{ agent = "tree" }}
 
     t.stop().await;
     assert_group_gone(leader, &[leader, grandchild]);
-    let store = Store::open(&t.home.join("pulse.db")).unwrap();
+    let store = pulse_store::Store::open(&t.home.join("pulse.db")).unwrap();
     let run = store.query().run(running.id).unwrap().unwrap();
     assert_eq!(run.status, RunStatus::Interrupted);
     assert_eq!(run.error.as_deref(), Some("the daemon shut down"));

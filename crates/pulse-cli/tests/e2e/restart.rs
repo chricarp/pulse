@@ -209,8 +209,10 @@ async fn a_graceful_stop_interrupts_running_runs_and_keeps_queued_ones() {
     let (code, out, _) = env.run(&["stop"]).await;
     assert_eq!((code, out.trim()), (0, "Pulse stopped."));
     // The agent's process is gone once `pulse stop` returns (it was killed, and reaped by the
-    // daemon before it exited).
-    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists(), "agent {pid} survived");
+    // daemon before it exited). Asked with signal 0, which works where there is no `/proc`.
+    let gone =
+        rustix::process::test_kill_process(rustix::process::Pid::from_raw(pid as i32).unwrap());
+    assert_eq!(gone, Err(rustix::io::Errno::SRCH), "agent {pid} survived");
     assert!(!env.home.join("daemon.json").exists());
     drop(daemon);
 
