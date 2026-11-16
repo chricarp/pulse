@@ -327,6 +327,18 @@ run = { agent = "printer" }
     let texts: Vec<String> =
         out.lines().map(|l| json(l)["text"].as_str().unwrap().to_owned()).collect();
     assert!(texts.iter().any(|t| t == "out \u{202e}exe.txt\u{7f}"), "{texts:?}");
+
+    // Ids as lists show them: the last characters, in any case, down to three.
+    let id = run.id.to_string();
+    for short in [&id[id.len() - 8..], &id[id.len() - 3..].to_ascii_lowercase()] {
+        let (code, out, e) = env.run(&["--json", "runs", "show", short]).await;
+        assert_eq!(code, 0, "{short}: {e}{out}");
+        assert_eq!(json(&out)["id"], id.as_str());
+    }
+    let event = run.event.to_string();
+    let (code, out, e) = env.run(&["--json", "events", "show", &event[event.len() - 8..]]).await;
+    assert_eq!(code, 0, "{e}{out}");
+    assert_eq!(json(&out)["event"]["id"], event.as_str());
     daemon.stop().await;
 }
 
@@ -423,6 +435,9 @@ async fn every_command_answers_json_or_a_json_error() {
         (&["runs", "cancel", NO_ID], "", Err("not_running"), Err("not_found")),
         (&["runs", "rerun", NO_ID], "", Err("not_running"), Err("not_found")),
         (&["runs", "show", "not-an-id"], "", Err("not_running"), Err("invalid_params")),
+        // A short id is the end of one (what lists show); none ends in this.
+        (&["runs", "show", "ZZZZZZZZ"], "", Err("not_running"), Err("not_found")),
+        (&["events", "show", "zzzz"], "", Err("not_running"), Err("not_found")),
         (&["agents"], "", Err("not_running"), Ok),
         (&["agents", "list"], "", Err("not_running"), Ok),
         (&["agents", "show", "nope"], "", Err("not_running"), Err("not_found")),

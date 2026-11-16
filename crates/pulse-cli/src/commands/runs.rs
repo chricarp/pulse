@@ -6,7 +6,7 @@ use pulse_contracts::rpc::*;
 use pulse_contracts::run::RunOutputChunk;
 use pulse_contracts::{RunId, RunStatus};
 
-use super::{Res, parse_id};
+use super::{Res, run_id};
 use crate::cli::RunsCmd;
 use crate::output::{Out, note};
 use crate::{Ctx, Failure, format};
@@ -51,7 +51,9 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
             return Ok(ExitCode::SUCCESS);
         }
         RunsCmd::Show { id } => {
-            let run = client.call::<method::RunsGet>(RunIdParams { id: parse_id(&id)? }).await?;
+            let run = client
+                .call::<method::RunsGet>(RunIdParams { id: run_id(&client, &id).await? })
+                .await?;
             let Some(out) = ctx.answer(&run) else { return Ok(ExitCode::SUCCESS) };
             out.line(&format::run_line(&run.summary()));
             out.line(&format!("event    {}", run.event));
@@ -88,7 +90,7 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
             return Ok(ExitCode::SUCCESS);
         }
         RunsCmd::Logs { id, follow } => {
-            let id: RunId = parse_id(&id)?;
+            let id: RunId = run_id(&client, &id).await?;
             if follow {
                 let mut notes = client
                     .notifications()
@@ -137,16 +139,27 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
             return Ok(ExitCode::SUCCESS);
         }
         RunsCmd::Approve { id } => {
-            client.call::<method::RunsApprove>(RunIdParams { id: parse_id(&id)? }).await?
+            client
+                .call::<method::RunsApprove>(RunIdParams { id: run_id(&client, &id).await? })
+                .await?
         }
         RunsCmd::Reject { id, reason } => {
-            client.call::<method::RunsReject>(RejectParams { id: parse_id(&id)?, reason }).await?
+            client
+                .call::<method::RunsReject>(RejectParams {
+                    id: run_id(&client, &id).await?,
+                    reason,
+                })
+                .await?
         }
         RunsCmd::Cancel { id } => {
-            client.call::<method::RunsCancel>(RunIdParams { id: parse_id(&id)? }).await?
+            client
+                .call::<method::RunsCancel>(RunIdParams { id: run_id(&client, &id).await? })
+                .await?
         }
         RunsCmd::Rerun { id } => {
-            client.call::<method::RunsRerun>(RunIdParams { id: parse_id(&id)? }).await?
+            client
+                .call::<method::RunsRerun>(RunIdParams { id: run_id(&client, &id).await? })
+                .await?
         }
     };
     if let Some(out) = ctx.answer(&summary) {

@@ -142,7 +142,14 @@ limit). Records nothing and runs nothing.
 | `cancel <ID>` | Stop a queued or running run (its whole process group). |
 | `rerun <ID>` | A new run with the same event and prompt, now, with the agent as it is configured now. Skips approval, cooldown and rate limit. Refused if the agent no longer exists. |
 
-Run and event ids are the full 26-character ids; prefixes are not accepted.
+Wherever a command takes a run or event id (`runs …`, `events show`, `replay`, `test-rule
+--event`), the last characters of the id are enough, in either case, from three on: the eight the
+UI shows (`BKV2DFS1` for `01KAC4ZJ6E5W8Q0N2HBKV2DFS1`), or fewer (`DFS1`). Ids made close together
+share their first characters, so the end is the part that tells them apart. A short id is looked up
+among the newest 10,000 runs (or events), the "recent" ones; an older one needs the full id. If
+more than one id ends in what you typed, nothing is done and the candidates are listed (under
+`--json`, an `invalid_params` error with `data.candidates`); if none does, it is `not_found`. A
+full id is used as it is.
 
 ## Agents, sources, projects
 

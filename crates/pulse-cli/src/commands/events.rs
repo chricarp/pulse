@@ -9,7 +9,7 @@ use pulse_contracts::rpc::*;
 use pulse_contracts::{EventId, RunId};
 use pulse_daemon::client::Client;
 
-use super::{Res, parse_id, time_arg};
+use super::{Res, event_id, parse_id, time_arg};
 use crate::cli::{EventsArgs, EventsCmd, FilterArgs, IngestArgs, ReplayArgs, RunArgs, TailArgs};
 use crate::output::{Out, note};
 use crate::{Ctx, Failure, format};
@@ -90,7 +90,9 @@ pub async fn tail(ctx: &Ctx, args: TailArgs) -> Res {
 pub async fn events(ctx: &Ctx, args: EventsArgs) -> Res {
     let client = ctx.client().await?;
     if let Some(EventsCmd::Show { id }) = args.show {
-        let detail = client.call::<method::EventsGet>(EventIdParams { id: parse_id(&id)? }).await?;
+        let detail = client
+            .call::<method::EventsGet>(EventIdParams { id: event_id(&client, &id).await? })
+            .await?;
         let Some(out) = ctx.answer(&detail) else { return Ok(ExitCode::SUCCESS) };
         out.line(&format::event_line(&detail.event));
         out.line(&serde_json::to_string_pretty(&detail.event.data).unwrap_or_default());
@@ -128,7 +130,10 @@ pub async fn replay(ctx: &Ctx, args: ReplayArgs) -> Res {
     let client = ctx.client().await?;
     let rules = (!args.rule.is_empty()).then_some(args.rule);
     let res = client
-        .call::<method::EventsReplay>(ReplayParams { id: parse_id(&args.event)?, rules })
+        .call::<method::EventsReplay>(ReplayParams {
+            id: event_id(&client, &args.event).await?,
+            rules,
+        })
         .await?;
     let Some(out) = ctx.answer(&res) else { return Ok(ExitCode::SUCCESS) };
     out.line(&format!("Replayed as {}", res.event.id));

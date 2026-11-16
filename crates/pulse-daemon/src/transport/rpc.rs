@@ -302,6 +302,9 @@ impl RpcHandler for RpcServer {
     async fn events_replay(&self, _: &Self::Context, p: ReplayParams) -> R<ReplayResult> {
         map(self.services.events_replay(p).await)
     }
+    async fn events_resolve_id(&self, _: &Self::Context, p: ResolveIdParams) -> R<EventIdParams> {
+        map(self.services.events_resolve_id(&p.id).await.map(|id| EventIdParams { id }))
+    }
     async fn events_ingest(&self, _: &Self::Context, p: IngestParams) -> R<IngestResult> {
         map(self.services.events_ingest(p).await)
     }
@@ -419,6 +422,9 @@ impl RpcHandler for RpcServer {
     }
     async fn runs_unsubscribe(&self, cx: &Self::Context, p: Unsubscribe) -> R<Empty> {
         cx.unsubscribe(p.subscription)
+    }
+    async fn runs_resolve_id(&self, _: &Self::Context, p: ResolveIdParams) -> R<RunIdParams> {
+        map(self.services.runs_resolve_id(&p.id).await.map(|id| RunIdParams { id }))
     }
     async fn runs_cancel(&self, _: &Self::Context, p: RunIdParams) -> R<RunSummary> {
         map(self.services.runs_cancel(p.id).await)

@@ -6,7 +6,7 @@ use pulse_contracts::Outcome;
 use pulse_contracts::config::{ConfigOrigin, RuleConfig};
 use pulse_contracts::rpc::*;
 
-use super::{Res, parse_id, time_arg};
+use super::{Res, time_arg};
 use crate::cli::{OutcomeArg, RulesCmd, TestRuleArgs};
 use crate::output::Text;
 use crate::{Ctx, Failure, format};
@@ -157,7 +157,7 @@ pub async fn test_rule(ctx: &Ctx, args: TestRuleArgs) -> Res {
     let res = client
         .call::<method::RulesTest>(RuleTestParams {
             rule,
-            event: parse_id(&args.event)?,
+            event: super::event_id(&client, &args.event).await?,
             ignore_runtime_state: args.fresh,
         })
         .await?;

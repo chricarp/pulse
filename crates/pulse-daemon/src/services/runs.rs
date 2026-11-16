@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use pulse_contracts::rpc::{RunFilter, RunOutputPage, RunPage, RunsChanged, RunsOutput};
+use pulse_contracts::rpc::{
+    RunFilter, RunOutputPage, RunPage, RunsChanged, RunsOutput, SHORT_ID_WINDOW,
+};
 use pulse_contracts::run::RunSnapshot;
 use pulse_contracts::{Run, RunId, RunStatus, RunSummary, SubscriptionId};
 use pulse_store::{Commit, Effect, NewRun, RunTransition};
@@ -27,6 +29,21 @@ impl Services {
         limit: Option<u32>,
     ) -> ServiceResult<RunPage> {
         Ok(self.shared.store.read(move |q| q.query().list_runs(&filter, cursor, limit)).await?)
+    }
+
+    /// The full id of the run whose id ends in `id` (see `ResolveIdParams`).
+    pub async fn runs_resolve_id(&self, id: &str) -> ServiceResult<RunId> {
+        if let Ok(full) = id.parse() {
+            return Ok(full);
+        }
+        let suffix = super::id_suffix(id, "run")?;
+        let (s, max) = (suffix.clone(), super::SHORT_ID_CANDIDATES as u32 + 1);
+        let found = self
+            .shared
+            .store
+            .read(move |q| q.query().run_ids_ending_in(&s, SHORT_ID_WINDOW, max))
+            .await?;
+        super::one_id(found, &suffix, "run")
     }
 
     pub async fn runs_get(&self, id: RunId) -> ServiceResult<Run> {

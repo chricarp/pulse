@@ -5,7 +5,7 @@ use pulse_contracts::config::validate_name;
 use pulse_contracts::rpc::{
     EventDetail, EventFilter, EventOutcome, EventPageWithOutcomes, EventQuery,
     EventsBatchWithOutcomes, IngestParams, IngestResult, ReplayParams, ReplayResult, ReportParams,
-    ReportResult, ReportedEvent,
+    ReportResult, ReportedEvent, SHORT_ID_WINDOW,
 };
 use pulse_contracts::{EventId, EventType, NewEvent, SourceKind, SourceRef, SubscriptionId};
 use pulse_core::filter::CompiledFilter;
@@ -42,6 +42,21 @@ impl Services {
                 Ok(EventPageWithOutcomes { page, outcomes })
             })
             .await?)
+    }
+
+    /// The full id of the event whose id ends in `id` (see `ResolveIdParams`).
+    pub async fn events_resolve_id(&self, id: &str) -> ServiceResult<EventId> {
+        if let Ok(full) = id.parse() {
+            return Ok(full);
+        }
+        let suffix = super::id_suffix(id, "event")?;
+        let (s, max) = (suffix.clone(), super::SHORT_ID_CANDIDATES as u32 + 1);
+        let found = self
+            .shared
+            .store
+            .read(move |q| q.query().event_ids_ending_in(&s, SHORT_ID_WINDOW, max))
+            .await?;
+        super::one_id(found, &suffix, "event")
     }
 
     pub async fn events_get(&self, id: EventId) -> ServiceResult<EventDetail> {

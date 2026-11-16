@@ -10,6 +10,9 @@ pub enum ServiceError {
     NotFound { what: &'static str, id: String },
     #[error("{0}")]
     Invalid(String),
+    /// A short id that more than one id ends in.
+    #[error("{message}")]
+    Ambiguous { message: String, candidates: Vec<String> },
     #[error("{0}")]
     Conflict(String),
     /// What the request was based on is no longer so (see `ErrorCode::Stale`).
@@ -65,6 +68,10 @@ impl From<ServiceError> for RpcError {
         match e {
             ServiceError::NotFound { .. } => RpcError::new(ErrorCode::NotFound, e.to_string()),
             ServiceError::Invalid(m) => RpcError::new(ErrorCode::InvalidParams, m),
+            ServiceError::Ambiguous { message, candidates } => {
+                RpcError::new(ErrorCode::InvalidParams, message)
+                    .with_data(serde_json::json!({ "candidates": candidates }))
+            }
             ServiceError::Conflict(m) => RpcError::new(ErrorCode::Conflict, m),
             ServiceError::Stale { message, current } => {
                 RpcError::stale(message, &pulse_contracts::rpc::Stale { current })

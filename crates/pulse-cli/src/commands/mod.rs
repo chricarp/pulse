@@ -11,7 +11,9 @@ use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use pulse_contracts::{Duration, Timestamp};
+use pulse_contracts::rpc::{ResolveIdParams, method};
+use pulse_contracts::{Duration, EventId, RunId, Timestamp};
+use pulse_daemon::client::Client;
 
 use crate::cli::Command;
 use crate::{Ctx, Failure};
@@ -107,6 +109,25 @@ pub fn time_arg(s: &str, ago: bool) -> Result<Timestamp, Failure> {
         ))
     })?;
     Ok(if ago { now().saturating_sub(d) } else { now().saturating_add(d) })
+}
+
+/// An event id as typed: a full id as is, a shorter one (its last characters, as lists show
+/// them) resolved by the daemon.
+pub async fn event_id(client: &Client, text: &str) -> Result<EventId, Failure> {
+    if let Ok(id) = text.parse() {
+        return Ok(id);
+    }
+    let params = ResolveIdParams { id: text.to_owned() };
+    Ok(client.call::<method::EventsResolveId>(params).await?.id)
+}
+
+/// A run id as typed; see [`event_id`].
+pub async fn run_id(client: &Client, text: &str) -> Result<RunId, Failure> {
+    if let Ok(id) = text.parse() {
+        return Ok(id);
+    }
+    let params = ResolveIdParams { id: text.to_owned() };
+    Ok(client.call::<method::RunsResolveId>(params).await?.id)
 }
 
 pub fn parse_id<T: FromStr>(s: &str) -> Result<T, Failure>

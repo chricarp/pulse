@@ -548,6 +548,8 @@ export type ReportedEvent = { "type": "process.exited" } & ProcessExitedData;
 
 export type RequestId = number | string;
 
+export type ResolveIdParams = { id: string, };
+
 export type RpcError = { code: number, message: string, data?: unknown, };
 
 export type RuleConfig = { name: string, description?: string, 
@@ -854,6 +856,7 @@ export type RpcMethods = {
   "events.subscribe": { params: EventsSubscribeParams; result: Subscribed };
   "events.unsubscribe": { params: Unsubscribe; result: Empty };
   "events.replay": { params: ReplayParams; result: ReplayResult };
+  "events.resolve_id": { params: ResolveIdParams; result: EventIdParams };
   "events.ingest": { params: IngestParams; result: IngestResult };
   "events.report": { params: ReportParams; result: ReportResult };
   "rules.list": { params: RulesListParams; result: RuleList };
@@ -878,6 +881,7 @@ export type RpcMethods = {
   "sources.set_enabled": { params: SetEnabledParams; result: SourceInfo };
   "runs.list": { params: RunsListParams; result: RunPage };
   "runs.get": { params: RunIdParams; result: Run };
+  "runs.resolve_id": { params: ResolveIdParams; result: RunIdParams };
   "runs.output": { params: RunOutputParams; result: RunOutputPage };
   "runs.subscribe": { params: RunsSubscribeParams; result: Subscribed };
   "runs.subscribe_output": { params: RunOutputSubscribeParams; result: Subscribed };
@@ -906,6 +910,7 @@ export const RPC_METHOD_NAMES = [
   "events.subscribe",
   "events.unsubscribe",
   "events.replay",
+  "events.resolve_id",
   "events.ingest",
   "events.report",
   "rules.list",
@@ -930,6 +935,7 @@ export const RPC_METHOD_NAMES = [
   "sources.set_enabled",
   "runs.list",
   "runs.get",
+  "runs.resolve_id",
   "runs.output",
   "runs.subscribe",
   "runs.subscribe_output",
