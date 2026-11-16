@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
+use pulse_contracts::Timestamp;
 use pulse_contracts::config::ConfigError;
 use pulse_contracts::rpc::{StateChanged, StateTopic};
 use pulse_contracts::status::Project;
-use pulse_contracts::Timestamp;
 use pulse_store::StoreHandle;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -19,8 +19,8 @@ use crate::clock::{Clock, Ids};
 use crate::config::watch::ConfigWatcher;
 use crate::config::{Loaded, Loader, Snapshot, changed_topics};
 use crate::engine::{Control, EngineHandle};
-use crate::hub::Hub;
 use crate::home::PulseHome;
+use crate::hub::Hub;
 use crate::sources::SourceManager;
 use crate::wiring::{AdapterLookup, SourceBuilder, Supervisor};
 use crate::worker::WorkerHandle;
@@ -185,7 +185,8 @@ impl Shared {
                 _ = self.state_notify.notified() => {}
             }
             tokio::time::sleep(STATE_COALESCE).await;
-            let keys = std::mem::take(&mut *self.pending_topics.lock().unwrap_or_else(|p| p.into_inner()));
+            let keys =
+                std::mem::take(&mut *self.pending_topics.lock().unwrap_or_else(|p| p.into_inner()));
             if keys.is_empty() {
                 continue;
             }
@@ -236,6 +237,7 @@ impl Shared {
             w.set_dirs(watched);
         }
         if !topics.is_empty() {
+            tracing::info!("config applied ({topics:?} changed)");
             self.notify_state(&topics);
         }
     }

@@ -65,8 +65,13 @@ impl Services {
             Some(p) => format!("{p}/{}", agent.name),
             None => agent.name.clone(),
         };
-        self.write_definition(DefKind::Agent, params.project.as_deref(), &agent.name, Edit::Upsert(&agent))
-            .await?;
+        self.write_definition(
+            DefKind::Agent,
+            params.project.as_deref(),
+            &agent.name,
+            Edit::Upsert(&agent),
+        )
+        .await?;
         self.agents_get(&full).await
     }
 
@@ -119,10 +124,18 @@ impl Services {
             Some(p) => format!("{p}/{}", source.name),
             None => source.name.clone(),
         };
-        self.write_definition(DefKind::Source, params.project.as_deref(), &source.name, Edit::Upsert(&source))
-            .await?;
+        self.write_definition(
+            DefKind::Source,
+            params.project.as_deref(),
+            &source.name,
+            Edit::Upsert(&source),
+        )
+        .await?;
         let snapshot = self.shared.snapshot();
-        let s = snapshot.config.source(&full).ok_or_else(|| ServiceError::not_found("source", &full))?;
+        let s = snapshot
+            .config
+            .source(&full)
+            .ok_or_else(|| ServiceError::not_found("source", &full))?;
         Ok(SourceInfo {
             config: s.config.clone(),
             origin: s.origin.clone(),

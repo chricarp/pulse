@@ -53,7 +53,8 @@ impl Services {
 
     pub async fn rules_get(&self, name: &str) -> ServiceResult<RuleInfo> {
         let snapshot = self.shared.snapshot();
-        let rule = snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
+        let rule =
+            snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
         Ok(info(rule, &self.rule_rows().await?))
     }
 
@@ -65,14 +66,20 @@ impl Services {
             Some(p) => format!("{p}/{}", rule.name),
             None => rule.name.clone(),
         };
-        self.write_definition(DefKind::Rule, params.project.as_deref(), &rule.name, Edit::Upsert(&rule))
-            .await?;
+        self.write_definition(
+            DefKind::Rule,
+            params.project.as_deref(),
+            &rule.name,
+            Edit::Upsert(&rule),
+        )
+        .await?;
         self.rules_get(&full).await
     }
 
     pub async fn rules_delete(&self, name: &str) -> ServiceResult<()> {
         let snapshot = self.shared.snapshot();
-        let rule = snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
+        let rule =
+            snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
         let origin = rule.origin.clone();
         self.write_definition::<RuleConfig>(
             DefKind::Rule,
@@ -87,17 +94,22 @@ impl Services {
     }
 
     /// Changes one field of a rule as written in its file.
-    async fn edit_rule(&self, name: &str, change: impl FnOnce(&mut RuleConfig)) -> ServiceResult<RuleInfo> {
+    async fn edit_rule(
+        &self,
+        name: &str,
+        change: impl FnOnce(&mut RuleConfig),
+    ) -> ServiceResult<RuleInfo> {
         let snapshot = self.shared.snapshot();
-        let rule = snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
+        let rule =
+            snapshot.config.rule(name).ok_or_else(|| ServiceError::not_found("rule", name))?;
         let origin = rule.origin.clone();
         let bare = bare_name(name, &origin).to_owned();
-        let mut written = as_written(&snapshot.files, &origin, |f| {
-            f.rules.iter().find(|r| r.name == bare)
-        })
-        .ok_or_else(|| ServiceError::not_found("rule", name))?;
+        let mut written =
+            as_written(&snapshot.files, &origin, |f| f.rules.iter().find(|r| r.name == bare))
+                .ok_or_else(|| ServiceError::not_found("rule", name))?;
         change(&mut written);
-        self.write_definition(DefKind::Rule, origin.project(), &bare, Edit::Upsert(&written)).await?;
+        self.write_definition(DefKind::Rule, origin.project(), &bare, Edit::Upsert(&written))
+            .await?;
         self.rules_get(name).await
     }
 
@@ -169,12 +181,9 @@ impl Services {
             state.restore_rule(&name, RuleRuntime::default());
         }
         let cause_rule = match event.causation_run {
-            Some(run) => self
-                .shared
-                .store
-                .read(move |q| q.query().run(run))
-                .await?
-                .and_then(|r| r.rule),
+            Some(run) => {
+                self.shared.store.read(move |q| q.query().run(run)).await?.and_then(|r| r.rule)
+            }
             None => None,
         };
         let cause = event.causation_run.map(|run| Cause { run, rule: cause_rule.as_deref() });
@@ -186,9 +195,8 @@ impl Services {
             nonces: &mut nonces,
         };
         let only = [name.clone()];
-        let decision = route(&event, RouteMode::Only(&only), routing, &mut state, &mut ctx)
-            .into_iter()
-            .next();
+        let decision =
+            route(&event, RouteMode::Only(&only), routing, &mut state, &mut ctx).into_iter().next();
         let after_debounce = match &decision {
             Some(d) if matches!(d.outcome, Outcome::Debounced { .. }) => {
                 route(&event, RouteMode::DebounceElapsed(&name), routing, &mut state, &mut ctx)
@@ -197,7 +205,11 @@ impl Services {
             }
             _ => None,
         };
-        Ok(RuleTestResult { matched: routing.rule_matches(&name, &event), decision, after_debounce })
+        Ok(RuleTestResult {
+            matched: routing.rule_matches(&name, &event),
+            decision,
+            after_debounce,
+        })
     }
 
     pub async fn rules_history(&self, params: RuleHistoryParams) -> ServiceResult<DeliveryPage> {

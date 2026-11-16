@@ -55,7 +55,9 @@ impl Client {
         let info = home
             .read_daemon_info()
             .map_err(|e| ClientError::NotRunning(format!("cannot read daemon.json: {e}")))?
-            .ok_or_else(|| ClientError::NotRunning(format!("no daemon.json in {}", home.root().display())))?;
+            .ok_or_else(|| {
+                ClientError::NotRunning(format!("no daemon.json in {}", home.root().display()))
+            })?;
         let token = home
             .read_token()
             .map_err(|e| ClientError::NotRunning(format!("cannot read the token: {e}")))?;
@@ -64,10 +66,8 @@ impl Client {
 
     pub async fn connect_to(port: u16, token: &str) -> Result<Client, ClientError> {
         let url = format!("ws://127.0.0.1:{port}/ws");
-        let mut req = url
-            .as_str()
-            .into_client_request()
-            .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        let mut req =
+            url.as_str().into_client_request().map_err(|e| ClientError::Protocol(e.to_string()))?;
         let auth = HeaderValue::from_str(&format!("Bearer {token}"))
             .map_err(|_| ClientError::Refused("the token is not a valid header value".into()))?;
         req.headers_mut().insert("authorization", auth);

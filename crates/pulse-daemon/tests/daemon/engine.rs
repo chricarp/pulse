@@ -53,12 +53,15 @@ async fn event_to_run_to_output_end_to_end() {
     })
     .await;
     let run = succeeded.unwrap();
-    assert_eq!(events.iter().map(|e| e.subject.as_deref().unwrap()).collect::<Vec<_>>(), [
-        "/u/a/notes.txt",
-        "/u/a/lecture.pdf"
-    ]);
+    assert_eq!(
+        events.iter().map(|e| e.subject.as_deref().unwrap()).collect::<Vec<_>>(),
+        ["/u/a/notes.txt", "/u/a/lecture.pdf"]
+    );
     assert_eq!(run.event, events[1].id);
-    assert_eq!((run.rule.as_deref(), run.agent.as_str(), run.exit_code), (Some("pdf"), "sh", Some(0)));
+    assert_eq!(
+        (run.rule.as_deref(), run.agent.as_str(), run.exit_code),
+        (Some("pdf"), "sh", Some(0))
+    );
 
     // Output was stored, in order, with stream kinds.
     let out = client
@@ -238,11 +241,15 @@ on = "fs.file.created"
 debounce = "10m"
 run = { agent = "sh" }
 "#;
-    let mut t = TestDaemon::start_with(&config(rules), Setup {
-        supervisor: Arc::new(InstantSupervisor),
-        clock: Clock::tokio(1_700_000_000_000),
-        watch_config: false,
-    })
+    let mut t = TestDaemon::start_with(
+        &config(rules),
+        Setup {
+            supervisor: Arc::new(InstantSupervisor),
+            clock: Clock::tokio(1_700_000_000_000),
+            watch_config: false,
+            mcp: None,
+        },
+    )
     .await;
     let mut watch = RunWatch::new(t.client().await).await;
     for name in ["a", "b", "c"] {
@@ -253,10 +260,7 @@ run = { agent = "sh" }
     let client = t.client().await;
     let detail = client.call::<method::EventsGet>(EventIdParams { id: run.event }).await.unwrap();
     assert_eq!(detail.event.subject.as_deref(), Some("/w/c"));
-    let page = client
-        .call::<method::RunsList>(RunsListParams::default())
-        .await
-        .unwrap();
+    let page = client.call::<method::RunsList>(RunsListParams::default()).await.unwrap();
     assert_eq!(page.runs.len(), 1, "three events, one run");
     let history = client
         .call::<method::RulesHistory>(RuleHistoryParams {
@@ -276,10 +280,7 @@ async fn a_burst_of_events_reaches_a_slow_client_summarized() {
     let mut t = TestDaemon::start(&config("")).await;
     let subscriber = t.client().await;
     let mut notes = subscriber.notifications().unwrap();
-    subscriber
-        .call::<method::EventsSubscribe>(EventsSubscribeParams::default())
-        .await
-        .unwrap();
+    subscriber.call::<method::EventsSubscribe>(EventsSubscribeParams::default()).await.unwrap();
     let client = t.client().await;
     const TOTAL: u64 = 5000;
     for chunk in 0..(TOTAL / 1000) {
@@ -400,7 +401,10 @@ run = { agent = "sh", prompt = "Look at {{subject}}" }
 
     // Replay to one rule: a new event marked as a replay, routed only there.
     let replay = client
-        .call::<method::EventsReplay>(ReplayParams { id: first.event, rules: Some(vec!["any".into()]) })
+        .call::<method::EventsReplay>(ReplayParams {
+            id: first.event,
+            rules: Some(vec!["any".into()]),
+        })
         .await
         .unwrap();
     assert_eq!(replay.event.replay_of, Some(first.event));
@@ -409,7 +413,10 @@ run = { agent = "sh", prompt = "Look at {{subject}}" }
     assert_eq!(replay.deliveries[0].rule, "any");
     assert_eq!(replay.deliveries[0].outcome, DeliveryOutcome::AwaitingApproval);
     let err = client
-        .call::<method::EventsReplay>(ReplayParams { id: first.event, rules: Some(vec!["nope".into()]) })
+        .call::<method::EventsReplay>(ReplayParams {
+            id: first.event,
+            rules: Some(vec!["nope".into()]),
+        })
         .await
         .unwrap_err();
     assert!(err.to_string().contains("nope"));

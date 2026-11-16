@@ -30,6 +30,9 @@ pub(crate) const MAX_BATCH: usize = 200;
 pub(crate) const FLUSH_EVERY: Duration = Duration::from_millis(250);
 pub(crate) const STUCK_LIMIT: Duration = Duration::from_secs(30);
 
+/// An extra check on each event (an MCP agent's scopes).
+pub(crate) type Permit = Box<dyn Fn(&Event) -> bool + Send>;
+
 /// What a delivery attempt did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sent {
@@ -111,7 +114,7 @@ impl Hub {
         &self,
         id: SubscriptionId,
         filter: CompiledFilter,
-        permit: Option<Box<dyn Fn(&Event) -> bool + Send>>,
+        permit: Option<Permit>,
         deliver: impl FnMut(&EventsBatch) -> Sent + Send + 'static,
         stop: CancellationToken,
         client: CancellationToken,
@@ -151,7 +154,7 @@ trait Buffer: Send + 'static {
 struct EventBuffer {
     id: SubscriptionId,
     filter: CompiledFilter,
-    permit: Option<Box<dyn Fn(&Event) -> bool + Send>>,
+    permit: Option<Permit>,
     events: VecDeque<Event>,
     dropped: u64,
 }
@@ -265,8 +268,8 @@ async fn pump<B: Buffer>(
     let mut full_since: Option<Instant> = None;
     loop {
         // Armed only while something is buffered: an idle subscription has no timer.
-        let flush_at = (!buffer.is_empty())
-            .then(|| last_flush.map_or_else(Instant::now, |t| t + FLUSH_EVERY));
+        let flush_at =
+            (!buffer.is_empty()).then(|| last_flush.map_or_else(Instant::now, |t| t + FLUSH_EVERY));
         tokio::select! {
             _ = stop.cancelled() => return,
             _ = client.cancelled() => return,

@@ -131,7 +131,12 @@ impl SourceManager {
     }
 }
 
-fn fixed(config: &Sourced<SourceConfig>, state: SourceState, message: Option<String>, shared: &Shared) -> Running {
+fn fixed(
+    config: &Sourced<SourceConfig>,
+    state: SourceState,
+    message: Option<String>,
+    shared: &Shared,
+) -> Running {
     let now = shared.clock.now();
     let mut health = SourceHealth::starting(now);
     health.state = state;
@@ -152,10 +157,8 @@ fn start(shared: &Arc<Shared>, s: &Sourced<SourceConfig>) -> Running {
     if !s.config.enabled {
         return fixed(s, SourceState::Disabled, None, shared);
     }
-    let env = SourceEnv {
-        home: shared.user_home.clone(),
-        pulse_home: shared.home.root().to_path_buf(),
-    };
+    let env =
+        SourceEnv { home: shared.user_home.clone(), pulse_home: shared.home.root().to_path_buf() };
     let config = with_resolved_paths(s, &shared.user_home);
     let source = match (shared.source_builder)(&config, &env) {
         Ok(source) => source,

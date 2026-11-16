@@ -95,7 +95,8 @@ impl Services {
                             Sent::Ok => break,
                             Sent::Closed => return,
                             Sent::Full => {
-                                let since = *full_since.get_or_insert_with(tokio::time::Instant::now);
+                                let since =
+                                    *full_since.get_or_insert_with(tokio::time::Instant::now);
                                 if since.elapsed() >= STUCK_LIMIT {
                                     client.cancel();
                                     return;
@@ -152,7 +153,11 @@ impl Services {
         Ok(run.summary())
     }
 
-    pub async fn runs_reject(&self, id: RunId, reason: Option<String>) -> ServiceResult<RunSummary> {
+    pub async fn runs_reject(
+        &self,
+        id: RunId,
+        reason: Option<String>,
+    ) -> ServiceResult<RunSummary> {
         Ok(self.transition(id, RunTransition::Reject { reason }).await?.summary())
     }
 

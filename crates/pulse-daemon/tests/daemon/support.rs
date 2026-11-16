@@ -13,7 +13,9 @@ use pulse_agents::{
 use pulse_contracts::catalog::{BuiltinEvent, FsFileData};
 use pulse_contracts::config::SourceConfig;
 use pulse_contracts::rpc::{Notification, RunFilter, RunsSubscribeParams, method};
-use pulse_contracts::{NewEvent, OutputKind, RunId, RunOutput, RunStatus, RunSummary, SourceKind, SourceRef, Timestamp};
+use pulse_contracts::{
+    NewEvent, OutputKind, RunId, RunOutput, RunStatus, RunSummary, SourceKind, SourceRef, Timestamp,
+};
 use pulse_daemon::client::Client;
 use pulse_daemon::wiring::{SourceBuilder, Supervisor, Wiring};
 use pulse_daemon::{Clock, Daemon, DaemonOptions};
@@ -31,7 +33,8 @@ pub const CEILING: Duration = Duration::from_secs(30);
 /// jumps to the next timer whenever the runtime idles, for instance while the store's threads
 /// work, so the ceiling would fire first. Paused tests are bounded by the suite's timeout.
 fn paused() -> bool {
-    tokio::runtime::Handle::current().runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread
+    tokio::runtime::Handle::current().runtime_flavor()
+        == tokio::runtime::RuntimeFlavor::CurrentThread
 }
 
 pub async fn within<T>(what: &str, f: impl std::future::Future<Output = T>) -> T {
@@ -110,7 +113,10 @@ pub fn file_created(source: &str, path: &str) -> NewEvent {
         ext: p.extension().map(|e| e.to_string_lossy().into_owned()),
         size: Some(1),
     })
-    .into_new_event(SourceRef::new(SourceKind::Fs, source), Timestamp::from_system_time(std::time::SystemTime::now()))
+    .into_new_event(
+        SourceRef::new(SourceKind::Fs, source),
+        Timestamp::from_system_time(std::time::SystemTime::now()),
+    )
 }
 
 /// Runs invocations as real child processes in their own process group, streaming stdout and
@@ -220,7 +226,9 @@ impl Supervisor for InstantSupervisor {
         Box::pin(async move {
             let _ = events.send(SupervisorEvent::Started { pid: 1 }).await;
             for a in inv.args {
-                let _ = events.send(SupervisorEvent::Output(RunOutput::new(OutputKind::Stdout, a))).await;
+                let _ = events
+                    .send(SupervisorEvent::Output(RunOutput::new(OutputKind::Stdout, a)))
+                    .await;
             }
             Ok(RunEnd::Exited { code: Some(0), signal: None })
         })
@@ -239,11 +247,17 @@ pub struct Setup {
     pub supervisor: Arc<dyn Supervisor>,
     pub clock: Clock,
     pub watch_config: bool,
+    pub mcp: Option<pulse_daemon::wiring::McpMount>,
 }
 
 impl Default for Setup {
     fn default() -> Self {
-        Setup { supervisor: Arc::new(ChildSupervisor), clock: Clock::System, watch_config: true }
+        Setup {
+            supervisor: Arc::new(ChildSupervisor),
+            clock: Clock::System,
+            watch_config: true,
+            mcp: None,
+        }
     }
 }
 
@@ -259,7 +273,8 @@ impl TestDaemon {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&user_home).unwrap();
         std::fs::write(home.join("pulse.toml"), config).unwrap();
-        let mut t = TestDaemon { daemon: None, dir, home, user_home, sources: FakeSources::default() };
+        let mut t =
+            TestDaemon { daemon: None, dir, home, user_home, sources: FakeSources::default() };
         t.boot(setup).await;
         t
     }
@@ -271,6 +286,7 @@ impl TestDaemon {
         let wiring = Wiring {
             sources: self.sources.builder(),
             supervisor: setup.supervisor,
+            mcp: setup.mcp,
             ..Wiring::real()
         };
         let opts = DaemonOptions {
@@ -329,7 +345,9 @@ impl RunWatch {
 
     /// The next run (any id, or `id`) reaching `status`.
     pub async fn until(&mut self, id: Option<RunId>, status: RunStatus) -> RunSummary {
-        if let Some(r) = self.seen.iter().find(|r| id.is_none_or(|i| r.id == i) && r.status == status) {
+        if let Some(r) =
+            self.seen.iter().find(|r| id.is_none_or(|i| r.id == i) && r.status == status)
+        {
             return r.clone();
         }
         let what = format!("a run to be {status:?}");
@@ -340,8 +358,10 @@ impl RunWatch {
                 if let Notification::RunsChanged(c) = rx.recv().await.expect("connection open") {
                     // Keep the whole batch: later waits may be for other runs in it.
                     seen.extend(c.runs.iter().cloned());
-                    if let Some(r) =
-                        c.runs.into_iter().find(|r| id.is_none_or(|i| r.id == i) && r.status == status)
+                    if let Some(r) = c
+                        .runs
+                        .into_iter()
+                        .find(|r| id.is_none_or(|i| r.id == i) && r.status == status)
                     {
                         return r;
                     }

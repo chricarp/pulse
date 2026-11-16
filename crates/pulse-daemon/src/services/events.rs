@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use super::Services;
 use crate::engine::Input;
 use crate::error::{ServiceError, ServiceResult};
-use crate::hub::Sent;
+use crate::hub::{Permit, Sent};
 
 /// Events per `events.ingest` call.
 pub const MAX_INGEST_EVENTS: usize = 1000;
@@ -56,13 +56,12 @@ impl Services {
     ) -> ServiceResult<SubscriptionId> {
         let compiled = CompiledFilter::compile(&filter)
             .map_err(|e| ServiceError::Invalid(format!("invalid filter: {e}")))?;
-        let permit: Option<Box<dyn Fn(&pulse_contracts::Event) -> bool + Send>> =
-            agent.map(|agent| {
-                let shared = self.shared.clone();
-                Box::new(move |e: &pulse_contracts::Event| {
-                    shared.snapshot().routing.agent_permits(&agent, e)
-                }) as Box<dyn Fn(&pulse_contracts::Event) -> bool + Send>
-            });
+        let permit = agent.map(|agent| {
+            let shared = self.shared.clone();
+            Box::new(move |e: &pulse_contracts::Event| {
+                shared.snapshot().routing.agent_permits(&agent, e)
+            }) as Permit
+        });
         let id = self.shared.ids.subscription();
         self.shared.hub.spawn_event_subscription(id, compiled, permit, deliver, stop, client);
         Ok(id)
@@ -84,9 +83,8 @@ impl Services {
                 return Err(ServiceError::not_found("rule", missing));
             }
         }
-        let source = SourceRef::parse_uri(&original.source).ok_or_else(|| {
-            ServiceError::Invalid(format!("event {id} has no replayable source"))
-        })?;
+        let source = SourceRef::parse_uri(&original.source)
+            .ok_or_else(|| ServiceError::Invalid(format!("event {id} has no replayable source")))?;
         let event = NewEvent {
             type_: original.type_,
             source,
@@ -115,8 +113,7 @@ impl Services {
     /// External events. Their types are forced into `ext.<source>.`, so ingest can never
     /// impersonate a built-in event.
     pub async fn events_ingest(&self, params: IngestParams) -> ServiceResult<IngestResult> {
-        validate_name(&params.source)
-            .map_err(|m| ServiceError::Invalid(format!("source: {m}")))?;
+        validate_name(&params.source).map_err(|m| ServiceError::Invalid(format!("source: {m}")))?;
         if params.events.len() > MAX_INGEST_EVENTS {
             return Err(ServiceError::Invalid(format!(
                 "{} events in one call; the limit is {MAX_INGEST_EVENTS}",

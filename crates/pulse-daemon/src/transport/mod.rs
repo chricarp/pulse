@@ -73,12 +73,7 @@ fn allowed_origin(origin: &str, port: u16) -> bool {
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::trim)
+    headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ").map(str::trim)
 }
 
 fn ws_protocol_token(headers: &HeaderMap) -> Option<&str> {
@@ -160,8 +155,7 @@ async fn ingest(
     body: Bytes,
 ) -> Response {
     let content_type = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok());
-    let events = match pulse_sources::ingest::parse(content_type, &body, &IngestLimits::default())
-    {
+    let events = match pulse_sources::ingest::parse(content_type, &body, &IngestLimits::default()) {
         Ok(events) => events,
         Err(e) => {
             let err = match e {
@@ -188,10 +182,14 @@ async fn login(State(app): State<App>, Json(req): Json<UiLoginRequest>) -> Respo
     let shared = &app.services.shared;
     if shared.login_codes.redeem(&shared.secret, &req.code, shared.clock.now()) {
         let mut res = Json(UiLoginResponse { token: shared.secret.clone() }).into_response();
-        res.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+        res.headers_mut()
+            .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
         res
     } else {
-        deny(StatusCode::UNAUTHORIZED, "the login code is invalid, expired or already used; run `pulse open` again")
+        deny(
+            StatusCode::UNAUTHORIZED,
+            "the login code is invalid, expired or already used; run `pulse open` again",
+        )
     }
 }
 

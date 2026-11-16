@@ -72,11 +72,11 @@ fn level(l: LogLevel) -> tracing::Level {
 pub fn init(home: &crate::PulseHome, log_level: LogLevel, to_stderr: bool) -> io::Result<()> {
     let file = Mutex::new(RollingFile::open(&home.logs_dir())?);
     let max = level(log_level);
-    let builder = tracing_subscriber::fmt().with_ansi(false).with_target(false);
+    let builder = tracing_subscriber::fmt().with_ansi(false).with_target(false).with_max_level(max);
     let result = if to_stderr {
-        builder.with_writer(file.and(io::stderr).with_max_level(max)).try_init()
+        builder.with_writer(file.and(io::stderr)).try_init()
     } else {
-        builder.with_writer(file.with_max_level(max)).try_init()
+        builder.with_writer(file).try_init()
     };
     result.map_err(|e| io::Error::other(e.to_string()))
 }

@@ -37,7 +37,10 @@ use crate::shared::Shared;
 pub(crate) enum Input {
     Source(NewEvent),
     /// Ingested or reported events. The reply has one entry per event: `None` if deduplicated.
-    Ingest { events: Vec<NewEvent>, reply: oneshot::Sender<ServiceResult<Vec<Option<EventId>>>> },
+    Ingest {
+        events: Vec<NewEvent>,
+        reply: oneshot::Sender<ServiceResult<Vec<Option<EventId>>>>,
+    },
     Replay {
         event: NewEvent,
         replay_of: EventId,
@@ -50,10 +53,17 @@ pub(crate) enum Input {
 pub(crate) enum Control {
     Config(Arc<Snapshot>),
     /// `Some(until)` snoozes; `None` unsnoozes (and closes a tripped breaker).
-    Snooze { rule: String, until: Option<Timestamp>, reply: oneshot::Sender<ServiceResult<()>> },
+    Snooze {
+        rule: String,
+        until: Option<Timestamp>,
+        reply: oneshot::Sender<ServiceResult<()>>,
+    },
     Paused(bool),
     RunStarted(RecentRun),
-    RunEnded { id: RunId, at: Timestamp },
+    RunEnded {
+        id: RunId,
+        at: Timestamp,
+    },
     /// Run states changed outside routing (approval, cancel, end, rerun): recount backlogs.
     RefreshBacklog,
     CopyState(oneshot::Sender<RouterState>),
@@ -127,7 +137,7 @@ struct Pending {
 
 enum Reply {
     Ingest(oneshot::Sender<ServiceResult<Vec<Option<EventId>>>>, Vec<Option<EventId>>),
-    Replay(oneshot::Sender<ServiceResult<(Event, Vec<Delivery>)>>, Event, Vec<Delivery>),
+    Replay(oneshot::Sender<ServiceResult<(Event, Vec<Delivery>)>>, Box<Event>, Vec<Delivery>),
 }
 
 impl Engine {
@@ -353,7 +363,7 @@ impl Engine {
                     self.route(&event, mode, None, now, &mut p);
                     let deliveries = p.commit.deliveries[first..].to_vec();
                     p.commit.events.push(event.clone());
-                    p.replies.push(Reply::Replay(reply, event, deliveries));
+                    p.replies.push(Reply::Replay(reply, Box::new(event), deliveries));
                 }
             }
         }
@@ -397,8 +407,7 @@ impl Engine {
         p: &mut Pending,
     ) {
         let cause = cause.as_ref().map(|(run, rule)| Cause { run: *run, rule: rule.as_deref() });
-        let mut ctx =
-            RouteContext { now, paused: self.paused, cause, nonces: &mut self.nonces };
+        let mut ctx = RouteContext { now, paused: self.paused, cause, nonces: &mut self.nonces };
         let decisions = route(event, mode, &self.snapshot.routing, &mut self.state, &mut ctx);
         for d in decisions {
             let created = match &d.outcome {
@@ -510,7 +519,7 @@ fn answer(replies: Vec<Reply>) {
     for r in replies {
         match r {
             Reply::Ingest(tx, ids) => drop(tx.send(Ok(ids))),
-            Reply::Replay(tx, event, deliveries) => drop(tx.send(Ok((event, deliveries)))),
+            Reply::Replay(tx, event, deliveries) => drop(tx.send(Ok((*event, deliveries)))),
         }
     }
 }

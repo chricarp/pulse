@@ -24,12 +24,15 @@ impl Services {
 
     async fn change_trust(
         &self,
-        change: impl FnOnce(&mut crate::config::Loader, pulse_contracts::Timestamp) -> ServiceResult<Project>,
+        change: impl FnOnce(
+            &mut crate::config::Loader,
+            pulse_contracts::Timestamp,
+        ) -> ServiceResult<Project>,
     ) -> ServiceResult<Project> {
         let mut loader = self.shared.loader.lock().await;
         let project = change(&mut loader, self.shared.clock.now())?;
-        let records =
-            serde_json::to_string(&loader.trust).map_err(|e| ServiceError::Internal(e.to_string()))?;
+        let records = serde_json::to_string(&loader.trust)
+            .map_err(|e| ServiceError::Internal(e.to_string()))?;
         self.shared.store.write(move |s| s.set_flag(TRUST_KEY, &records)).await?;
         let loaded = loader.load();
         let watched = loader.watched_dirs();

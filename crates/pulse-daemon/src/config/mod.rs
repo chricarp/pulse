@@ -16,12 +16,12 @@ pub(crate) mod watch;
 
 use std::path::{Path, PathBuf};
 
+use pulse_contracts::Timestamp;
 use pulse_contracts::config::{
     Config, ConfigError, ConfigErrors, ConfigFile, ConfigOrigin, RuleConfig, Sourced,
     parse_config_file, resolve, validate_file, validate_name,
 };
 use pulse_contracts::status::{Project, TrustState};
-use pulse_contracts::Timestamp;
 use pulse_core::Routing;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -72,8 +72,7 @@ impl Snapshot {
         let mut files = files.into_iter();
         let user = files.next().ok_or_else(|| ServiceError::Internal("no user file".into()))?;
         let config = resolve(user, files.collect()).map_err(ServiceError::ConfigInvalid)?;
-        let routing =
-            Routing::compile(&config, user_home).map_err(ServiceError::ConfigInvalid)?;
+        let routing = Routing::compile(&config, user_home).map_err(ServiceError::ConfigInvalid)?;
         Ok((config, routing, full))
     }
 }
@@ -296,16 +295,15 @@ impl Loader {
                 dir.display()
             )));
         }
-        let dir = dir.canonicalize().map_err(|e| {
-            ServiceError::Invalid(format!("cannot open {}: {e}", dir.display()))
-        })?;
+        let dir = dir
+            .canonicalize()
+            .map_err(|e| ServiceError::Invalid(format!("cannot open {}: {e}", dir.display())))?;
         let name = match name {
             Some(n) => n.to_owned(),
             None => dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_owned(),
         };
-        validate_name(&name).map_err(|m| {
-            ServiceError::Invalid(format!("project {m}; choose one with --name"))
-        })?;
+        validate_name(&name)
+            .map_err(|m| ServiceError::Invalid(format!("project {m}; choose one with --name")))?;
         if let Some(other) = self.trust.iter().find(|t| t.name == name && t.dir != dir) {
             return Err(ServiceError::Conflict(format!(
                 "the project name {name:?} is already used by {}",
@@ -316,7 +314,8 @@ impl Loader {
         let text = read_text(&file)
             .map_err(|e| ServiceError::Invalid(format!("cannot read {}: {e}", file.display())))?
             .ok_or_else(|| ServiceError::Invalid(format!("{} does not exist", file.display())))?;
-        let record = TrustRecord { name, dir: dir.clone(), hash: hash(text.as_bytes()), trusted_at: now };
+        let record =
+            TrustRecord { name, dir: dir.clone(), hash: hash(text.as_bytes()), trusted_at: now };
         parse_config_file(&text, &record.origin(), &self.user_home)
             .map_err(ServiceError::ConfigInvalid)?;
         self.trust.retain(|t| t.dir != dir);

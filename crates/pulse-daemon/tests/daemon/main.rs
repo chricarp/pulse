@@ -4,6 +4,9 @@
 //! No sleeps: every test awaits a specific notification, run state or response, with
 //! `support::CEILING` as the failure-only bound.
 
+// Test helpers outside `#[test]` functions panic on failure too.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod support;
 
 mod auth;

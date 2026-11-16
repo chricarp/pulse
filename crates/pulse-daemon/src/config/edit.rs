@@ -105,7 +105,7 @@ fn formatted<T: Serialize>(kind: DefKind, def: &T) -> Result<Vec<(String, Value)
     Ok(items)
 }
 
-fn definitions<'d>(doc: &'d mut DocumentMut, kind: DefKind) -> Result<&'d mut ArrayOfTables, EditError> {
+fn definitions(doc: &mut DocumentMut, kind: DefKind) -> Result<&mut ArrayOfTables, EditError> {
     let item = doc.entry(kind.array()).or_insert(Item::ArrayOfTables(ArrayOfTables::new()));
     item.as_array_of_tables_mut().ok_or(EditError::Shape(kind.array()))
 }
@@ -120,8 +120,7 @@ where
     let new: toml::Table = toml::Table::try_from(def).map_err(ser)?;
     let values = formatted(kind, def)?;
     let tables = definitions(&mut doc, kind)?;
-    let existing =
-        tables.iter_mut().find(|t| t.get("name").and_then(Item::as_str) == Some(name));
+    let existing = tables.iter_mut().find(|t| t.get("name").and_then(Item::as_str) == Some(name));
     match existing {
         Some(table) => {
             let old = normalized::<T>(table);
@@ -134,6 +133,16 @@ where
             }
             for (k, mut value) in values {
                 if same(&k) {
+                    continue;
+                }
+                // Back to its default: drop the line, unless someone commented on it.
+                let commented = table.key(&k).is_some_and(|key| has_comment(key.leaf_decor()))
+                    || table
+                        .get(&k)
+                        .and_then(Item::as_value)
+                        .is_some_and(|v| has_comment(v.decor()));
+                if table.contains_key(&k) && !commented && redundant(&new, &k, def) {
+                    table.remove(&k);
                     continue;
                 }
                 match table.get_mut(&k) {
@@ -160,17 +169,17 @@ where
 }
 
 /// Drops keys whose absence deserializes to the same definition.
-fn without_defaults<T>(def: &T, values: Vec<(String, Value)>) -> Result<Vec<(String, Value)>, EditError>
+fn without_defaults<T>(
+    def: &T,
+    values: Vec<(String, Value)>,
+) -> Result<Vec<(String, Value)>, EditError>
 where
     T: Serialize + DeserializeOwned + PartialEq,
 {
     let mut table = toml::Table::try_from(def).map_err(ser)?;
     let mut keep = Vec::new();
     for (k, v) in values.into_iter().rev() {
-        let mut without = table.clone();
-        without.remove(&k);
-        let redundant = k != "name" && without.try_into::<T>().is_ok_and(|t| t == *def);
-        if redundant {
+        if redundant(&table, &k, def) {
             table.remove(&k);
         } else {
             keep.push((k, v));
@@ -178,6 +187,23 @@ where
     }
     keep.reverse();
     Ok(keep)
+}
+
+/// Whether leaving `key` out of `table` still deserializes to `def` (it holds a default).
+fn redundant<T>(table: &toml::Table, key: &str, def: &T) -> bool
+where
+    T: DeserializeOwned + PartialEq,
+{
+    let mut without = table.clone();
+    without.remove(key);
+    key != "name" && without.try_into::<T>().is_ok_and(|t| t == *def)
+}
+
+fn has_comment(decor: &toml_edit::Decor) -> bool {
+    let has = |r: Option<&toml_edit::RawString>| {
+        r.and_then(|r| r.as_str()).is_some_and(|s| s.contains('#'))
+    };
+    has(decor.prefix()) || has(decor.suffix())
 }
 
 /// Removes the definition named `name`.
@@ -235,11 +261,16 @@ run = { agent = "notify" }
         r.enabled = false;
         r.debounce = Some(pulse_contracts::Duration::from_secs(30));
         let out = upsert(FILE, DefKind::Rule, "new-lecture", &r).unwrap();
-        let want = FILE
-            .replace("debounce = \"10s\"", "debounce = \"30s\"")
-            .replace("run = { agent = \"notify\" }\n\n[[rule]]", "run = { agent = \"notify\" }\nenabled = false\n\n[[rule]]");
+        let want = FILE.replace("debounce = \"10s\"", "debounce = \"30s\"").replace(
+            "run = { agent = \"notify\" }\n\n[[rule]]",
+            "run = { agent = \"notify\" }\nenabled = false\n\n[[rule]]",
+        );
         assert_eq!(out, want);
         assert_eq!(rule(&out, "new-lecture"), r);
+        // Undoing both changes restores the file exactly: the default is not spelled out.
+        r.enabled = true;
+        r.debounce = Some(pulse_contracts::Duration::from_secs(10));
+        assert_eq!(upsert(&out, DefKind::Rule, "new-lecture", &r).unwrap(), FILE);
         // Writing back the same definition is a no-op, even where the file uses short forms.
         let same = rule(FILE, "other");
         assert_eq!(upsert(FILE, DefKind::Rule, "other", &same).unwrap(), FILE);
@@ -290,7 +321,10 @@ run = { agent = "notify" }
             out,
             "[[agent]]\nname = \"notify\"\nadapter = \"command\"\ncommand = [\"notify-send\", \"--\", \"{{subject}}\"]\nallow = [\"fs.*:~/U/**\"]\n"
         );
-        assert!(matches!(upsert("rule = 3", DefKind::Rule, "x", &r), Err(EditError::Shape("rule"))));
+        assert!(matches!(
+            upsert("rule = 3", DefKind::Rule, "x", &r),
+            Err(EditError::Shape("rule"))
+        ));
         assert!(matches!(upsert("[[rule]", DefKind::Rule, "x", &r), Err(EditError::Parse(_))));
     }
 }

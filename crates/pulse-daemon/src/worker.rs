@@ -204,7 +204,10 @@ impl Worker {
 
     fn max_concurrent(&self, agent: &str, run: &Run) -> u32 {
         let config = self.shared.snapshot();
-        config.config.agent(agent).map_or(run.snapshot.agent.max_concurrent, |a| a.config.max_concurrent)
+        config
+            .config
+            .agent(agent)
+            .map_or(run.snapshot.agent.max_concurrent, |a| a.config.max_concurrent)
     }
 
     async fn start_ready(&mut self) {
@@ -230,9 +233,19 @@ impl Worker {
                         let by_user = Arc::new(AtomicBool::new(false));
                         self.active.insert(
                             id,
-                            Active { agent: agent.clone(), cancel: cancel.clone(), by_user: by_user.clone() },
+                            Active {
+                                agent: agent.clone(),
+                                cancel: cancel.clone(),
+                                by_user: by_user.clone(),
+                            },
                         );
-                        let task = RunTask { shared: self.shared.clone(), item: w.item, run, cancel, by_user };
+                        let task = RunTask {
+                            shared: self.shared.clone(),
+                            item: w.item,
+                            run,
+                            cancel,
+                            by_user,
+                        };
                         self.tasks.spawn(task.run());
                     }
                     _ => self.complete(w.item.id).await,
@@ -255,7 +268,7 @@ struct RunTask {
 }
 
 enum Prepared {
-    Ready { request: RunRequest, invocation: pulse_agents::Invocation, parser: Box<dyn pulse_agents::OutputParser> },
+    Ready { invocation: Box<pulse_agents::Invocation>, parser: Box<dyn pulse_agents::OutputParser> },
     Failed(String),
 }
 
@@ -264,8 +277,8 @@ impl RunTask {
         let id = self.run.id;
         match self.prepare().await {
             Prepared::Failed(error) => self.fail_to_start(error).await,
-            Prepared::Ready { request, invocation, parser } => {
-                self.supervise(request, invocation, parser).await;
+            Prepared::Ready { invocation, parser } => {
+                self.supervise(*invocation, parser).await;
             }
         }
         id
@@ -275,12 +288,17 @@ impl RunTask {
         let run = &self.run;
         let agent = &run.snapshot.agent;
         let Some(adapter) = (self.shared.adapters)(agent.kind()) else {
-            return Prepared::Failed(format!("agent {:?} uses an adapter Pulse does not run", agent.name));
+            return Prepared::Failed(format!(
+                "agent {:?} uses an adapter Pulse does not run",
+                agent.name
+            ));
         };
         let event_id = run.event;
         let event = match self.shared.store.read(move |q| q.query().event(event_id)).await {
             Ok(Some(e)) => e,
-            Ok(None) => return Prepared::Failed(format!("event {event_id} is no longer in the log")),
+            Ok(None) => {
+                return Prepared::Failed(format!("event {event_id} is no longer in the log"));
+            }
             Err(e) => return Prepared::Failed(e.to_string()),
         };
         let dir = self.shared.home.run_dir(run.id);
@@ -293,10 +311,8 @@ impl RunTask {
             return Prepared::Failed(format!("cannot write {}: {e}", event_file.display()));
         }
         let snapshot = self.shared.snapshot();
-        let base = snapshot
-            .config
-            .agent(&run.agent)
-            .and_then(|a| a.origin.base_dir().map(PathBuf::from));
+        let base =
+            snapshot.config.agent(&run.agent).and_then(|a| a.origin.base_dir().map(PathBuf::from));
         let cwd = match &agent.cwd {
             Some(raw) => match expand_path(raw, &self.shared.user_home, base.as_deref()) {
                 Ok(p) => PathBuf::from(p),
@@ -323,7 +339,9 @@ impl RunTask {
             limits: snapshot.config.limits.prompt.clone(),
         };
         match adapter.invocation(agent, &request) {
-            Ok(invocation) => Prepared::Ready { request, invocation, parser: adapter.parser() },
+            Ok(invocation) => {
+                Prepared::Ready { invocation: Box::new(invocation), parser: adapter.parser() }
+            }
             Err(e) => Prepared::Failed(e.to_string()),
         }
     }
@@ -388,7 +406,6 @@ impl RunTask {
 
     async fn supervise(
         &self,
-        request: RunRequest,
         invocation: pulse_agents::Invocation,
         parser: Box<dyn pulse_agents::OutputParser>,
     ) {
@@ -397,7 +414,6 @@ impl RunTask {
             timeout: self.run.snapshot.agent.timeout.to_std(),
             ..SuperviseOptions::default()
         };
-        drop(request);
         let (tx, mut rx) = mpsc::channel(OUTPUT_CHANNEL);
         let mut supervised =
             self.shared.supervisor.supervise(invocation, parser, tx, options, self.cancel.clone());
@@ -454,23 +470,34 @@ impl RunTask {
             (Some(s), _) => s,
             (None, Err(e)) => {
                 let error = match e {
-                    SuperviseError::NotImplemented => "the supervisor is not implemented yet".to_owned(),
+                    SuperviseError::NotImplemented => {
+                        "the supervisor is not implemented yet".to_owned()
+                    }
                     other => other.to_string(),
                 };
                 return self.fail_to_start(error).await;
             }
-            (None, Ok(_)) => self.start(None, &InvocationSummary {
-                program: String::new(),
-                args: Vec::new(),
-                cwd: String::new(),
-            }).await,
+            (None, Ok(_)) => {
+                self.start(
+                    None,
+                    &InvocationSummary {
+                        program: String::new(),
+                        args: Vec::new(),
+                        cwd: String::new(),
+                    },
+                )
+                .await
+            }
         };
         if !started {
             return;
         }
-        let shutting_down = self.shared.shutdown.is_cancelled() && !self.by_user.load(Ordering::SeqCst);
+        let shutting_down =
+            self.shared.shutdown.is_cancelled() && !self.by_user.load(Ordering::SeqCst);
         let (status, exit_code, signal, error) = match result {
-            Ok(RunEnd::Exited { code: Some(0), signal }) => (RunStatus::Succeeded, Some(0), signal, None),
+            Ok(RunEnd::Exited { code: Some(0), signal }) => {
+                (RunStatus::Succeeded, Some(0), signal, None)
+            }
             Ok(RunEnd::Exited { code, signal }) => (RunStatus::Failed, code, signal, None),
             Ok(RunEnd::TimedOut) => (RunStatus::TimedOut, None, None, None),
             Ok(RunEnd::Cancelled) if shutting_down => {

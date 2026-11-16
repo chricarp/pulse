@@ -83,11 +83,12 @@ impl Backend for McpBackend {
             closed.closed().await;
             stop_on_drop.cancel();
         });
-        let deliver = move |batch: &pulse_contracts::rpc::EventsBatch| match tx.try_send(batch.clone()) {
-            Ok(()) => Sent::Ok,
-            Err(mpsc::error::TrySendError::Full(_)) => Sent::Full,
-            Err(mpsc::error::TrySendError::Closed(_)) => Sent::Closed,
-        };
+        let deliver =
+            move |batch: &pulse_contracts::rpc::EventsBatch| match tx.try_send(batch.clone()) {
+                Ok(()) => Sent::Ok,
+                Err(mpsc::error::TrySendError::Full(_)) => Sent::Full,
+                Err(mpsc::error::TrySendError::Closed(_)) => Sent::Closed,
+            };
         let id = self
             .services
             .events_subscribe(

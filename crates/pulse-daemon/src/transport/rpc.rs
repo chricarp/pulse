@@ -97,7 +97,10 @@ impl Connection {
     }
 
     /// A delivery function that enqueues a notification without waiting.
-    fn notifier<T: Serialize>(self: &Arc<Self>, method: &'static str) -> impl FnMut(&T) -> Sent + Send + 'static {
+    fn notifier<T: Serialize>(
+        self: &Arc<Self>,
+        method: &'static str,
+    ) -> impl FnMut(&T) -> Sent + Send + 'static {
         let cx = Arc::downgrade(self);
         move |params: &T| match cx.upgrade() {
             Some(cx) => cx.try_send(frame(method, params)),
@@ -239,10 +242,20 @@ impl RpcHandler for RpcServer {
     async fn events_get(&self, _: &Self::Context, p: EventIdParams) -> R<EventDetail> {
         map(self.services.events_get(p.id).await)
     }
-    async fn events_subscribe(&self, cx: &Self::Context, p: EventsSubscribeParams) -> R<Subscribed> {
+    async fn events_subscribe(
+        &self,
+        cx: &Self::Context,
+        p: EventsSubscribeParams,
+    ) -> R<Subscribed> {
         let stop = cx.reserve_subscription()?;
         let deliver = cx.notifier::<EventsBatch>("events.batch");
-        let id = map(self.services.events_subscribe(p.filter, None, deliver, stop.clone(), cx.closed.clone()))?;
+        let id = map(self.services.events_subscribe(
+            p.filter,
+            None,
+            deliver,
+            stop.clone(),
+            cx.closed.clone(),
+        ))?;
         cx.register(id, stop);
         Ok(Subscribed { subscription: id })
     }
@@ -335,14 +348,17 @@ impl RpcHandler for RpcServer {
         cx.register(id, stop);
         Ok(Subscribed { subscription: id })
     }
-    async fn runs_subscribe_output(&self, cx: &Self::Context, p: RunOutputSubscribeParams) -> R<Subscribed> {
+    async fn runs_subscribe_output(
+        &self,
+        cx: &Self::Context,
+        p: RunOutputSubscribeParams,
+    ) -> R<Subscribed> {
         let stop = cx.reserve_subscription()?;
         let deliver = cx.notifier::<RunsOutput>("runs.output");
-        let id = map(
-            self.services
-                .runs_subscribe_output(p.id, p.after, deliver, stop.clone(), cx.closed.clone())
-                .await,
-        )?;
+        let id = map(self
+            .services
+            .runs_subscribe_output(p.id, p.after, deliver, stop.clone(), cx.closed.clone())
+            .await)?;
         cx.register(id, stop);
         Ok(Subscribed { subscription: id })
     }

@@ -77,7 +77,10 @@ run = {{ agent = "sh" }}
     let full = client.call::<method::RunsGet>(RunIdParams { id: b.id }).await.unwrap();
     assert_eq!(full.error.as_deref(), Some("not now"));
     let again = client.call::<method::RunsApprove>(RunIdParams { id: b.id }).await.unwrap_err();
-    assert!(matches!(&again, pulse_daemon::client::ClientError::Rpc(e) if e.kind() == Some(ErrorCode::Conflict)), "{again}");
+    assert!(
+        matches!(&again, pulse_daemon::client::ClientError::Rpc(e) if e.kind() == Some(ErrorCode::Conflict)),
+        "{again}"
+    );
 
     // A rerun of the approved run starts at once: the user asked for it.
     let rerun = client.call::<method::RunsRerun>(RunIdParams { id: a.id }).await.unwrap();
@@ -110,10 +113,12 @@ run = {{ agent = "long" }}
         }
         watch.seen.retain(|s| s.id != r.id || s.status != RunStatus::Queued);
     };
-    let agents = client.call::<method::AgentsGet>(NameParams { name: "long".into() }).await.unwrap();
+    let agents =
+        client.call::<method::AgentsGet>(NameParams { name: "long".into() }).await.unwrap();
     assert_eq!((agents.running, agents.queued), (1, 1), "max_concurrent = 1");
 
-    let pid = client.call::<method::RunsGet>(RunIdParams { id: running.id }).await.unwrap().pid.unwrap();
+    let pid =
+        client.call::<method::RunsGet>(RunIdParams { id: running.id }).await.unwrap().pid.unwrap();
     assert!(alive(pid));
     client.call::<method::RunsCancel>(RunIdParams { id: running.id }).await.unwrap();
     watch.until(Some(running.id), RunStatus::Cancelled).await;
@@ -141,7 +146,8 @@ run = {{ agent = "long" }}
     let client = t.client().await;
     client.call::<method::EventsIngest>(ext("one")).await.unwrap();
     let running = watch.until(None, RunStatus::Running).await;
-    let pid = client.call::<method::RunsGet>(RunIdParams { id: running.id }).await.unwrap().pid.unwrap();
+    let pid =
+        client.call::<method::RunsGet>(RunIdParams { id: running.id }).await.unwrap().pid.unwrap();
     drop(client);
     t.stop().await;
     assert!(!alive(pid), "no process outlives the daemon");
@@ -186,9 +192,17 @@ run = {{ agent = "long" }}
             ..Commit::default()
         })
         .unwrap();
-    let inv = pulse_contracts::run::InvocationSummary { program: "x".into(), args: vec![], cwd: "/".into() };
+    let inv = pulse_contracts::run::InvocationSummary {
+        program: "x".into(),
+        args: vec![],
+        cwd: "/".into(),
+    };
     store
-        .transition_run(rid(1), RunTransition::Start { pid: Some(1), invocation: inv }, Timestamp::from_millis(2))
+        .transition_run(
+            rid(1),
+            RunTransition::Start { pid: Some(1), invocation: inv },
+            Timestamp::from_millis(2),
+        )
         .unwrap();
     drop(store);
 
@@ -200,7 +214,11 @@ run = {{ agent = "long" }}
     assert_eq!(stopped.status, RunStatus::Interrupted);
     assert_eq!(stopped.error.as_deref(), Some("the daemon shut down"));
     let crashed = get(rid(1)).await.unwrap();
-    assert_eq!(crashed.status, RunStatus::Interrupted, "running at a crash: interrupted, never re-run");
+    assert_eq!(
+        crashed.status,
+        RunStatus::Interrupted,
+        "running at a crash: interrupted, never re-run"
+    );
     // The queued run from before the restart is started by the new daemon.
     watch.until(Some(rid(2)), RunStatus::Succeeded).await;
     t.stop().await;

@@ -106,7 +106,10 @@ impl Daemon {
         let now = opts.clock.now();
         let interrupted = store.write(move |s| s.recover_after_restart(now)).await?;
         if !interrupted.is_empty() {
-            tracing::info!("{} runs were active when the daemon stopped; marked interrupted", interrupted.len());
+            tracing::info!(
+                "{} runs were active when the daemon stopped; marked interrupted",
+                interrupted.len()
+            );
         }
         let paused = store.read(|q| q.query().flag(flags::PAUSED)).await?.is_some();
         let trust: Vec<TrustRecord> = match store.read(|q| q.query().flag(TRUST_KEY)).await? {
@@ -255,7 +258,7 @@ fn spawn_config_watch(shared: Arc<Shared>, dirs: Vec<PathBuf>) -> JoinHandle<()>
                     got = rx.recv() => if got.is_none() { return },
                 }
             }
-            tracing::info!("config changed; reloading");
+            tracing::debug!("a config file changed; reloading");
             shared.reload().await;
         }
     })
@@ -272,7 +275,11 @@ async fn retention(shared: Arc<Shared>, every: Duration) {
                 Ok(report) if report.more => tokio::task::yield_now().await,
                 Ok(report) => {
                     if report.runs + report.events > 0 {
-                        tracing::info!("retention pruned {} events and {} runs", report.events, report.runs);
+                        tracing::info!(
+                            "retention pruned {} events and {} runs",
+                            report.events,
+                            report.runs
+                        );
                     }
                     break;
                 }

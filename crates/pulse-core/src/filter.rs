@@ -120,7 +120,10 @@ mod tests {
         let cases: Vec<(EventFilter, bool)> = vec![
             (EventFilter::default(), true),
             (EventFilter { types: vec![glob("fs.*")], ..Default::default() }, true),
-            (EventFilter { types: vec![glob("git.*"), glob("fs.file.*")], ..Default::default() }, true),
+            (
+                EventFilter { types: vec![glob("git.*"), glob("fs.file.*")], ..Default::default() },
+                true,
+            ),
             (EventFilter { types: vec![glob("git.*")], ..Default::default() }, false),
             (EventFilter { sources: vec!["uni".into()], ..Default::default() }, true),
             (EventFilter { sources: vec!["pulse://fs/uni".into()], ..Default::default() }, true),
@@ -153,8 +156,11 @@ mod tests {
         let subject = EventFilter { subject: Some("*".into()), ..Default::default() };
         assert!(!CompiledFilter::compile(&subject).unwrap().matches(&no_subject));
         assert!(
-            CompiledFilter::compile(&EventFilter { subject: Some("{a".into()), ..Default::default() })
-                .is_err()
+            CompiledFilter::compile(&EventFilter {
+                subject: Some("{a".into()),
+                ..Default::default()
+            })
+            .is_err()
         );
     }
 }
