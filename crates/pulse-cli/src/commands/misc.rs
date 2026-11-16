@@ -290,9 +290,9 @@ fn print_review(r: &ProjectReview) {
         }
     }
     let defs = [
-        ("agent", r.agents.iter().map(|a| toml::to_string_pretty(a)).collect::<Vec<_>>()),
-        ("rule", r.rules.iter().map(|x| toml::to_string_pretty(x)).collect()),
-        ("source", r.sources.iter().map(|x| toml::to_string_pretty(x)).collect()),
+        ("agent", r.agents.iter().map(toml::to_string_pretty).collect::<Vec<_>>()),
+        ("rule", r.rules.iter().map(toml::to_string_pretty).collect()),
+        ("source", r.sources.iter().map(toml::to_string_pretty).collect()),
     ];
     for (kind, items) in defs {
         for item in items {

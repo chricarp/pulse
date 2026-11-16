@@ -65,8 +65,17 @@ pub async fn runs(ctx: &Ctx, cmd: RunsCmd) -> Res {
             if let Some(t) = run.ended_at {
                 print_line(&format!("ended    {t}"));
             }
-            if let Some(inv) = &run.invocation {
-                print_line(&format!("ran      {} {:?} in {}", inv.program, inv.args, inv.cwd));
+            // Rendered when the run was created: for a run awaiting approval, what approving
+            // it will execute (and it starts only if that is still so).
+            let verb = if run.started_at.is_some() { "ran     " } else { "will run" };
+            match &run.invocation {
+                Some(inv) => {
+                    print_line(&format!("{verb} {} {:?} in {}", inv.program, inv.args, inv.cwd))
+                }
+                None if run.started_at.is_none() && !run.status.is_terminal() => {
+                    print_line("will run (could not be prepared; the run will fail to start)")
+                }
+                None => {}
             }
             if let Some(e) = &run.error {
                 print_line(&format!("error    {e}"));

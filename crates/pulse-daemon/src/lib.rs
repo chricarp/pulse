@@ -32,6 +32,7 @@ mod error;
 pub mod home;
 mod hub;
 pub mod logging;
+mod release;
 mod services;
 mod shared;
 mod sources;

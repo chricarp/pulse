@@ -29,6 +29,8 @@ pub struct NewRun {
     pub chain_depth: u32,
     pub rerun_of: Option<RunId>,
     pub snapshot: RunSnapshot,
+    /// What the run will execute, rendered from the snapshot when it is created.
+    pub invocation: Option<InvocationSummary>,
 }
 
 /// A requested state change, with the data that goes with it.
@@ -41,7 +43,12 @@ pub enum RunTransition {
     /// `pending_approval | queued → cancelled`. A running run is cancelled by signalling its
     /// process; the supervisor's result is then recorded with `Finish { status: Cancelled }`.
     Cancel,
-    /// `queued → running`.
+    /// `pending_approval | queued → cancelled` by the daemon, with the reason: the run can no
+    /// longer start as created (its agent or rule changed).
+    Withdraw { reason: String },
+    /// `queued → running`. Recorded before the process is spawned (`pid` is set once known,
+    /// [`Store::set_run_pid`]), so a crash in between leaves a `running` run that recovery marks
+    /// `interrupted`, never a `queued` one that would start a second copy.
     Start { pid: Option<u32>, invocation: InvocationSummary },
     /// `queued → failed`: the process could not be spawned.
     FailToStart { error: String },
@@ -55,7 +62,7 @@ impl RunTransition {
         match self {
             RunTransition::Approve => RunStatus::Queued,
             RunTransition::Reject { .. } => RunStatus::Rejected,
-            RunTransition::Cancel => RunStatus::Cancelled,
+            RunTransition::Cancel | RunTransition::Withdraw { .. } => RunStatus::Cancelled,
             RunTransition::Start { .. } => RunStatus::Running,
             RunTransition::FailToStart { .. } => RunStatus::Failed,
             RunTransition::Finish { status, .. } => *status,
@@ -65,8 +72,8 @@ impl RunTransition {
 
 pub(crate) fn insert(tx: &Transaction<'_>, r: &NewRun) -> Result<()> {
     tx.prepare_cached(
-        "INSERT INTO runs (id, rule, agent, event_id, status, created_at, prompt, chain_depth, rerun_of, snapshot)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO runs (id, rule, agent, event_id, status, created_at, prompt, chain_depth, rerun_of, snapshot, invocation)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?
     .execute(params![
         r.id.to_string(),
@@ -79,6 +86,7 @@ pub(crate) fn insert(tx: &Transaction<'_>, r: &NewRun) -> Result<()> {
         r.chain_depth,
         r.rerun_of.map(|x| x.to_string()),
         serde_json::to_string(&r.snapshot)?,
+        r.invocation.as_ref().map(serde_json::to_string).transpose()?,
     ])?;
     Ok(())
 }
@@ -161,7 +169,9 @@ impl Store {
         use RunStatus::*;
         let from_ok = match &t {
             RunTransition::Approve | RunTransition::Reject { .. } => from == PendingApproval,
-            RunTransition::Cancel => matches!(from, PendingApproval | Queued),
+            RunTransition::Cancel | RunTransition::Withdraw { .. } => {
+                matches!(from, PendingApproval | Queued)
+            }
             RunTransition::Start { .. } | RunTransition::FailToStart { .. } => from == Queued,
             RunTransition::Finish { status, .. } => {
                 from == Running
@@ -201,7 +211,7 @@ impl Store {
                     params![rid, to.as_str(), ms, pid, serde_json::to_string(invocation)?],
                 )?;
             }
-            RunTransition::FailToStart { error } => {
+            RunTransition::Withdraw { reason: error } | RunTransition::FailToStart { error } => {
                 tx.execute(
                     "UPDATE runs SET status = ?2, ended_at = ?3, error = ?4 WHERE id = ?1",
                     params![rid, to.as_str(), ms, error],
@@ -218,6 +228,15 @@ impl Store {
             .ok_or_else(|| StoreError::NotFound { what: "run", id: rid.clone() })?;
         tx.commit()?;
         Ok(run)
+    }
+
+    /// Records the pid of a run's process once it is known (the run is already `running`).
+    pub fn set_run_pid(&mut self, id: RunId, pid: u32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET pid = ?2 WHERE id = ?1 AND status = 'running'",
+            params![id.to_string(), pid],
+        )?;
+        Ok(())
     }
 
     /// At startup: runs left `running` by a daemon that died become `interrupted` (their

@@ -70,6 +70,7 @@ fn new_run(n: u64, event: EventId, rule: &str, status: RunStatus) -> NewRun {
         chain_depth: 1,
         rerun_of: None,
         snapshot: RunSnapshot { rule: None, agent: agent() },
+        invocation: None,
     }
 }
 
@@ -286,6 +287,13 @@ fn run_transitions() {
         (Queued, start.clone(), Ok(Running)),
         (Queued, RunTransition::Cancel, Ok(Cancelled)),
         (Queued, RunTransition::FailToStart { error: "ENOENT".into() }, Ok(Failed)),
+        (
+            PendingApproval,
+            RunTransition::Withdraw { reason: "agent changed".into() },
+            Ok(Cancelled),
+        ),
+        (Queued, RunTransition::Withdraw { reason: "agent changed".into() }, Ok(Cancelled)),
+        (Running, RunTransition::Withdraw { reason: "agent changed".into() }, Err(())),
         (Queued, finish(Succeeded), Err(())),
         // A graceful shutdown terminates running runs and records them as interrupted.
         (Running, finish(Interrupted), Ok(Interrupted)),
@@ -309,17 +317,26 @@ fn run_transitions() {
     // A full lifecycle, with the outbox row from approval and the recorded fields.
     let mut s = Store::open_in_memory().unwrap();
     let e = fs(1, "/a");
+    let shown =
+        InvocationSummary { program: "claude".into(), args: vec!["-p".into()], cwd: "/w".into() };
     s.commit(&Commit {
         events: vec![e.clone()],
-        runs: vec![new_run(1, e.id, "r", PendingApproval)],
+        runs: vec![NewRun {
+            invocation: Some(shown.clone()),
+            ..new_run(1, e.id, "r", PendingApproval)
+        }],
         ..Default::default()
     })
     .unwrap();
+    // What an approval shows is stored with the pending run.
+    assert_eq!(s.query().run(rid(1)).unwrap().unwrap().invocation, Some(shown));
     assert!(s.claim_outbox(t(0), 10).unwrap().is_empty());
     s.transition_run(rid(1), RunTransition::Approve, t(5)).unwrap();
     assert_eq!(s.claim_outbox(t(5), 10).unwrap()[0].effect, Effect::StartRun { run: rid(1) });
     let run = s.transition_run(rid(1), start, t(6)).unwrap();
     assert_eq!((run.pid, run.started_at), (Some(42), Some(t(6))));
+    s.set_run_pid(rid(1), 43).unwrap();
+    assert_eq!(s.query().run(rid(1)).unwrap().unwrap().pid, Some(43));
     assert!(matches!(
         s.transition_run(rid(1), RunTransition::Cancel, t(7)),
         Err(StoreError::IllegalTransition { .. })

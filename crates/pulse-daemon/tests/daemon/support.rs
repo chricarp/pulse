@@ -127,6 +127,28 @@ pub fn file_created(source: &str, path: &str) -> NewEvent {
 
 /// Ends every run at once: `Started`, one output line per argument, exit 0. No process, no
 /// timer, so it is safe under `tokio::time::pause()`.
+/// Spawns nothing and never reports a start: it tells the test when a spawn was asked for, then
+/// holds the run until it is cancelled. The window between "spawn" and "started" stays open.
+pub struct SpawnGate(pub mpsc::UnboundedSender<RunId>);
+
+impl Supervisor for SpawnGate {
+    fn supervise(
+        &self,
+        inv: Invocation,
+        _: Box<dyn OutputParser>,
+        _events: mpsc::Sender<SupervisorEvent>,
+        _: SuperviseOptions,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<RunEnd, SuperviseError>> {
+        let id = inv.env.iter().find(|(k, _)| k == "PULSE_RUN_ID").unwrap().1.parse().unwrap();
+        let _ = self.0.send(id);
+        Box::pin(async move {
+            cancel.cancelled().await;
+            Ok(RunEnd::Cancelled)
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InstantSupervisor;
 
