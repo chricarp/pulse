@@ -77,6 +77,8 @@ export function takeResume(store: Storage | null = storage()): Resume | null {
   try {
     raw = store?.getItem(RESUME_STORAGE_KEY) ?? null;
     store?.removeItem(RESUME_STORAGE_KEY);
+    // Earlier builds kept the token itself here; a tab reloaded since must not keep it.
+    store?.removeItem("pulse.token");
   } catch {
     return null;
   }

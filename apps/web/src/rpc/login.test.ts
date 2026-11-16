@@ -100,8 +100,9 @@ describe("login", () => {
     handlers.get("pageshow")?.({ persisted: true });
     expect(store.length).toBe(0);
     handlers.get("pagehide")?.({});
+    store.setItem("pulse.token", TOKEN); // left by an earlier build
     expect(takeResume(store)?.instance).toBe(INSTANCE);
-    expect(store.length).toBe(0); // taken means removed
+    expect(store.length).toBe(0); // taken means removed, and the old token with it
     // A rejected token leaves nothing for a reload.
     keeper.forget();
     handlers.get("pagehide")?.({});
