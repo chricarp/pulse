@@ -36,14 +36,19 @@ pub(crate) struct Rendered {
     events_json: Vec<String>,
 }
 
-/// Renders as many of `events` as fit `limits.result_max_bytes`, in order, and at least one.
-pub(crate) fn render(events: &[Event], limits: &Limits) -> Rendered {
-    let per_event = PromptLimits {
+/// The bounds on one event in a result: each string to `field_max_bytes`, and the event to a
+/// third of the result budget, so a page shows a few of them. SEP-3415 uses the same.
+pub(crate) fn per_event(limits: &Limits) -> PromptLimits {
+    PromptLimits {
         inline_max_chars: 200,
         field_max_bytes: limits.field_max_bytes,
-        // One event may use at most a third of the budget, so a page shows a few of them.
         data_max_bytes: u32::try_from(limits.result_max_bytes / 3).unwrap_or(u32::MAX),
-    };
+    }
+}
+
+/// Renders as many of `events` as fit `limits.result_max_bytes`, in order, and at least one.
+pub(crate) fn render(events: &[Event], limits: &Limits) -> Rendered {
+    let per_event = per_event(limits);
     let mut out = Rendered { included: 0, shortened: false, events_json: Vec::new() };
     let mut used = 0;
     for event in events {

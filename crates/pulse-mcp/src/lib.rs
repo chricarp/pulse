@@ -36,6 +36,7 @@ use tokio_util::sync::CancellationToken;
 mod http;
 mod present;
 mod server;
+mod sessions;
 pub mod stdio;
 mod subscriptions;
 mod tools;
@@ -174,21 +175,52 @@ impl Default for McpConfig {
 }
 
 /// Bounds on what one agent can hold open and how much one result carries.
+///
+/// These are not user configuration: they are sized so that one agent token, however it is
+/// used, cannot starve the daemon's other clients, and so that no honest client comes near
+/// them. Each default says how it was chosen. Tests lower them to reach the edges cheaply.
 #[derive(Clone, Debug)]
 pub struct Limits {
+    /// HTTP requests on `/mcp` in flight per agent, open SSE streams included (a long
+    /// `wait_for_events`, a SEP-3415 push stream, a pre-2026 client's standalone `GET`). Past
+    /// it: HTTP 429. Default 32: an honest client holds one or two (a wait and a `GET` stream),
+    /// so this is room for about a dozen clients sharing one agent, and it keeps
+    /// `waits_per_agent` plus `streams_per_agent` below it, so an agent at both of those can
+    /// still call `unsubscribe` or `query_events`.
+    pub requests_per_agent: usize,
+    /// HTTP requests on `/mcp` in flight across all agents. Past it: HTTP 503. Default 256: each
+    /// holds a socket, and this leaves most of even a 1024 descriptor limit to the daemon, its
+    /// sources and `/ws`, with room for eight agents at their full share.
+    pub requests_total: usize,
+    /// Sessions per agent for clients on protocol revisions before 2026-07-28 (2026-07-28 has
+    /// none). A new `initialize` past it closes that agent's least recently used session that
+    /// has no request or stream open (the client of a closed session gets HTTP 404 and, per the
+    /// spec, starts a new one). Default 48: above `requests_per_agent`, so at least one session
+    /// is always idle and an `initialize` is never refused; a session costs about 56 KB, so
+    /// this is under 3 MB per agent.
+    pub sessions_per_agent: usize,
+    /// Concurrent `wait_for_events` calls per subscription. Default 4: one per client, plus a
+    /// few left behind by clients that gave up without closing the connection (a pre-2026
+    /// session does not cancel a request when its connection drops; it ends at its timeout).
+    pub waits_per_subscription: usize,
+    /// Concurrent `wait_for_events` calls per agent, over all its subscriptions. Default 16:
+    /// one per subscription at the subscription limit.
+    pub waits_per_agent: usize,
     /// Subscriptions per agent. Subscribing again with the same filter reuses one.
     pub subscriptions_per_agent: usize,
     /// Subscriptions across all agents.
     pub subscriptions_total: usize,
     /// A subscription nobody has waited on for this long is removed.
     pub subscription_idle_ttl: std::time::Duration,
-    /// Concurrent SEP-3415 push streams per agent.
+    /// Concurrent SEP-3415 push streams per agent. Default 8: a client opens one per event
+    /// name it follows, and with `waits_per_agent` it stays below `requests_per_agent`.
     pub streams_per_agent: usize,
     /// Events per tool result when the caller does not ask for fewer.
     pub default_events: u32,
     /// Events per tool result, at most.
     pub max_events: u32,
-    /// Bytes of event JSON per tool result. Events past it are left for the next call.
+    /// Bytes of event JSON per tool result, SEP-3415 poll result and push page. Events past it
+    /// are left for the next call or page.
     pub result_max_bytes: usize,
     /// Bytes per string inside an event before it is shortened.
     pub field_max_bytes: u32,
@@ -205,10 +237,15 @@ impl Default for Limits {
     fn default() -> Self {
         use std::time::Duration;
         Limits {
+            requests_per_agent: 32,
+            requests_total: 256,
+            sessions_per_agent: 48,
+            waits_per_subscription: 4,
+            waits_per_agent: 16,
             subscriptions_per_agent: 16,
             subscriptions_total: 256,
             subscription_idle_ttl: Duration::from_secs(30 * 60),
-            streams_per_agent: 16,
+            streams_per_agent: 8,
             default_events: 20,
             max_events: 50,
             result_max_bytes: 24 * 1024,

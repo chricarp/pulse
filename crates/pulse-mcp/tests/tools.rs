@@ -361,3 +361,53 @@ async fn clients_on_the_initialize_handshake_work_too() {
     assert!(!err);
     assert_eq!(split(&text).1.len(), 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn concurrent_waits_are_bounded_per_subscription_and_per_agent() {
+    let fake = Fake::new();
+    let config = McpConfig {
+        limits: Limits { waits_per_subscription: 2, waits_per_agent: 3, ..Limits::default() },
+        ..fake.config()
+    };
+    let (client, _) = connect(&fake, config, alice()).await;
+    let (files, files_cursor) = subscribe(&client, json!({ "types": ["fs.*"] })).await;
+    let (meetings, meetings_cursor) = subscribe(&client, json!({ "types": ["calendar.*"] })).await;
+    let mut held = Vec::new();
+    for _ in 0..2 {
+        held.push(start_wait(&client, &fake, &files, &files_cursor).await);
+    }
+    let args = |sub: &Value, cursor: &Value| json!({ "subscription": sub, "cursor": cursor, "timeout_seconds": 0 });
+    let reads_before = *fake.queries.borrow();
+    let (err, text) = tool(&client, "wait_for_events", args(&files, &files_cursor)).await;
+    assert!(err && text.contains("2 waits are already open on this subscription"), "{text}");
+    assert_eq!(*fake.queries.borrow(), reads_before, "refused before reading the log");
+
+    held.push(start_wait(&client, &fake, &meetings, &meetings_cursor).await);
+    let (err, text) = tool(&client, "wait_for_events", args(&meetings, &meetings_cursor)).await;
+    assert!(err && text.contains("3 waits open, the limit for one agent"), "{text}");
+
+    // An event ends the two waits on `files`; there is room again.
+    fake.tick();
+    fake.file("/home/me/University/a.pdf");
+    for w in held.drain(..2) {
+        assert!(!w.await.unwrap().unwrap().is_error.unwrap_or(false));
+    }
+    let (err, text) = tool(&client, "wait_for_events", args(&meetings, &meetings_cursor)).await;
+    assert!(!err, "{text}");
+}
+
+/// Starts a long wait and returns once it has leased the subscription and read the log.
+async fn start_wait(
+    client: &Client,
+    fake: &Fake,
+    sub: &Value,
+    cursor: &Value,
+) -> tokio::task::JoinHandle<Result<rmcp::model::CallToolResult, rmcp::ServiceError>> {
+    let mut reads = fake.queries.subscribe();
+    let before = *reads.borrow_and_update();
+    let peer = client.peer().clone();
+    let args = json!({ "subscription": sub, "cursor": cursor, "timeout_seconds": 600 });
+    let waiting = tokio::spawn(async move { peer.call_tool(call("wait_for_events", args)).await });
+    reads.wait_for(|n| *n > before).await.unwrap();
+    waiting
+}

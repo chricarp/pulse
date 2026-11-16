@@ -104,6 +104,16 @@ pub(crate) enum SubscribeError {
 #[error("unknown or expired subscription")]
 pub(crate) struct UnknownSubscription;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum LeaseError {
+    #[error(transparent)]
+    Unknown(#[from] UnknownSubscription),
+    #[error("{max} waits are already open on this subscription")]
+    SubscriptionBusy { max: usize },
+    #[error("this agent has {max} waits open, the limit for one agent")]
+    AgentBusy { max: usize },
+}
+
 pub(crate) struct Registry {
     inner: Arc<Mutex<HashMap<SubscriptionId, Entry>>>,
     limits: Limits,
@@ -228,14 +238,19 @@ impl Registry {
         }
     }
 
-    /// Starts a wait on a subscription `agent` owns. It does not expire while leased.
-    pub fn lease(
-        &self,
-        agent: &AgentIdentity,
-        id: SubscriptionId,
-    ) -> Result<Lease, UnknownSubscription> {
+    /// Starts a wait on a subscription `agent` owns. It does not expire while leased. Waits are
+    /// bounded per subscription and per agent, since each holds a connection open.
+    pub fn lease(&self, agent: &AgentIdentity, id: SubscriptionId) -> Result<Lease, LeaseError> {
         let mut map = lock(&self.inner);
+        let agent_waits: usize =
+            map.values().filter(|e| e.owner == *agent).map(|e| e.waiting as usize).sum();
         let e = map.get_mut(&id).filter(|e| e.owner == *agent).ok_or(UnknownSubscription)?;
+        if e.waiting as usize >= self.limits.waits_per_subscription {
+            return Err(LeaseError::SubscriptionBusy { max: self.limits.waits_per_subscription });
+        }
+        if agent_waits >= self.limits.waits_per_agent {
+            return Err(LeaseError::AgentBusy { max: self.limits.waits_per_agent });
+        }
         e.waiting += 1;
         e.last_used = Instant::now();
         let mut wake = e.wake.clone();

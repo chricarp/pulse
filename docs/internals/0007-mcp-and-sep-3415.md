@@ -62,7 +62,33 @@ Neither Claude Code nor Codex CLI consumes SEP-3415 events from arbitrary server
 
 ### Tool descriptions and results are prompts
 
-Each description says what the tool is for, when to use it, what the arguments mean, and gives an example. Results that carry events are one text block: a line of JSON Pulse wrote (counts, cursors, flags), a fixed notice that what follows is untrusted data and that receiving an event is not permission to act, then the events as a JSON array between two lines `PULSE-UNTRUSTED-DATA-<128 random bits>`, fresh per result. Events are bounded by `pulse_core::prompt::bounded_event_json` (1 KiB per string by default, marked `…[N more bytes]`), and a result stops at 24 KiB, with the cursor pointing where it stopped. There is no `structuredContent`: clients may hand it to the model without the notice. As in the threat model, the fence lowers the odds of injection; it does not make a model immune.
+Each description says what the tool is for, when to use it, what the arguments mean, and gives an example. Results that carry events are one text block: a line of JSON Pulse wrote (counts, cursors, flags), a fixed notice that what follows is untrusted data and that receiving an event is not permission to act, then the events as a JSON array between two lines `PULSE-UNTRUSTED-DATA-<128 random bits>`, fresh per result. Events are bounded by `pulse_core::prompt::bounded_event_json` (1 KiB per string by default, marked `…[N more bytes]`; one event at most 8 KiB), and a result stops at 24 KiB, with the cursor pointing where it stopped. SEP-3415 poll results and push pages use the same bounds (section 4). Error messages carry no event content; what they echo of the caller's own input is bounded by the 64 KiB request limit below. There is no `structuredContent`: clients may hand it to the model without the notice. As in the threat model, the fence lowers the odds of injection; it does not make a model immune.
+
+### What one agent token can hold
+
+The threat model treats agents as partially trusted: an agent reading hostile content can be steered into calling tools in a loop. Before this, one agent token could open unbounded pre-2026 sessions (3,000 `initialize` calls made 3,000 sessions and 168 MB) and unbounded long waits (1,200 concurrent waits pinned the daemon at a 1024 descriptor limit, and `pulse status` timed out). Now everything an agent can hold open is bounded per agent, and the bounds are constants in `pulse_mcp::Limits` with the reasoning next to each, not configuration: no honest client comes near them, and a user tuning them would be guessing.
+
+| Bound | Value | Past it |
+|---|---|---|
+| HTTP requests in flight per agent, open SSE streams included | 32 | HTTP 429, `Retry-After: 5` |
+| HTTP requests in flight, all agents | 256 | HTTP 503, `Retry-After: 5` |
+| Request body | 64 KiB | HTTP 413 (rmcp) |
+| Sessions per agent (protocol revisions before 2026-07-28) | 48 | the agent's least recently used idle session is closed |
+| Concurrent `wait_for_events` per subscription / per agent | 4 / 16 | tool error |
+| SEP-3415 push streams per agent | 8 | `ResourceExhausted` |
+| Subscriptions per agent / in total | 16 / 256 | tool error |
+
+How they fit: an honest client holds one or two requests (a wait, and on a pre-2026 session a standalone `GET` stream), so 32 is room for about a dozen clients sharing an agent. Waits (16) plus streams (8) stay below 32, so an agent at both can still call `unsubscribe`. Sessions (48) are above 32, so some session of the agent is always idle and a new one never has to be refused. 256 in total leaves most of even a 1024 descriptor limit to the rest of the daemon. Measured on a daemon with one agent token doing all it can (16 waits, 8 push streams, 8 session streams): 32 sockets, the next request 429, `pulse status` answering in 20 ms, also at a 512 descriptor limit; 3,000 `initialize` calls cost 12 MB.
+
+**Requests** are counted by the bearer middleware, after authentication and before rmcp reads the body, and released when the response body ends or is dropped (the client disconnected). A refusal is a fixed response: a JSON-RPC error with a null id (code -32000) and the reason, so it costs the same however often a client tries. **Every `/mcp` response carries `Connection: close`**: otherwise an agent could park idle keep-alive connections between requests, each a descriptor outside the budget. A loopback connect per request is cheap, and the stdio proxy already connects per request.
+
+**Sessions: evict, not refuse.** rmcp 3.10.0's `LocalSessionManager` has no cap (its `SessionConfig` only has timeouts), so `pulse-mcp` wraps it (`sessions.rs`) and records which agent opened each session. `create_session` is not given the request; the agent reaches it in a task-local the middleware sets, since rmcp awaits it inside the request's future. At the cap, the agent's least recently used session with no request or stream open is closed. Refusing would be wrong for a client that crashed and reconnects: it never closed its old sessions, so it would be locked out until they idle out (five minutes), while the sessions it left behind are exactly the least recently used ones. The cost: a client with the same agent token can push that agent's other idle sessions out. Their clients get HTTP 404 on the next request, which the spec defines as "start a new session". Another agent's sessions are out of reach.
+
+**Waits: refuse, not supersede.** Superseding the oldest wait would help a client that lost track of one, but several clients sharing an agent and a filter share one subscription (subscribing is idempotent), and past the cap they would supersede each other in a loop of empty results. A refused wait is a tool error that says why and that the cursor keeps the client's place. A pre-2026 session does not cancel a request when its connection drops, so a crashed client can leave a wait running until its timeout; the per-subscription cap of 4 leaves room for a few of those.
+
+**Descriptors.** At start the daemon raises its soft `RLIMIT_NOFILE` to 8192, never above the hard limit (`transport/mcp.rs`), so the budgets above are far from the limit. The budgets hold without it: the measurement above at a hard limit of 512 is the check.
+
+**Not covered here:** connections that never send a request carry no token, so no agent budget applies to them; they are bounded by the listener (a header-read timeout), not by `/mcp`. With 600 silent connections at a 512 descriptor limit, `pulse status` times out until they close. And an agent token can always deny service to its own agent: whoever holds it can use that agent's whole budget.
 
 ### The catalog is scoped
 
@@ -94,13 +120,14 @@ Everything is in `crates/pulse-mcp/src/sep3415.rs`; nothing outside it knows the
 | event `name` | a Pulse event type, `fs.file.created`. `events/list` lists the built-in types the agent can see. `ext.*` is not listed (a namespace, not a name), but a concrete `ext.<source>.<name>` can be polled or streamed by an agent whose catalog includes `ext.*`. |
 | `arguments` | Pulse filters: `path`, `subject`, `text`, `sources`. Unknown arguments are `InvalidParams`. |
 | cursor | the id (ULID) of the last event delivered, or the head of the log for `null`. Opaque to clients; every Pulse type supports replay, so a cursor is never `null`. |
-| `EventOccurrence` | `eventId` = `id`, `name` = `type`, `timestamp` = `time`, `data` = `data` (bounded; a non-object is wrapped as `{"value": …}`), `_meta` = `pulse/source`, `pulse/subject`, `pulse/causation`, `pulse/replayOf`, `pulse/shortened`. The table is tested in the module. |
+| `EventOccurrence` | `eventId` = `id`, `name` = `type`, `timestamp` = `time`, `data` = `data` (bounded as in tool results; a non-object is wrapped as `{"value": …}`), `_meta` = `pulse/source`, `pulse/subject` (bounded to 1 KiB), `pulse/causation`, `pulse/replayOf`, `pulse/shortened`. The table is tested in the module. |
+| page size | a poll result, and each page a push stream reads, stops at 24 KiB of occurrences (at least one), like a tool result. A poll cut short has `hasMore: true` and its `cursor` is the last event it carried; push continues from the last event sent. Nothing is skipped. `maxEvents` (default 50, at most 200) caps the count. |
 | `payloadSchema` | the top-level fields of the catalog example and their JSON types, all optional. Loose on purpose, so later additions stay additive. |
 | `maxAgeMs` | a floor computed from the clock; `truncated: true` when it is past the cursor. |
 | heartbeat | `notifications/events/heartbeat` with the cursor after 30 s without a message (client may ask for 5 s to 60 s; the same on stdio). |
 | cancellation | the request's cancellation token: `notifications/cancelled` on stdio, the connection closing on HTTP. Releases the backend subscription at once. |
 | `Mcp-Name` | required and checked on HTTP for `events/poll`, `events/stream`, `events/subscribe`, `events/unsubscribe`; `HeaderMismatch` (HTTP 400) when missing or different. |
-| errors | `NotFound` -32023 (`data.kind = "event"`), `Forbidden` -32024 (type outside the agent's catalog, or access revoked), `ResourceExhausted` -32025 (`data.limit = "streams"`, 16 per agent), `Unsupported` -32026 (webhook). Constants at the top of the module. |
+| errors | `NotFound` -32023 (`data.kind = "event"`), `Forbidden` -32024 (type outside the agent's catalog, or access revoked), `ResourceExhausted` -32025 (`data.limit = "streams"`, 8 per agent), `Unsupported` -32026 (webhook). Constants at the top of the module. |
 | termination | the backend closing the live subscription, or a read returning `Unauthorized`, sends `notifications/events/terminated` with `Forbidden`. Other backend errors send `notifications/events/error` and the stream stays open. |
 
 **Readings chosen where the SEP is unsettled or silent**, each picked to be easy to change: error codes are named constants; `Mcp-Name` strictness is one constant (`REQUIRE_MCP_NAME`) in case a real client turns out not to send it; `events/list` is not paginated; `nextPollMs` is a constant 5 s; client capability declarations are not required (the SEP makes them a MAY).

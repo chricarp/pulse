@@ -61,14 +61,26 @@ async fn advertised_only_when_enabled() {
         let ext = v.pointer("/result/capabilities/extensions/io.modelcontextprotocol~1events");
         assert_eq!(ext, enabled.then(|| json!({})).as_ref(), "{v}");
         let list = rpc(2, "events/list", json!({}));
-        let r = router.oneshot(http_request(ALICE_TOKEN, &list, None)).await.unwrap();
+        let r = router.clone().oneshot(http_request(ALICE_TOKEN, &list, None)).await.unwrap();
         let v = json_body(r).await;
         if enabled {
             assert_eq!(v.pointer("/result/resultType"), Some(&json!("complete")));
-        } else {
-            assert_eq!(v.pointer("/error/code"), Some(&json!(-32601)));
+            continue;
+        }
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32601)));
+        // Off means off: every extension method, including the ones that read events.
+        for method in ["events/poll", "events/stream", "events/subscribe", "events/unsubscribe"] {
+            let body = rpc(3, method, json!({ "name": "fs.file.created" }));
+            let r = router
+                .clone()
+                .oneshot(http_request(ALICE_TOKEN, &body, Some("fs.file.created")))
+                .await
+                .unwrap();
+            let v = json_body(r).await;
+            assert_eq!(v.pointer("/error/code"), Some(&json!(-32601)), "{method}: {v}");
         }
     }
+    assert_eq!(*fake.queries.borrow(), 0, "nothing was read with the extension off");
 }
 
 #[tokio::test(start_paused = true)]
@@ -172,6 +184,8 @@ async fn errors_use_the_provisional_codes() {
             Value::Null,
         ),
         ("events/stream", json!({ "name": "fs.*" }), -32023, Value::Null),
+        // Scopes apply to push as to poll and the tools: alice may not see git events.
+        ("events/stream", json!({ "name": "git.commit.created" }), -32024, Value::Null),
         (
             "events/subscribe",
             json!({ "name": "fs.file.created" }),
@@ -367,4 +381,79 @@ async fn mcp_name_is_required_and_must_match() {
             assert_eq!(v.pointer("/result/resultType"), Some(&json!("complete")), "{v}");
         }
     }
+}
+
+/// Events of about 7 KiB each: three fill most of a 24 KiB page.
+fn emit_big(fake: &Fake, n: usize) -> Vec<String> {
+    (0..n)
+        .map(|i| {
+            let path = format!("/home/me/University/{i}.pdf");
+            let mut data = json!({ "path": path });
+            for f in 0..7 {
+                data[format!("f{f}")] = json!("x".repeat(1000));
+            }
+            fake.emit("fs.file.created", Some(&path), data).id.to_string()
+        })
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn poll_pages_are_bounded_in_bytes_and_skip_nothing() {
+    let fake = Fake::new();
+    let start = fake.file("/home/me/University/start.pdf").id.to_string();
+    let emitted = emit_big(&fake, 12);
+    let (client, _) = connect(&fake, fake.config(), alice()).await;
+    let budget = Limits::default().result_max_bytes;
+    let mut cursor = json!(start);
+    let mut got = Vec::new();
+    let mut pages = 0;
+    loop {
+        let params = json!({ "name": "fs.file.created", "cursor": cursor, "maxEvents": 200 });
+        let v = custom(&client, "events/poll", params).await.unwrap();
+        pages += 1;
+        let events = v["events"].as_array().unwrap();
+        assert!(!events.is_empty());
+        assert!(v["events"].to_string().len() <= budget, "page {pages}");
+        got.extend(events.iter().map(|e| e["eventId"].as_str().unwrap().to_owned()));
+        // The cursor is the last event delivered, so the next page starts right after it.
+        assert_eq!(v["cursor"], *got.last().unwrap());
+        cursor = v["cursor"].clone();
+        if v["hasMore"] != true {
+            break;
+        }
+    }
+    assert_eq!(got, emitted);
+    assert!(pages >= 4, "{pages}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn push_pages_are_bounded_in_bytes_and_skip_nothing() {
+    let fake = Fake::new();
+    let start = fake.file("/home/me/University/start.pdf").id.to_string();
+    let emitted = emit_big(&fake, 12);
+    let (client, mut notes) = connect(&fake, fake.config(), alice()).await;
+    let reads = *fake.queries.borrow();
+    let handle = client
+        .peer()
+        .send_cancellable_request(
+            stream_request(json!({ "name": "fs.file.created", "cursor": start })),
+            PeerRequestOptions::no_options(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(next_custom(&mut notes).await.method, "notifications/events/active");
+    let mut got = Vec::new();
+    while got.len() < emitted.len() {
+        let p = next_custom(&mut notes).await.params.unwrap();
+        assert_eq!(p["cursor"], p["eventId"]);
+        got.push(p["eventId"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(got, emitted);
+    // About 84 KiB of events: read and sent a budget's worth at a time, not in one page.
+    assert!(*fake.queries.borrow() - reads >= 4, "{}", *fake.queries.borrow() - reads);
+    // Then quiet: the heartbeat carries the last cursor sent.
+    let n = next_custom(&mut notes).await;
+    assert_eq!(n.method, "notifications/events/heartbeat");
+    assert_eq!(n.params.unwrap()["cursor"], *emitted.last().unwrap());
+    handle.cancel(None).await.unwrap();
 }
