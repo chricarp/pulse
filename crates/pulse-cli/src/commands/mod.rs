@@ -37,9 +37,40 @@ pub async fn run(ctx: &Ctx, command: Command) -> Res {
         Command::Runs(cmd) => runs::runs(ctx, cmd).await,
         Command::Agents(args) => misc::agents(ctx, args).await,
         Command::Mcp(args) => mcp::bridge(ctx, args).await,
-        Command::Sources => misc::sources(ctx).await,
+        Command::Sources(args) => misc::sources(ctx, args).await,
         Command::Project(cmd) => misc::project(ctx, cmd).await,
     }
+}
+
+/// Reads one definition (a bare TOML table) from `file`, or stdin for `-`.
+pub fn read_definition<T: serde::de::DeserializeOwned>(
+    file: &std::path::Path,
+) -> Result<T, Failure> {
+    let text = if file.as_os_str() == "-" {
+        std::io::read_to_string(std::io::stdin())?
+    } else {
+        std::fs::read_to_string(file)
+            .map_err(|e| Failure::Message(format!("cannot read {}: {e}", file.display())))?
+    };
+    toml::from_str(&text).map_err(|e| Failure::Message(format!("{}: {e}", file.display())))
+}
+
+/// After a write: prints the config warnings about `item` (`rule "x"`, `agent "y"`), so a
+/// definition that cannot work is pointed out when it is added.
+pub async fn warn_about(
+    ctx: &Ctx,
+    client: &pulse_daemon::client::Client,
+    item: &str,
+) -> Result<(), Failure> {
+    use pulse_contracts::rpc::{Empty, method};
+    if ctx.json {
+        return Ok(());
+    }
+    let report = client.call::<method::SystemConfigErrors>(Empty {}).await?;
+    for w in report.warnings.iter().filter(|w| w.item.as_deref() == Some(item)) {
+        crate::eprint_line(&format!("warning: {}", w.message));
+    }
+    Ok(())
 }
 
 pub fn now() -> Timestamp {

@@ -235,6 +235,10 @@ impl Shared {
         {
             let mut errors = self.config_errors.write().unwrap_or_else(|p| p.into_inner());
             if *errors != loaded.errors {
+                // A daemon runs headless: the log is where a broken file is noticed.
+                for e in &loaded.errors {
+                    tracing::warn!("config error (the last good config stays in effect): {e}");
+                }
                 *errors = loaded.errors;
                 topics.push(StateTopic::Config);
             }
@@ -248,9 +252,18 @@ impl Shared {
         }
         if let Some(snapshot) = loaded.snapshot {
             let old = self.snapshot();
+            if old.warnings != snapshot.warnings {
+                for w in &snapshot.warnings {
+                    tracing::warn!("config: {w}");
+                }
+                topics.push(StateTopic::Config);
+            }
             if old.config != snapshot.config {
                 topics.extend(changed_topics(&old.config, &snapshot.config));
-                if old.config.daemon.port != snapshot.config.daemon.port {
+                // `port` is set once listening; the first load is what the listener uses.
+                if self.port.get().is_some()
+                    && old.config.daemon.port != snapshot.config.daemon.port
+                {
                     tracing::info!("the new [daemon] port takes effect when the daemon restarts");
                 }
                 if old.config.daemon.mcp_events_extension

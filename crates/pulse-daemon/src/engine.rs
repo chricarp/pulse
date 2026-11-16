@@ -148,10 +148,13 @@ enum Reply {
 
 impl Engine {
     /// Builds the engine with router state rebuilt from the store: snooze and breaker from
-    /// `rule_state`, recent fires from deliveries, backlogs from runs, the pause flag.
+    /// `rule_state`, recent fires from deliveries, backlogs from runs, the pause flag, the
+    /// dedupe table, and the runs attribution still has to know about. `interrupted` are the
+    /// runs that were still running when the previous daemon stopped.
     pub(crate) async fn restore(
         shared: Arc<Shared>,
         snapshot: Arc<Snapshot>,
+        interrupted: &[RunId],
     ) -> ServiceResult<Engine> {
         let limits = &snapshot.config.limits;
         let mut engine = Engine {
@@ -165,7 +168,53 @@ impl Engine {
         };
         engine.restore_rules().await?;
         engine.refresh_backlog().await?;
+        engine.restore_dedupe().await?;
+        engine.restore_recent_runs(interrupted).await?;
         Ok(engine)
+    }
+
+    /// Keys accepted within the TTL stay duplicates across a restart: an external source that
+    /// retries after an outage must not fire twice.
+    async fn restore_dedupe(&mut self) -> ServiceResult<()> {
+        let limits = &self.snapshot.config.limits;
+        let since = self.shared.clock.now().saturating_sub(limits.dedupe_ttl);
+        let limit = limits.dedupe_capacity;
+        let keys =
+            self.shared.store.read(move |q| q.query().recent_dedupe_keys(since, limit)).await?;
+        for (source, key, at) in keys {
+            self.dedupe.check(&format!("{source}\0{key}"), at);
+        }
+        Ok(())
+    }
+
+    /// Runs that ended within the grace period still attribute events. A run that was running
+    /// when the daemon died may still be running (its agent is in its own process group and
+    /// was not killed), and nothing enforces its timeout any more; it is treated as active
+    /// until its timeout would have ended it, so an orphan's late writes are still its own.
+    async fn restore_recent_runs(&mut self, interrupted: &[RunId]) -> ServiceResult<()> {
+        let now = self.shared.clock.now();
+        let since = now.saturating_sub(self.snapshot.config.limits.causation_grace);
+        let limit = MAX_RECENT_RUNS as u32;
+        let runs =
+            self.shared.store.read(move |q| q.query().runs_ended_since(since, limit)).await?;
+        for run in runs {
+            let started_at = run.started_at.unwrap_or(run.created_at);
+            let ended_at = if interrupted.contains(&run.id) {
+                run.ended_at
+                    .map(|end| end.max(started_at.saturating_add(run.snapshot.agent.timeout)))
+            } else {
+                run.ended_at
+            };
+            self.recent.push(RecentRun {
+                id: run.id,
+                rule: run.rule,
+                cwd: run.invocation.map(|i| i.cwd).filter(|c| !c.is_empty()),
+                started_at,
+                ended_at,
+                chain_depth: run.chain_depth,
+            });
+        }
+        Ok(())
     }
 
     async fn restore_rules(&mut self) -> ServiceResult<()> {

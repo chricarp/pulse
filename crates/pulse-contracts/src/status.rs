@@ -98,6 +98,10 @@ pub struct SystemStatus {
     /// Problems in config files; see `system.config_errors`. While the user's file has errors,
     /// its last good version stays in effect; a project file with errors is inactive.
     pub config_errors: u32,
+    /// Definitions that load but cannot work as written (a rule that can never fire, an agent
+    /// whose program is not installed); see `system.config_errors`.
+    #[serde(default)]
+    pub config_warnings: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

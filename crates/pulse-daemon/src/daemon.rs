@@ -146,7 +146,7 @@ impl Daemon {
         // against the real rules.
         let watched = shared.loader.lock().await.watched_dirs();
         shared.apply(loaded, watched.clone()).await;
-        let engine = Engine::restore(shared.clone(), shared.snapshot())
+        let engine = Engine::restore(shared.clone(), shared.snapshot(), &interrupted)
             .await
             .map_err(|e| StartError::Other(format!("cannot rebuild routing state: {e}")))?;
         // `apply` above queued a Config message for the engine; replaying it is harmless.
@@ -269,18 +269,21 @@ fn spawn_config_watch(shared: Arc<Shared>, dirs: Vec<PathBuf>) -> JoinHandle<()>
 async fn retention(shared: Arc<Shared>, every: Duration) {
     loop {
         let policy = shared.snapshot().config.retention.clone();
+        // Totals over all batches: the last batch alone is usually empty.
+        let (mut events, mut runs) = (0, 0);
         loop {
             let now = shared.clock.now();
             let policy = policy.clone();
             match shared.store.write(move |s| s.prune(&policy, now, 500)).await {
-                Ok(report) if report.more => tokio::task::yield_now().await,
                 Ok(report) => {
-                    if report.runs + report.events > 0 {
-                        tracing::info!(
-                            "retention pruned {} events and {} runs",
-                            report.events,
-                            report.runs
-                        );
+                    events += report.events;
+                    runs += report.runs;
+                    if report.more {
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
+                    if runs + events > 0 {
+                        tracing::info!("retention pruned {events} events and {runs} runs");
                     }
                     break;
                 }

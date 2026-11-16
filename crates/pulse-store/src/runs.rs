@@ -336,6 +336,20 @@ impl Queries<'_> {
         get_run(self.conn, id)
     }
 
+    /// Runs that ended at or after `since`, newest first, at most `limit`. The daemon rebuilds
+    /// inferred causation from these at startup.
+    pub fn runs_ended_since(&self, since: Timestamp, limit: u32) -> Result<Vec<Run>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {RUN_COLUMNS} FROM runs WHERE ended_at >= ?1 ORDER BY ended_at DESC LIMIT ?2"
+        ))?;
+        let mut rows = stmt.query(params![since.as_millis(), limit])?;
+        let mut runs = Vec::new();
+        while let Some(row) = rows.next()? {
+            runs.push(read_run(row)?);
+        }
+        Ok(runs)
+    }
+
     /// Runs matching a filter, newest first.
     pub fn list_runs(
         &self,

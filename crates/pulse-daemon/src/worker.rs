@@ -347,8 +347,11 @@ impl RunTask {
     }
 
     async fn transition(&self, t: RunTransition) -> Result<Run, StoreError> {
+        self.transition_at(t, self.shared.clock.now()).await
+    }
+
+    async fn transition_at(&self, t: RunTransition, now: Timestamp) -> Result<Run, StoreError> {
         let id = self.run.id;
-        let now = self.shared.clock.now();
         let run = self.shared.store.write(move |s| s.transition_run(id, t, now)).await?;
         self.shared.publish_runs(vec![run.summary()]);
         Ok(run)
@@ -370,10 +373,11 @@ impl RunTask {
         let _ = self.shared.engine.control(Control::RefreshBacklog).await;
     }
 
-    /// `queued → running`. `false` if the run is no longer queued (cancelled meanwhile).
-    async fn start(&self, pid: Option<u32>, invocation: &InvocationSummary) -> bool {
+    /// `queued → running`, as of `at`. `false` if the run is no longer queued (cancelled
+    /// meanwhile).
+    async fn start(&self, pid: Option<u32>, invocation: &InvocationSummary, at: Timestamp) -> bool {
         let t = RunTransition::Start { pid, invocation: invocation.clone() };
-        let started = self.transition(t).await;
+        let started = self.transition_at(t, at).await;
         self.complete_item().await;
         match started {
             Ok(run) => {
@@ -410,6 +414,9 @@ impl RunTask {
         parser: Box<dyn pulse_agents::OutputParser>,
     ) {
         let summary = invocation.summary();
+        // The run starts before its process does: inferred causation compares event times with
+        // this, and an agent can write a file before the worker gets to record the start.
+        let spawned_at = self.shared.clock.now();
         let options = SuperviseOptions {
             timeout: self.run.snapshot.agent.timeout.to_std(),
             ..SuperviseOptions::default()
@@ -432,7 +439,7 @@ impl RunTask {
             match event {
                 SupervisorEvent::Started { pid } => {
                     if started.is_none() {
-                        started = Some(self.start(Some(pid), &summary).await);
+                        started = Some(self.start(Some(pid), &summary, spawned_at).await);
                         if started == Some(false) {
                             self.cancel.cancel();
                         }
@@ -440,7 +447,7 @@ impl RunTask {
                 }
                 SupervisorEvent::Output { at, output } => {
                     if started.is_none() {
-                        started = Some(self.start(None, &summary).await);
+                        started = Some(self.start(None, &summary, spawned_at).await);
                     }
                     let mut chunks = vec![(at, output)];
                     while chunks.len() < OUTPUT_BATCH {
@@ -478,6 +485,7 @@ impl RunTask {
                         args: Vec::new(),
                         cwd: String::new(),
                     },
+                    self.shared.clock.now(),
                 )
                 .await
             }

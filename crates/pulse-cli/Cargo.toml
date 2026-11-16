@@ -31,9 +31,11 @@ clap = { version = "4.5.40", features = ["derive"] }
 [dev-dependencies]
 pulse-core.workspace = true
 tempfile.workspace = true
+# The end-to-end tests signal the daemon process they spawned, by its PID.
+rustix = { version = "1.1.2", features = ["process"] }
 # The `pulse mcp` bridge test drives the binary with an MCP client.
 rmcp = { version = "=3.10.0", default-features = false, features = ["client"] }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "sync", "fs"] }
 
 [lints]
 workspace = true

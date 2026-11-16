@@ -18,9 +18,10 @@ use std::path::{Path, PathBuf};
 
 use pulse_contracts::Timestamp;
 use pulse_contracts::config::{
-    Config, ConfigError, ConfigErrors, ConfigFile, ConfigOrigin, RuleConfig, Sourced,
-    parse_config_file, resolve, validate_file, validate_name,
+    AdapterSettings, Config, ConfigError, ConfigErrors, ConfigFile, ConfigOrigin, RuleConfig,
+    Sourced, parse_config_file, resolve, validate_file, validate_name,
 };
+use pulse_contracts::pattern::expand_path;
 use pulse_contracts::status::{Project, TrustState};
 use pulse_core::Routing;
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,8 @@ pub struct Snapshot {
     pub routing: Routing,
     /// The parsed files it was resolved from (user file first), as written.
     pub(crate) files: Vec<Sourced<ConfigFile>>,
+    /// Definitions that could not work as written when this was loaded (see [`warnings`]).
+    pub warnings: Vec<ConfigError>,
 }
 
 impl Snapshot {
@@ -347,7 +350,79 @@ fn build(files: Vec<Sourced<ConfigFile>>, user_home: &Path) -> Result<Snapshot, 
     });
     let config = resolve(user, iter.collect())?;
     let routing = Routing::compile(&config, user_home)?;
-    Ok(Snapshot { config, routing, files })
+    let warnings = warnings(&config, user_home);
+    Ok(Snapshot { config, routing, files, warnings })
+}
+
+/// Config that loads but cannot work: rules that can never fire ([`pulse_core::lint`]), and
+/// agents used by a rule whose program is not installed or whose working directory does not
+/// exist, so that every run would fail to start. Checked whenever the config is loaded, so the
+/// user hears about it when they save the file, not at the first event.
+pub(crate) fn warnings(config: &Config, user_home: &Path) -> Vec<ConfigError> {
+    let mut out = pulse_core::lint::lint(config, user_home);
+    for agent in &config.agents {
+        let a = &agent.config;
+        let used = config.rules.iter().any(|r| !r.config.archived && r.config.run.agent == a.name);
+        if !used {
+            continue;
+        }
+        let warn = |field: &str, message: String| ConfigError {
+            file: Some(agent.origin.path().display().to_string()),
+            line: None,
+            column: None,
+            item: Some(format!("agent {:?}", a.name)),
+            field: Some(field.to_owned()),
+            message,
+        };
+        let program = match &a.adapter {
+            AdapterSettings::ClaudeCode(s) => {
+                Some(("program", s.program.clone().unwrap_or_else(|| "claude".to_owned())))
+            }
+            AdapterSettings::Codex(s) => {
+                Some(("program", s.program.clone().unwrap_or_else(|| "codex".to_owned())))
+            }
+            AdapterSettings::Command(s) => s.command.first().map(|p| ("command", p.clone())),
+            AdapterSettings::Mcp(_) => None,
+        };
+        if let Some((field, program)) = program {
+            if !program_exists(&program) {
+                let where_ = if program.contains('/') { "" } else { " on PATH" };
+                out.push(warn(
+                    field,
+                    format!(
+                        "`{program}` was not found{where_}, so every run of this agent will fail to start"
+                    ),
+                ));
+            }
+        }
+        if let Some(cwd) = &a.cwd {
+            if let Ok(dir) = expand_path(cwd, user_home, agent.origin.base_dir()) {
+                if !Path::new(&dir).is_dir() {
+                    out.push(warn(
+                        "cwd",
+                        format!(
+                            "the working directory {dir} does not exist, so runs of this agent will fail to start until it does"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `program` can be started: an absolute path that is a file, or a bare name found in
+/// a `PATH` directory (the daemon's `PATH` is what runs inherit). Relative paths with a `/` are
+/// resolved against the run's directory and are not checked.
+fn program_exists(program: &str) -> bool {
+    if program.starts_with('/') {
+        return Path::new(program).is_file();
+    }
+    if program.contains('/') {
+        return true;
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|d| d.join(program).is_file()))
 }
 
 /// What changed between two configs, for notifying clients.

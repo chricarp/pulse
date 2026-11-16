@@ -33,7 +33,7 @@ pub enum Command {
     Tail(TailArgs),
     /// Query the event log.
     Events(EventsArgs),
-    /// Rules: list, inspect, enable, snooze, archive, history.
+    /// Rules: list, inspect, add, remove, enable, snooze, archive, history.
     #[command(subcommand)]
     Rules(RulesCmd),
     /// Test a rule (saved, or a draft from a file) against a past event. No side effects.
@@ -45,13 +45,13 @@ pub enum Command {
     /// Runs: list, show, logs, approve, reject, cancel, rerun.
     #[command(subcommand)]
     Runs(RunsCmd),
-    /// Agents and their MCP credentials.
+    /// Agents: list, show, add, remove, and their MCP credentials.
     Agents(AgentsArgs),
     /// MCP over stdio, for MCP clients that launch a server: a bridge to the daemon's /mcp as
     /// one agent. Stdout carries MCP messages only.
     Mcp(McpArgs),
-    /// Configured sources and their health.
-    Sources,
+    /// Sources and their health: list, add, remove.
+    Sources(SourcesArgs),
     /// Trust or untrust a repository's pulse.toml.
     #[command(subcommand)]
     Project(ProjectCmd),
@@ -163,6 +163,19 @@ pub enum RulesCmd {
     Reopen {
         name: String,
     },
+    /// Add a rule from a TOML file (`name = …`, `on = …`, `[run]` …; what `rules show` prints),
+    /// or replace the rule of that name. `-` reads stdin. Written to pulse.toml, comments kept.
+    Add {
+        #[arg(long, short, value_name = "FILE")]
+        file: PathBuf,
+        /// Add it to this trusted project's pulse.toml instead.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Delete a rule from its config file (`archive` keeps it and its history visible).
+    Remove {
+        name: String,
+    },
     /// The rule's decisions, newest first.
     History {
         name: String,
@@ -270,9 +283,70 @@ pub enum AgentsCmd {
     Show {
         name: String,
     },
+    /// Add an agent from a TOML file (`name = …`, `adapter = …`, `allow = […]` …; what
+    /// `agents show` prints), or replace the agent of that name. `-` reads stdin.
+    Add {
+        #[arg(long, short, value_name = "FILE")]
+        file: PathBuf,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Delete an agent from its config file. Refused while rules use it.
+    Remove {
+        name: String,
+    },
     /// The /mcp URL, the agent's token (valid only for MCP, only as this agent), and
     /// configuration to paste into MCP clients.
     McpCredentials {
+        name: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct SourcesArgs {
+    #[command(subcommand)]
+    pub cmd: Option<SourcesCmd>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum SourceKindArg {
+    Fs,
+    Git,
+    Schedule,
+    Calendar,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SourcesCmd {
+    List,
+    /// Add a source (or replace the one of that name):
+    /// `fs NAME DIR`, `git NAME REPO`, `schedule NAME --cron "0 9 * * 1-5"` or `--every 1h`,
+    /// `calendar NAME FILE.ics|URL`.
+    Add {
+        kind: SourceKindArg,
+        name: String,
+        /// The directory, repository, `.ics` file or calendar URL.
+        target: Option<String>,
+        /// Five-field cron (schedule).
+        #[arg(long)]
+        cron: Option<String>,
+        /// A fixed interval like `30m` (schedule).
+        #[arg(long)]
+        every: Option<String>,
+        /// IANA time zone for --cron.
+        #[arg(long)]
+        timezone: Option<String>,
+        /// Extra ignore glob (fs; repeatable).
+        #[arg(long)]
+        ignore: Vec<String>,
+        /// How long before an event `calendar.event.starting` fires (calendar).
+        #[arg(long)]
+        lead: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Delete a source from its config file.
+    Remove {
         name: String,
     },
 }

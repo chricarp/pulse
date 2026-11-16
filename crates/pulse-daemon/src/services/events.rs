@@ -142,6 +142,8 @@ impl Services {
             .into_iter()
             .enumerate()
             .map(|(i, e)| {
+                pulse_sources::ingest::check_type(&e.type_)
+                    .map_err(|m| ServiceError::Invalid(format!("event {i}: type: {m}")))?;
                 let type_ = EventType::external(&params.source, &e.type_)
                     .map_err(|err| ServiceError::Invalid(format!("event {i}: {err}")))?;
                 Ok(NewEvent {

@@ -1207,6 +1207,7 @@ dependencies = [
  "pulse-mcp",
  "pulse-sources",
  "rmcp",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
