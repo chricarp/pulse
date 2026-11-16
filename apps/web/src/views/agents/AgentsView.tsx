@@ -4,12 +4,14 @@ import { useApp, useDaemon } from "../../app/context";
 import { useBindings } from "../../app/keys";
 import { href, navigate } from "../../app/router";
 import { attempt, toast } from "../../app/toasts";
-import type { AgentConfig, AgentInfo, ConfigError, EventTypeInfo, McpCredentials } from "../../contracts";
+import type { AgentConfig, AgentInfo, ConfigError, EventTypeInfo, Expected, McpCredentials } from "../../contracts";
+import { expectedFor, staleOf } from "../../lib/edits";
 import { ADAPTERS, agentToForm, emptyAgentForm, formToAgent, type AgentForm } from "../../lib/agentForm";
 import { plural } from "../../lib/format";
 import { parseScope, typeGlobMatches } from "../../lib/syntax";
 import { ErrorCodes, RpcCallError } from "../../rpc/client";
 import { Icon } from "../../ui/icons";
+import { ConflictNotice, hasConflict, useFirst } from "../common/Conflict";
 import { Button, Confirm, CopyButton, Dl, Empty, Field, IconButton, Input, ListInput, Notice, Pill, Section, Select, Trunc, cx } from "../../ui/primitives";
 
 const ADAPTER_NOTE: Record<AgentConfig["adapter"], string> = {
@@ -22,12 +24,8 @@ const ADAPTER_NOTE: Record<AgentConfig["adapter"], string> = {
 export function AgentsView({ name, mode }: { name: string | null; mode: "show" | "edit" | "new" }) {
   const agents = useDaemon((s) => s.agents);
   const info = name ? (agents ?? []).find((a) => a.config.name === name) : undefined;
-  if (mode === "new") return <AgentEditor existing={null} />;
-  if (mode === "edit") {
-    if (!agents) return <Empty title="Loading…" />;
-    if (!info) return <Empty title={`No agent named ${name}`} />;
-    return <AgentEditor key={info.config.name} existing={info} />;
-  }
+  if (mode === "new") return <AgentEditor opened={null} current={null} />;
+  if (mode === "edit") return <EditAgent key={name} name={name ?? ""} agents={agents} info={info} />;
   return (
     <div className={cx("split", name && "has-detail", "rules-split")}>
       <div className="split-main">
@@ -45,6 +43,14 @@ export function AgentsView({ name, mode }: { name: string | null; mode: "show" |
         ))}
     </div>
   );
+}
+
+/** The editor stays open (with what the user typed) if the agent is removed meanwhile. */
+function EditAgent({ name, agents, info }: { name: string; agents: AgentInfo[] | null; info: AgentInfo | undefined }) {
+  const opened = useFirst(info);
+  if (!agents && !opened) return <Empty title="Loading…" />;
+  if (!opened) return <Empty title={`No agent named ${name}`} />;
+  return <AgentEditor opened={opened} current={info ?? null} />;
 }
 
 function AgentList({ selected, agents }: { selected: string | null; agents: AgentInfo[] | null }) {
@@ -285,7 +291,7 @@ function AgentDetail({ info }: { info: AgentInfo }) {
         confirm="Delete"
         danger
         onConfirm={async () => {
-          const ok = await attempt("Delete", () => client.call("agents.delete", { name: a.name }), `Deleted ${a.name}`);
+          const ok = await attempt("Delete", () => client.call("agents.delete", { name: a.name, expected: { kind: "revision", revision: info.revision } }), `Deleted ${a.name}`);
           if (ok) navigate({ view: "agents", name: null, mode: "show" });
         }}
       >
@@ -348,19 +354,25 @@ function McpSection({ name, isMcp }: { name: string; isMcp: boolean }) {
   );
 }
 
-function AgentEditor({ existing }: { existing: AgentInfo | null }) {
+function AgentEditor({ opened, current }: { opened: AgentInfo | null; current: AgentInfo | null }) {
+  const existing = opened;
   const { client } = useApp();
   const projects = useDaemon((s) => s.projects) ?? [];
   const [form, setForm] = useState<AgentForm>(() => (existing ? agentToForm(existing) : emptyAgentForm()));
   const [touched, setTouched] = useState(false);
   const [serverErrors, setServerErrors] = useState<ConfigError[]>([]);
   const [saving, setSaving] = useState(false);
+  const [base, setBase] = useState<AgentInfo | null>(opened);
+  const [refused, setRefused] = useState<{ current: AgentInfo | null } | null>(null);
+  const live = opened ? (refused && current?.revision === base?.revision ? refused.current : current) : (refused?.current ?? null);
+  const conflict = hasConflict(base, live);
+  const fullAgentName = form.project ? `${form.project}/${form.name}` : form.name;
   const set = <K extends keyof AgentForm>(k: K, v: AgentForm[K]) => setForm((f) => ({ ...f, [k]: v }));
   const { agent, problems } = formToAgent(form);
   const err = (field: string) => serverErrors.find((e) => e.field === field || e.field?.startsWith(`${field}[`))?.message ?? (touched ? problems.find((p) => p.field === field)?.message : undefined);
   const trusted = projects.filter((p) => p.state === "trusted");
   const back = () => navigate({ view: "agents", name: existing?.config.name ?? null, mode: "show" });
-  const save = async () => {
+  const save = async (expected: Expected = expectedFor(base)) => {
     setTouched(true);
     if (problems.length) {
       toast("Fix the highlighted fields first", "error");
@@ -369,11 +381,12 @@ function AgentEditor({ existing }: { existing: AgentInfo | null }) {
     setSaving(true);
     setServerErrors([]);
     try {
-      const info = await client.call("agents.upsert", { agent, ...(form.project ? { project: form.project } : {}) });
+      const info = await client.call("agents.upsert", { agent, ...(form.project ? { project: form.project } : {}), expected });
       toast(existing ? `Saved ${info.config.name}` : `Created ${info.config.name}`, "ok", `Written to ${info.origin.path}`);
       navigate({ view: "agents", name: info.config.name, mode: "show" }, { replace: true });
     } catch (e) {
-      if (e instanceof RpcCallError && e.code === ErrorCodes.ConfigInvalid) setServerErrors((e.data as { errors?: ConfigError[] })?.errors ?? []);
+      if (staleOf(e)) setRefused({ current: await client.call("agents.get", { name: fullAgentName }).catch(() => null) });
+      else if (e instanceof RpcCallError && e.code === ErrorCodes.ConfigInvalid) setServerErrors((e.data as { errors?: ConfigError[] })?.errors ?? []);
       else toast("Save failed", "error", e instanceof Error ? e.message : String(e));
     }
     setSaving(false);
@@ -394,6 +407,21 @@ function AgentEditor({ existing }: { existing: AgentInfo | null }) {
           </div>
         </header>
         <div className="editor-body">
+          {conflict && (
+            <ConflictNotice
+              what="agent"
+              name={fullAgentName}
+              base={base}
+              current={live}
+              onReload={() => {
+                if (!live) return;
+                setForm(agentToForm(live));
+                setBase(live);
+                setRefused(null);
+              }}
+              onOverwrite={(expected) => void save(expected)}
+            />
+          )}
           {serverErrors.length > 0 && (
             <Notice tone="error" title="The daemon did not accept this agent">
               <ul className="plain">{serverErrors.map((e, i) => <li key={i}>{e.field && <code>{e.field}</code>} {e.message}</li>)}</ul>

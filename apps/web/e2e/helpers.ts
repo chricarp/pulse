@@ -47,5 +47,29 @@ export function mock(page: Page) {
     storm: (total: number, seconds: number) => page.evaluate(([t, s]) => (window as unknown as { __pulseMock: { storm(t: number, s: number): void } }).__pulseMock.storm(t, s), [total, seconds] as const),
     bigRun: (bytes?: number) => page.evaluate((b) => (window as unknown as { __pulseMock: { bigRun(b?: number): string } }).__pulseMock.bigRun(b), bytes),
     dropConnection: () => page.evaluate(() => (window as unknown as { __pulseMock: { dropConnection(): void } }).__pulseMock.dropConnection()),
+    changeProjectFile: (name: string) => page.evaluate((n) => (window as unknown as { __pulseMock: { changeProjectFile(n: string): void } }).__pulseMock.changeProjectFile(n), name),
+    editByHand: (kind: "rule" | "agent" | "source", name: string, patch: Record<string, unknown>) =>
+      page.evaluate(([k, n, p]) => (window as unknown as { __pulseMock: { editByHand(k: string, n: string, p: unknown): void } }).__pulseMock.editByHand(k, n, p), [kind, name, patch] as const),
   };
+}
+
+/**
+ * Scrolls the feed down a screen at a time until a gap row is rendered (rows are virtualized),
+ * wherever it is: it sits below the newest batch that dropped events, not at a fixed offset.
+ */
+export async function scrollToGap(page: Page): Promise<void> {
+  const found = await page.locator(".feed-list").evaluate(async (el) => {
+    for (let y = 0; y <= el.scrollHeight; y += Math.max(200, el.clientHeight - 60)) {
+      el.scrollTop = y;
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+      const gap = el.querySelector(".gap-row");
+      if (gap) {
+        gap.scrollIntoView({ block: "center" });
+        return true;
+      }
+    }
+    return false;
+  });
+  if (!found) throw new Error("no gap row anywhere in the feed");
 }

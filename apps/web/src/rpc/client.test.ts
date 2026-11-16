@@ -91,7 +91,7 @@ describe("RpcClient", () => {
     const { client, current } = setup();
     client.start();
     current().serverOpen();
-    const p = client.call("rules.upsert", { rule: {} as never });
+    const p = client.call("rules.upsert", { rule: {} as never, expected: { kind: "any" } });
     current().fail(current().last("rules.upsert").id, -32004, "invalid", { errors: [{ message: "x" }] });
     const err = await p.catch((e: unknown) => e);
     expect(err).toBeInstanceOf(RpcCallError);

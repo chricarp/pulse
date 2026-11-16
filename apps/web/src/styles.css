@@ -2752,3 +2752,39 @@ ul.plain {
 .tab-note {
   padding: 16px;
 }
+
+/* ---- reviewing what is trusted, approved or overwritten ---- */
+
+.review-def {
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+.review-def:first-of-type {
+  border-top: none;
+}
+.review-def h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.review-def .code,
+.review-text .code {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.review-text summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+}
+.review-changes li,
+.conflict-changes li {
+  overflow-wrap: anywhere;
+}
+.invocation {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

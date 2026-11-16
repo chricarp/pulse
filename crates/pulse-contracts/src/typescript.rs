@@ -20,7 +20,7 @@ use crate::catalog::{
     GitCommitData, GitMergeConflictedData, GitPushCompletedData, ProcessExitedData,
     ScheduleFiredData,
 };
-use crate::rpc::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Notification};
+use crate::rpc::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Notification, Stale};
 use crate::status::{DaemonInfo, UiLoginRequest, UiLoginResponse};
 
 struct Collect<'a> {
@@ -48,6 +48,7 @@ pub fn typescript_bindings() -> String {
     c.visit::<JsonRpcRequest>();
     c.visit::<JsonRpcResponse>();
     c.visit::<JsonRpcNotification>();
+    c.visit::<Stale>();
     c.visit::<DaemonInfo>();
     c.visit::<UiLoginRequest>();
     c.visit::<UiLoginResponse>();

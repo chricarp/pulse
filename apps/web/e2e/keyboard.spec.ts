@@ -26,6 +26,9 @@ test("navigate, pause and resume, and approve from the keyboard", async ({ page 
   await page.keyboard.press("g");
   await page.keyboard.press("i");
   await expect(page.locator(".approval")).toBeVisible();
+  // What approving starts is shown: the argument list, not only the prompt.
+  await expect(page.locator(".approval .invocation")).toContainText("Approving runs exactly this");
+  await expect(page.locator(".approval .argv")).toContainText("exec");
   await page.keyboard.press("Shift+A");
   await expect(page.locator(".toast").filter({ hasText: "Approved" })).toBeVisible();
   await expect(page.locator(".banner-approval")).toHaveCount(0);

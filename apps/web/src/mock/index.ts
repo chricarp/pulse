@@ -11,6 +11,8 @@ export interface MockControls {
   dropConnection(): void;
   stopDaemon(): void;
   startDaemon(): void;
+  changeProjectFile(name: string): void;
+  editByHand(kind: "rule" | "agent" | "source", name: string, patch: Record<string, unknown>): void;
 }
 
 export function createMock(): { connect: ReturnType<typeof mockSocketFactory>; controls: MockControls } {
@@ -23,6 +25,8 @@ export function createMock(): { connect: ReturnType<typeof mockSocketFactory>; c
     dropConnection: () => daemon.dropConnections(),
     stopDaemon: () => daemon.stop(),
     startDaemon: () => daemon.restart(),
+    changeProjectFile: (name) => daemon.changeProjectFile(name),
+    editByHand: (kind, name, patch) => daemon.editByHand(kind, name, patch),
   };
   (window as unknown as { __pulseMock: MockControls }).__pulseMock = controls;
   return { connect: mockSocketFactory(daemon), controls };

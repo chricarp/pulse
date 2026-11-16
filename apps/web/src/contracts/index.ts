@@ -748,6 +748,13 @@ export type SourceUpsertParams = { source: SourceConfig, project?: string, expec
 
 export type SpecVersion = "1.0";
 
+export type Stale = { 
+/**
+ * The current revision of the definition (for `projects.trust`, the file's current content
+ * hash); `None` when it does not exist.
+ */
+current?: string | null, };
+
 export type StateChanged = { status: SystemStatus, topics: Array<StateTopic>, };
 
 export type StateTopic = "pause" | "config" | "rules" | "agents" | "sources" | "projects";
