@@ -7,14 +7,43 @@ repository.workspace = true
 rust-version.workspace = true
 
 [features]
-# The draft MCP Events extension, in one module. Also gated at runtime by
-# `[daemon] mcp_events_extension`.
+# The MCP Events extension (SEP-3415), in one module. Also off at runtime unless
+# `McpConfig::events_extension` is set (the daemon maps `[daemon] mcp_events_extension` to it).
 sep3415 = []
 
 [dependencies]
 pulse-contracts.workspace = true
+pulse-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "net", "io-util", "io-std"] }
+tokio-util = { workspace = true, features = ["codec"] }
+futures-util = { version = "0.3.34", default-features = false }
+base64 = "0.23.1"
+
+# Pinned exactly: rmcp releases about weekly and the 2026-07-28 surface is still moving. Bump
+# deliberately and re-run this crate's tests. No TLS, no `auth`, no `reqwest*` features.
+rmcp = { version = "=3.10.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+schemars = "1.2.3"
+axum = { version = "0.8.9", default-features = false }
+http = "1.5.0"
+http-body-util = "0.1.5"
+# The stdio proxy's HTTP/1.1 client to the daemon (loopback only, no TLS).
+hyper = { version = "1.12.0", features = ["client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+bytes = "1.12.1"
+getrandom = "0.4.3"
+
+[dev-dependencies]
+rmcp = { version = "=3.10.0", default-features = false, features = ["client", "server", "transport-streamable-http-server"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
+
+[[example]]
+name = "sep3415_fixture"
+required-features = ["sep3415"]
 
 [lints]
 workspace = true
