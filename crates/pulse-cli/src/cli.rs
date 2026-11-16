@@ -202,7 +202,7 @@ pub enum RulesCmd {
         /// The rule's name.
         name: String,
     },
-    /// The rule's decisions, newest first.
+    /// The rule's decisions, newest first, and how each loop-protection block knew its cause.
     History {
         /// The rule's name.
         name: String,

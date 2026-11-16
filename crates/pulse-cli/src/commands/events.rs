@@ -125,7 +125,7 @@ pub async fn events(ctx: &Ctx, args: EventsArgs) -> Res {
             out.line("No rule matched this event.");
         }
         for d in &detail.deliveries {
-            out.line(&format::delivery_line(d));
+            out.line(&format::delivery_line(d, detail.event.causation));
         }
         for r in &detail.runs {
             out.line(&format!("run {}", format::run_line(r)));
@@ -166,7 +166,7 @@ pub async fn replay(ctx: &Ctx, args: ReplayArgs) -> Res {
         out.line("No rule matched.");
     }
     for d in &res.deliveries {
-        out.line(&format::delivery_line(d));
+        out.line(&format::delivery_line(d, res.event.causation));
     }
     Ok(ExitCode::SUCCESS)
 }

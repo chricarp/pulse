@@ -186,7 +186,12 @@ export type DeliveryPage = {
 /**
  * Newest first.
  */
-deliveries: Array<Delivery>, next_cursor?: DeliveryId | null, };
+deliveries: Array<Delivery>, next_cursor?: DeliveryId | null, 
+/**
+ * For the loop-protection blocks in this page: how their event was attributed to the run
+ * (`exact`, `reported`, `inferred`). The kind is recorded on the event, not the delivery.
+ */
+causes: { [key in EventId]: Causation }, };
 
 export type Duration = string;
 

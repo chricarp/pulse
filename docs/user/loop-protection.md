@@ -87,7 +87,7 @@ writes a copy of each new file there:
 
 ```console
 $ pulse rules history copy-files
-2026-11-16T10:20:50.715Z  copy-files           blocked: loop protection: the event was attributed to this rule's own run 01M7HXZAP64BNK835NXSXTP6MK  [event 01M7HXZCMVAMZHABKDGR2Z6QDP]
+2026-11-16T10:20:50.715Z  copy-files           blocked: loop protection: the event was attributed to this rule's own run 01M7HXZAP64BNK835NXSXTP6MK (inferred: it appeared in the run's working directory while the run's writes were not visible)  [event 01M7HXZCMVAMZHABKDGR2Z6QDP]
     if you made this change yourself: pulse replay 01M7HXZCMVAMZHABKDGR2Z6QDP
 2026-11-16T10:20:48.710Z  copy-files           fired  run 01M7HXZAP64BNK835NXSXTP6MK  [event 01M7HXZAP64BNK835NXSXTP6MJ]
 
@@ -96,8 +96,14 @@ $ pulse events show 01M7HXZCMVAMZHABKDGR2Z6QDP
 …
 ```
 
-The CLI's text output says `reported` or `inferred` after the run id; nothing after it means
-exact. `--json` output has `pulsecausation: "exact"`, `"reported"` or `"inferred"` on the event.
+`pulse rules history` says how the cause was known (`exact`, `reported` or `inferred`) on each
+loop-protection block; `pulse events show` says `reported` or `inferred` after the run id, and
+nothing after it means exact. `--json` output has `pulsecausation: "exact"`, `"reported"` or
+`"inferred"` on the event, and `rules history --json` has the same in `causes`, by event id.
+
+`pulse test-rule` reports loop protection for such an event even with `--fresh`, because the
+cause is recorded on the event, not in the rule's history; it says so and prints the `pulse
+replay` command that routes a copy without the cause.
 
 ## Undoing a wrong block
 

@@ -58,7 +58,7 @@ Work down this list.
    | `the rule is snoozed until …` | `pulse rules unsnooze <rule>` |
    | `Pulse is paused` | `pulse resume` |
    | `the agent's scopes do not cover it (it would need "…")` | add a scope to the agent's `allow` that covers the event; see [Scopes](agents.md#scopes) |
-   | `loop protection: the event was attributed to this rule's own run …` | if you made the change, `pulse replay <event>`; see [Loop protection](loop-protection.md) |
+   | `loop protection: the event was attributed to this rule's own run … (inferred: …)` | if you made the change, `pulse replay <event>`; see [Loop protection](loop-protection.md) |
    | `loop protection: a chain of N runs exceeds max_chain_depth M` | runs triggering runs; raise `[limits] max_chain_depth` only if the chain is intended |
    | `the circuit breaker holds the rule until … (it fired too often)` | find out why it fires so often, then `pulse rules unsnooze <rule>` |
    | `cooling down until …` / `rate limited until …` | the rule's `cooldown` / `rate_limit` |

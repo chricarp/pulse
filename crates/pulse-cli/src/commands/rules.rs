@@ -2,9 +2,9 @@
 
 use std::process::ExitCode;
 
-use pulse_contracts::Outcome;
 use pulse_contracts::config::{ConfigOrigin, RuleConfig};
 use pulse_contracts::rpc::*;
+use pulse_contracts::{BlockReason, Outcome};
 
 use super::{Res, time_arg};
 use crate::cli::{OutcomeArg, RulesCmd, TestRuleArgs};
@@ -79,7 +79,9 @@ pub async fn rules(ctx: &Ctx, cmd: RulesCmd) -> Res {
                 if page.deliveries.is_empty() {
                     out.line("No decisions recorded for this rule yet.");
                 }
-                page.deliveries.iter().for_each(|d| out.line(&format::delivery_line(d)));
+                for d in &page.deliveries {
+                    out.line(&format::delivery_line(d, page.causes.get(&d.event).copied()));
+                }
             }
             return Ok(ExitCode::SUCCESS);
         }
@@ -169,6 +171,23 @@ pub async fn test_rule(ctx: &Ctx, args: TestRuleArgs) -> Res {
         return Ok(ExitCode::SUCCESS);
     };
     out.line(&format!("decision: {}", format::decision(decision)));
+    // Loop protection comes from the event's recorded cause, which no flag of a dry run
+    // changes; a replay is a copy without it.
+    if let Outcome::Blocked {
+        reason: BlockReason::LoopSelfTrigger { .. } | BlockReason::LoopChainDepth { .. },
+    } = &decision.outcome
+    {
+        let what = if args.fresh {
+            "--fresh ignores the rule's history (snooze, cooldown, rate limit), not the event's cause"
+        } else {
+            "this comes from the event's cause"
+        };
+        let rule = args.rule.as_deref().map(|r| format!(" --rule {r}")).unwrap_or_default();
+        out.line(&format!(
+            "note: {what}: the event is recorded as caused by a run, so loop protection applies to it. If you made this change yourself, `pulse replay {}{rule}` routes a copy without the cause.",
+            args.event
+        ));
+    }
     let mut shown = &decision.outcome;
     if let Some(after) = &res.after_debounce {
         out.line(&format!("after the debounce: {}", format::outcome(&after.outcome)));

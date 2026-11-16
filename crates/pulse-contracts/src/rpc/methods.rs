@@ -1,5 +1,6 @@
 //! The v1 method set: params and results, then the table that ties names to types.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 
 use serde::{Deserialize, Serialize};
@@ -9,7 +10,7 @@ use ts_rs::TS;
 use super::{RpcError, RpcMethod, decode_params, encode_result};
 use crate::catalog::{EventTypeInfo, ProcessExitedData};
 use crate::config::{AgentConfig, ConfigError, ConfigOrigin, RuleConfig, SourceConfig, TypeGlob};
-use crate::event::Event;
+use crate::event::{Causation, Event};
 use crate::ids::{DeliveryId, EventId, RunId, SubscriptionId};
 use crate::run::{Decision, Delivery, OutputStats, Run, RunOutputChunk, RunStatus, RunSummary};
 use crate::status::{Project, SourceHealth, SystemStatus};
@@ -420,6 +421,10 @@ pub struct DeliveryPage {
     /// Newest first.
     pub deliveries: Vec<Delivery>,
     pub next_cursor: Option<DeliveryId>,
+    /// For the loop-protection blocks in this page: how their event was attributed to the run
+    /// (`exact`, `reported`, `inferred`). The kind is recorded on the event, not the delivery.
+    #[serde(default)]
+    pub causes: BTreeMap<EventId, Causation>,
 }
 
 // ---- agents ----

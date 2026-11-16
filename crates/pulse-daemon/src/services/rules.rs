@@ -6,7 +6,7 @@ use pulse_contracts::rpc::{
     DeliveryPage, RuleHistoryParams, RuleInfo, RuleList, RuleRef, RuleRuntimeStatus,
     RuleTestParams, RuleTestResult, RuleUpsertParams,
 };
-use pulse_contracts::{Outcome, Timestamp};
+use pulse_contracts::{BlockReason, DeliveryOutcome, Outcome, Timestamp};
 use pulse_core::{Cause, RouteContext, RouteMode, RuleRuntime, route};
 use pulse_store::RuleStateRow;
 use tokio::sync::oneshot;
@@ -216,12 +216,31 @@ impl Services {
         })
     }
 
+    /// The rule's deliveries, and for each loop-protection block how its event's cause was
+    /// known (looked up on the event: at most one page of point reads).
     pub async fn rules_history(&self, params: RuleHistoryParams) -> ServiceResult<DeliveryPage> {
         Ok(self
             .shared
             .store
             .read(move |q| {
-                q.query().rule_history(&params.name, &params.outcomes, params.cursor, params.limit)
+                let q = q.query();
+                let mut page =
+                    q.rule_history(&params.name, &params.outcomes, params.cursor, params.limit)?;
+                for d in &page.deliveries {
+                    let loop_block = matches!(
+                        &d.outcome,
+                        DeliveryOutcome::Blocked {
+                            reason: BlockReason::LoopSelfTrigger { .. }
+                                | BlockReason::LoopChainDepth { .. }
+                        }
+                    );
+                    if loop_block && !page.causes.contains_key(&d.event) {
+                        if let Some(kind) = q.event(d.event)?.and_then(|e| e.causation) {
+                            page.causes.insert(d.event, kind);
+                        }
+                    }
+                }
+                Ok(page)
             })
             .await?)
     }

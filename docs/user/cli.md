@@ -121,12 +121,14 @@ Filters for `tail` and `events`:
 | `snooze <NAME> <FOR>` | Hold it for a duration (`1h`, `30m`) or until an RFC 3339 time. |
 | `unsnooze <NAME>` | End a snooze, and release a tripped circuit breaker. |
 | `archive <NAME>` / `reopen <NAME>` | Hide it and stop routing to it, keeping its history; and back. |
-| `history <NAME> [--outcome <O>]… [-n <N>]` | Its decisions, newest first. `--outcome` is `fired`, `awaiting-approval`, `debounced` or `blocked`. A loop-protection block is followed by the `pulse replay` command that undoes it. |
+| `history <NAME> [--outcome <O>]… [-n <N>]` | Its decisions, newest first. `--outcome` is `fired`, `awaiting-approval`, `debounced` or `blocked`. A loop-protection block says how its event's cause was known (`exact`, `reported`, `inferred`) and is followed by the `pulse replay` command that undoes it. |
 
 `pulse test-rule [RULE] -e/--event <ID> [-f/--file <FILE>] [--project <P>] [--fresh]`: a dry run of
 a saved rule, or of an unsaved draft from a file, against a past event. Prints the decision and,
 if it would fire, the full prompt. `--fresh` ignores the rule's history (snooze, cooldown, rate
-limit). Records nothing and runs nothing.
+limit), not the event's recorded cause: loop protection still applies to an event caused by a
+run, and the output says so with the `pulse replay` command for it. Records nothing and runs
+nothing.
 
 ## Runs
 

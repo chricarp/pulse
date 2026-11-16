@@ -140,6 +140,15 @@ async fn a_run_writing_into_its_own_watched_folder_is_blocked_as_a_self_trigger(
             let (code, text, _) = env.run(&["rules", "history", "on-new-file"]).await;
             assert_eq!(code, 0);
             assert!(text.contains("loop protection"), "{text}");
+            assert!(text.contains(&format!("own run {} (inferred: ", run.id)), "{text}");
+            // --fresh drops the rule's history, not the event's cause, and says so.
+            let id = out.id.to_string();
+            let args = ["test-rule", "on-new-file", "--event", &id, "--fresh"];
+            let (code, text, _) = env.run(&args).await;
+            assert_eq!(code, 0, "{text}");
+            assert!(text.contains("loop protection"), "{text}");
+            assert!(text.contains("not the event's cause"), "{text}");
+            assert!(text.contains(&format!("pulse replay {id} --rule on-new-file")), "{text}");
             // A replay is the user's explicit request: it fires once, without the old
             // causation, and the new run's own write is blocked in turn. One run, not a loop.
             let (code, text, _) = env.run(&["replay", &out.id.to_string()]).await;
@@ -250,6 +259,10 @@ run = {{ agent = "writer", prompt = "Handle {{{{path}}}}" }}
                 assert_eq!(code, 0);
                 let how = if kind == Causation::Reported { ", reported)" } else { ", inferred)" };
                 assert!(text.contains(&format!("(from run {}{how}", run.id)), "{case}: {text}");
+                // The rule's history says how the cause was known, as `events show` does.
+                let (_, text, _) = env.run(&["rules", "history", "on-new-file"]).await;
+                let how = if kind == Causation::Reported { "(reported: " } else { "(inferred: " };
+                assert!(text.contains(&format!("own run {} {how}", run.id)), "{case}: {text}");
             }
             Want::Fires => {
                 assert_eq!(event.causation_run, None, "{case}");

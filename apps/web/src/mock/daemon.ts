@@ -1262,7 +1262,14 @@ export class MockDaemon {
         }
         out.push(d);
       }
-      return { deliveries: out, next_cursor: more ? (out.at(-1)?.id ?? null) : null };
+      // The daemon's: how each loop-protection block's event was attributed.
+      const causes: Record<string, Causation> = {};
+      for (const d of out) {
+        if (d.outcome.kind !== "blocked" || (d.outcome.reason.reason !== "loop_self_trigger" && d.outcome.reason.reason !== "loop_chain_depth")) continue;
+        const c = this.eventById.get(d.event)?.pulsecausation;
+        if (c) causes[d.event] = c;
+      }
+      return { deliveries: out, next_cursor: more ? (out.at(-1)?.id ?? null) : null, causes };
     },
 
     "agents.list": () => ({ agents: this.agents.map((a) => this.agentInfo(a)) }),
