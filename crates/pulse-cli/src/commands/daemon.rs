@@ -384,7 +384,12 @@ pub fn init(ctx: &Ctx, args: InitArgs) -> Res {
             path.display()
         )));
     }
-    std::fs::write(&path, &text)?;
+    // Adding a template rewrites the user's file: atomically, so a crash cannot truncate it.
+    let mode = std::fs::metadata(&path).map_or(0o600, |m| {
+        use std::os::unix::fs::PermissionsExt;
+        m.permissions().mode() & 0o777
+    });
+    pulse_daemon::home::write_atomic(&path, text.as_bytes(), mode)?;
     if existing.is_none() {
         print_line(&format!("Wrote {}.", path.display()));
     }
