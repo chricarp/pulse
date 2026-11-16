@@ -3,8 +3,8 @@
 // The daemon sends outcomes with the events: every `events.batch` and every `events.query` page
 // carries an `EventOutcome` per delivery of its events, and a batch also carries outcomes
 // recorded later for events sent earlier (a debounce that elapsed). So the feed never asks per
-// row; this store only merges what arrives. The event detail pane, which fetches the full
-// deliveries anyway, replaces an event's entry with them.
+// row; this store only merges what arrives, including the full deliveries the event detail pane
+// fetches anyway.
 //
 // Bounded: only events with outcomes are kept, at most MAX of them (the oldest stored go first).
 
@@ -49,13 +49,17 @@ export class OutcomeStore {
     for (const id of touched) this.emit(id);
   }
 
-  /** The full deliveries of one event (the detail pane fetched them). */
+  /**
+   * The full deliveries of one event (the detail pane fetched them). Deliveries are only ever
+   * added, so this merges: an outcome that arrived in a batch after the detail was read (a
+   * debounce elapsing) is kept.
+   */
   put(detail: EventDetail): void {
     const id = detail.event.id;
-    this.set(
-      id,
-      detail.deliveries.map((d) => ({ event: id, rule: d.rule, outcome: d.outcome, run: d.run ?? null })),
-    );
+    const fetched: EventOutcome[] = detail.deliveries.map((d) => ({ event: id, rule: d.rule, outcome: d.outcome, run: d.run ?? null }));
+    const keys = new Set(fetched.map(keyOf));
+    const later = (this.byEvent.get(id) ?? []).filter((o) => !keys.has(keyOf(o)));
+    this.set(id, [...fetched, ...later]);
     this.emit(id);
   }
 

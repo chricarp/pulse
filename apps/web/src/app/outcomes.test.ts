@@ -18,7 +18,7 @@ describe("OutcomeStore", () => {
     expect(s.get("E2")).toBeUndefined();
   });
 
-  it("takes an event's full deliveries from the detail pane", () => {
+  it("merges an event's full deliveries from the detail pane, keeping outcomes that arrived after it was read", () => {
     const s = new OutcomeStore();
     s.add([loop]);
     const detail = {
@@ -27,6 +27,6 @@ describe("OutcomeStore", () => {
       runs: [],
     } as unknown as EventDetail;
     s.put(detail);
-    expect(s.get("E1")).toEqual([fired]);
+    expect(s.get("E1")).toEqual([fired, loop]);
   });
 });
