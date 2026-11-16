@@ -1,0 +1,38 @@
+version: 2
+# A week of cooldown lets the ecosystem catch a compromised or broken release
+# before it is proposed here. Security updates are not delayed.
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      patch:
+        update-types: [patch]
+  # pnpm workspaces are covered by the npm ecosystem (it reads pnpm-lock.yaml).
+  # Electron majors change the bundled Chromium and the app's security defaults;
+  # review those as their own change, against docs/internals/0010-desktop-shell.md.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+        exclude-patterns: [electron]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

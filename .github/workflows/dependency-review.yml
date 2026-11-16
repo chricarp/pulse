@@ -1,0 +1,37 @@
+name: Dependency review
+
+# Fails a pull request that adds a dependency (Rust crates, npm packages,
+# GitHub Actions) with a known high or critical vulnerability. The dependency
+# review API needs GitHub Code Security on a private repository, so the
+# visibility condition skips the job while this repository (or a fork) is
+# private. See docs/operations/open-source.md ("Security scanning").
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/*/Cargo.toml"
+      - "**/package.json"
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - ".github/workflows/**"
+
+permissions: {}
+
+concurrency:
+  group: dependency-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review dependency changes
+    if: github.event.repository.visibility == 'public'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high

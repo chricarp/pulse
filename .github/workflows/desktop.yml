@@ -1,8 +1,9 @@
 name: Desktop
 
 # The desktop shell's checks, and the packaged app for each platform, built with the same command
-# a contributor runs (scripts/build.sh). The artifacts are unsigned: see
-# docs/internals/0010-desktop-shell.md.
+# a contributor runs (scripts/build.sh). The artifacts are unsigned and are workflow artifacts
+# only, not a release: see docs/internals/0010-desktop-shell.md. Actions are pinned to full
+# commit SHAs; the Rust toolchain comes from the runner's rustup and pnpm from corepack.
 
 on:
   push:
@@ -13,11 +14,19 @@ on:
       - crates/**
       - assets/**
       - scripts/build.sh
+      - Cargo.toml
+      - Cargo.lock
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - .github/workflows/desktop.yml
   workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,14 +34,18 @@ env:
 jobs:
   checks:
     name: Shell typecheck and unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
+      - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm --dir apps/desktop typecheck
       - run: pnpm --dir apps/desktop test
@@ -43,29 +56,42 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-x64, os: ubuntu-latest }
+          - { name: linux-x64, os: ubuntu-24.04 }
           - { name: linux-arm64, os: ubuntu-24.04-arm }
-          - { name: macos-arm64, os: macos-latest }
+          - { name: macos-arm64, os: macos-15 }
           - { name: macos-x64, os: macos-15-intel }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          key: release
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-release-${{ runner.os }}-${{ runner.arch }}-
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
+      - run: corepack enable
       - name: Build the web UI, the binary and the app
         run: ./scripts/build.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pulse-${{ matrix.name }}
+          name: lictory-pulse-${{ matrix.name }}
           if-no-files-found: error
           path: |
             target/release/pulse
-            apps/desktop/release/*.AppImage
-            apps/desktop/release/*.dmg
+            apps/desktop/release/Lictory-Pulse-*.AppImage
+            apps/desktop/release/Lictory-Pulse-*.dmg

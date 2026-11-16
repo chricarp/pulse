@@ -1,0 +1,14 @@
+# Reviewed gitleaks false positives (fingerprint: commit:file:rule:line).
+# Computed by replaying gitleaks' generic-api-key rule over every line each commit adds, before
+# gitleaks itself had run on this repository; remove an entry the scanner never reports.
+# The fingerprints name commits, so they stay valid only while those commits are in the history
+# that is scanned (a squash or rebase that rewrites them needs new entries).
+#
+# The fixed test token "0123456789abcdef0123456789abcdef" in the proof and login test vectors:
+# a public value chosen for the test, not a credential.
+d775ad7ceeaa67f4a973e22df703c413b00a5c78:apps/desktop/src/proof.test.ts:generic-api-key:6
+bf78988284190ebb3313a1241018b64c643f39a1:apps/web/src/rpc/login.test.ts:generic-api-key:8
+bf78988284190ebb3313a1241018b64c643f39a1:apps/web/src/rpc/proof.test.ts:generic-api-key:6
+# The sample WebSocket handshake key from RFC 6455 ("the sample nonce", base64) in a raw
+# upgrade request the daemon tests send; it is not a credential.
+acbe83aa3f6bff25aaf0bc58face68163b96531c:crates/pulse-daemon/tests/daemon/auth.rs:generic-api-key:33

@@ -1,0 +1,37 @@
+name: PR title
+
+on:
+  # Deliberate, so the title check also runs for fork PRs and title edits. It
+  # never checks out or runs PR code: keep it that way (no checkout, no run step
+  # that reads the title or body).
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  title:
+    name: Conventional PR title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # No checkout or execution of PR code in pull_request_target.
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            docs
+            chore
+            ci
+            test
+            refactor
+            style
+            build
+            revert
+          requireScope: false
