@@ -56,8 +56,21 @@ In development Vite proxies `/ws` and `/auth` to `PULSE_DAEMON`, rewriting `Orig
 ## State
 
 - **`Daemon`** (`app/daemon.ts`): connection state, `SystemStatus`, rules (including archived), agents, sources, projects, config errors, the event type catalog, and a **run index**. Lists load on every (re)connect and reload by `state.changed` topic. The run index is fed by one `runs.subscribe` for all runs: every active run plus the 300 newest finished ones. Pending approvals, badges and the window title come from it, so they are right in every view.
-- **Views** fetch what only they show (an event's detail, a run, a rule's history) and refetch when a relevant run changes.
+- **A refetch never undoes a newer push.** Loading the run index takes two `runs.list` calls; `runs.changed` notifications that arrive meanwhile are applied on top of what was loaded, and a run's state only moves forward (`newerRun`: pending → queued → running → an end), so "approved, now running" is not replaced by the older "awaiting approval". Run lists in views do the same (`applyRunChanges`). Two refetches of one list can answer out of order; only the answer to the latest request is kept. Event outcomes fetched with an event's detail merge with outcomes that arrived after the read (deliveries are only ever added). The feed already subscribed before fetching and merged by id; run output resumes after the last `seq`.
+- **Views** fetch what only they show (an event's detail, a run, a rule's history) and refetch when a relevant run changes. A rule's history refreshes when that rule records a delivery: it subscribes to events of the rule's types, whose batches carry their outcomes (blocked deliveries, which create no run, included; a batch with `dropped > 0` also refreshes), and merges the newest page into the pages already loaded, by delivery id. (It used to reload on any run change anywhere, throwing away pages loaded with "more", and missed blocked deliveries.)
 - **Store updates are bounded.** The feed and run output apply incoming data to plain structures and publish to React at most once per animation frame. Nothing is published while the tab is hidden; the structures keep up regardless.
+
+## Editing what others edit
+
+The config file is edited by hand, from the CLI and from other windows while an editor is open. Every definition carries a `revision`; an editor remembers the one it was opened on and its save names it (`expected`), or `absent` for a new one. When the definition changed meanwhile the editor says so as soon as the list refreshes, and a save is refused with `stale` in any case: the notice lists the fields that changed elsewhere (old → new, as untrusted text) and offers **Reload** (take the current definition, discarding the form) or **Save mine anyway** (save over exactly the current revision). The form is never reset otherwise; an editor whose definition is removed stays open with what was typed and offers to create it again. A new definition whose name now exists offers to replace it. Enable/disable, archive/reopen and a source's enable/disable are one-field changes of the file (`rules.set_enabled`, `sources.set_enabled`), never "send the whole cached object back". Removals name the revision the detail showed.
+
+## Trusting a project
+
+"Trust" opens a review (`projects.review`): what the file would load, as `name/…` (agents with their adapter and what they run, argument by argument, their tools, scopes, working directory and environment; rules with their triggers, whether they need approval, and their prompt; sources), what changed since it was trusted when the daemon still has the trusted text, any errors, and the file itself. The button trusts that content by its hash. If the file changed before the button was pressed, nothing is trusted and the dialog shows the new content with a note. All of it is repository text, rendered through `visible()`.
+
+## Approvals
+
+A run waiting for approval shows its invocation (program, arguments with the event's values substituted, working directory), rendered by the daemon when the run was created, above the prompt: for a command agent, that is the thing the user approves. The daemon starts the run only if rendering it again gives the same invocation and the agent is unchanged, and otherwise withdraws it with the reason, which the run shows.
 
 ## The feed buffer
 
@@ -66,7 +79,7 @@ In development Vite proxies `/ws` and `/auth` to `PULSE_DAEMON`, rewriting `Orig
 - `events.batch` carries "a bounded number of the newest matching events, oldest first" and a `dropped` count. The dropped events are older than the batch's events and newer than what came before, so a gap row goes directly below the batch, with the count. Consecutive drops merge into one gap.
 - On subscribe the feed subscribes **first**, then fetches the newest page from the log. Every insert is a merge by event id (ULIDs from one daemon sort in log order), which removes the overlap. A history event that lands inside a gap is one of the events the gap counted, so the count goes down; a gap filled completely disappears.
 - A dropped connection adds a gap with an unknown count. After reconnecting, the newest page closes it if the page reaches below the gap (nothing was missed); otherwise it stays and says events may be missing.
-- Past 5,000 events the oldest rows are evicted (they are in the log). Below the window, "older" pages come from `events.query`, up to 20,000 rows; past that the view asks for a narrower filter.
+- Past 5,000 events the oldest rows are evicted (they are in the log). Below the window, "older" pages come from `events.query`, up to 20,000 rows; past that the view asks for a narrower filter. So the feed holds at most about **25,000 rows**; the plan's "smooth with 100k rows" is not what was built or measured. Larger histories are reached by filtering, not by scrolling.
 - A gap row's **Show from the log** opens that time range as a filter with an upper bound, which shows it from the log with no live tail.
 - The live tail **holds** while you scroll away from the newest events or press pause, counting what arrived; returning to the top (or Home, or the button) resumes.
 
@@ -141,21 +154,24 @@ Decided as is for v1:
 
 ## Testing
 
-- Unit (Vitest, `pnpm --dir apps/web test`): the RPC client (out-of-order responses, errors with data, timeouts, queued calls, no resend after a drop, backoff and reset, 4401, resubscribe with fresh params, early notifications, unsubscribe races, `state.changed`), the feed buffer (bounds, batching, gaps and their counts, merging history, disconnection gaps), filters (EventFilter mapping, URL round trip, query syntax), the rule and agent forms (round trips of every field and adapter, problems per field), formatting of untrusted text and prompts, and the mock's scenarios through the real client.
-- Browser against the real daemon (Playwright, `pnpm --dir apps/web test:real`, after `pnpm build` and `cargo build -p pulse-cli`): each test starts the `pulse` binary on a temp home and port 0 with a real fs source and the fake agents. Login (spent, expired and missing codes), the live feed with outcomes, live run output, approve and reject, a rule written back to `pulse.toml` with hand edits and a broken file, and recovery after a restart.
+- Unit (Vitest, `pnpm --dir apps/web test`): the RPC client (out-of-order responses, errors with data, timeouts, queued calls, no resend after a drop, backoff and reset, 4401, resubscribe with fresh params, early notifications, unsubscribe races, `state.changed`), the feed buffer (bounds, batching, gaps and their counts, merging history, disconnection gaps), filters (EventFilter mapping, URL round trip, query syntax), the rule and agent forms (round trips of every field and adapter, problems per field), formatting of untrusted text and prompts, the run index and run lists under pushes that race their loads, stale list answers, merged event outcomes and rule history pages, revisions and stale errors in edits, and the mock's scenarios through the real client.
+- Browser against the real daemon (Playwright, `pnpm --dir apps/web test:real`, after `pnpm build` and `cargo build -p pulse-cli`): each test starts the `pulse` binary on a temp home and port 0 with a real fs source and the fake agents. Login (spent, expired and missing codes), the live feed with outcomes, live run output, approve and reject, a rule written back to `pulse.toml` with hand edits and a broken file, recovery after a restart, trusting a project whose file is replaced while the review is open, saving an editor after `pulse rules disable`, and the two storms measured below.
 - Browser (Playwright, `pnpm --dir apps/web test:browser`): the production build with the mock compiled in. Storms, gap rows, holding the tail, a dropped connection, keyboard paths, the palette, the filter syntax, shortcut discovery, a draft dry run, creating a rule and taking it through every reverse state, untrusting and re-trusting a project, megabytes of output, structured output, and the measurements below. Tests wait for conditions, never for time.
 
 ## Measurements
 
-Chromium 156 (headless shell) on the development machine (Linux arm64, 8 cores, shared with other builds), 1440×900, production build with the mock in the page. The mock's own work (routing, serializing frames) runs on the same main thread, so these numbers overstate what the UI costs with the real daemon.
+Chromium 156 (headless shell) on the development machine (Linux arm64, 8 cores, shared with other builds), 1440×900, production build.
 
-Against the real daemon (debug build, same machine), feed open, measured in the page and from the page's own WebSocket frames:
+Against the real daemon (debug build, same machine), feed open, from `e2e-real/storm.spec.ts` (`pnpm --dir apps/web test:real`), which prints these lines. It asserts the definition of done: no task of 200 ms or more while the storm arrives, and the feed answers a key (select the next event, detail on screen) within 1 s, during the ingest storm and after both.
 
-| Case | What the daemon sent | Frames | Long tasks |
-|---|---|---|---|
-| 10,000 files unzipped into a watched folder | one `events.batch` with one `fs.burst` (2.3 KB) | p50 16.7 ms, p95 16.7 ms, max 33.3 ms | none |
-| 10,000 events through `pulse ingest` (2.8 s) | 12 batches, 4 per second, at most 200 events and 53 KB each; 2,300 shown, 7,700 counted as dropped | p50 16.7 ms, p95 16.7 ms, max 16.8 ms | none |
-| 30,000 events through `pulse ingest` (8.3 s) | 34 batches; 6,700 shown, 23,300 dropped | p50 16.7 ms, p95 16.7 ms, max 33.3 ms | none |
+| Case | What the daemon sent | Frames | Long tasks | Key press to detail |
+|---|---|---|---|---|
+| 10,000 files written into a watched folder | one `fs.burst` (the fs source folds the storm) | p50 16.7 ms, p95 16.7 ms, max 16.8 ms | none | after: under 1 s |
+| 10,000 events through `pulse ingest` | batches of at most 200, the rest counted as summarized | p50 16.7 ms, p95 16.8 ms, max 16.8 ms | none | during: 27 ms |
+
+The earlier version of this table also reported a 30,000-event ingest (34 batches, no long tasks). It was measured by hand once and no test produces it, so it is not repeated here; the mock storm of 30,000 events below is the tested larger case.
+
+Against the mock daemon, in the page. The mock's own work (routing, serializing frames) runs on the same main thread, so these numbers overstate what the UI costs with the real daemon:
 
 | Case | Frames | Long tasks |
 |---|---|---|
@@ -166,6 +182,6 @@ Against the real daemon (debug build, same machine), feed open, measured in the 
 | Run output, scrolling all of it (4,000 px per frame), rows measured (first version) | p50 33 ms, p95 217 ms, max 250 ms | 214, max 241 ms |
 | Run output, scrolling all of it, heights computed (prose rows still measured) | p50 16.7 ms, p95 16.8–33.3 ms, max 33.4 ms | none |
 
-Run them with `pnpm --dir apps/web test:browser`; `e2e/perf.spec.ts` and the storm and output tests print these lines.
+Run them with `pnpm --dir apps/web test:browser`; `e2e/perf.spec.ts` and the storm and output tests print these lines. The storm tests find the gap row by scrolling until one is rendered: it sits below the newest batch that dropped events, which is not always the last batch, so a fixed offset failed about one run in three.
 
 The DOM holds fewer than 80 feed rows and 200 output rows at any time.
