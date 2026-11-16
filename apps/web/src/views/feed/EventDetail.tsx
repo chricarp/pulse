@@ -111,7 +111,7 @@ export function EventDetailPane({ id, onClose, onFilter }: { id: string; onClose
             ],
             ["Id", <span key="id" className="mono">{e.id} <CopyButton value={e.id} /></span>],
             ...(e.pulsecoalesced && e.pulsecoalesced > 1
-              ? ([["Coalesced", <span key="c">Folded from <span className="num">{count(e.pulsecoalesced)}</span> raw signals by the source.</span>]] as [string, ReactNode][])
+              ? ([["Coalesced", <span key="c">Folded from <span className="num">{count(e.pulsecoalesced)}</span> raw signals by the source. Pulse records how many, not which ones.</span>]] as [string, ReactNode][])
               : []),
             ...(e.pulsereplayof
               ? ([["Replay of", <a key="r" className="mono" href={href({ view: "feed", eventId: e.pulsereplayof })} onClick={(ev) => { ev.preventDefault(); navigate({ view: "feed", eventId: e.pulsereplayof ?? "" }, { keepSearch: true }); }}>{shortId(e.pulsereplayof)}</a>]] as [string, ReactNode][])

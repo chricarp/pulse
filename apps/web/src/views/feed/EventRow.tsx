@@ -88,7 +88,7 @@ export const EventRow = memo(function EventRow({ event, selected, onSelect }: { 
           </span>
         )}
         {event.pulsecoalesced && event.pulsecoalesced > 1 && (
-          <span className="flag num" title={`Folded from ${event.pulsecoalesced} raw signals`}>
+          <span className="flag num" title={`Folded from ${event.pulsecoalesced} raw signals by the source (only the count is recorded)`}>
             ×{count(event.pulsecoalesced)}
           </span>
         )}

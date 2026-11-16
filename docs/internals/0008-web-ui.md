@@ -1,6 +1,6 @@
 # 0008: Web UI
 
-Status: v1, 2026-11-16. Built against a mock daemon while the real RPC server was being written; see "What the daemon must do" before wiring the two together.
+Status: v1, 2026-11-16. Built against a mock daemon while the real RPC server was being written, then wired to the real daemon and used through every view; "Wiring it to the real daemon" records what disagreed and how it was settled.
 
 The UI is a view of the daemon. It holds no state the daemon does not know about, except view state: filters (in the URL), selection (in the URL), the theme override and a few toggles (in memory or `localStorage`). Everything else is a cache of what the daemon said, refreshed by its notifications.
 
@@ -20,9 +20,9 @@ Not used, on purpose: a router (the History API and a 100-line `parseRoute` cove
 ```
 apps/web/src/
   contracts/   generated from pulse-contracts; never edited
-  rpc/         the client, the WebSocket transport, the token handover
+  rpc/         the client, the WebSocket transport, the login
   store/       createStore, the feed buffer
-  app/         the daemon cache, the feed controller, the delivery cache, router, keys, theme, toasts
+  app/         the daemon cache, the feed controller, event outcomes, home directory, router, keys, theme, toasts
   lib/         pure logic: filters, rule and agent forms, syntax checks, explanations, formatting
   ui/          primitives (buttons, pills, fields, dialogs, middle truncation), icons
   shell/       sidebar, banners, command palette, shortcut help
@@ -41,13 +41,17 @@ One `RpcClient` (`rpc/client.ts`) over anything shaped like a socket: the browse
 - A notification for a subscription id the client has not learned yet (the subscribe response is still in flight) is held (at most 64) and delivered when the id arrives.
 - **`state.changed`** updates the cached `SystemStatus` and refetches the lists its `topics` name.
 
-## Token handover
+## Login
 
-`pulse open` opens `http://127.0.0.1:<port>/#token=<token>`. The fragment never reaches a server or a log. Before anything else runs, `rpc/token.ts` reads it, removes it from the address bar with `history.replaceState`, and keeps it in `sessionStorage` so a reload of that tab keeps working (a new tab needs `pulse open` again). The token is never logged and never put in a URL.
+The handshake is specified in `pulse_contracts::auth` (with its constants exported to `contracts/index.ts`), because the UI, the daemon and the desktop shell must agree on it.
 
-Browsers cannot set headers on a WebSocket, so the token is offered as a second subprotocol: `new WebSocket(url, ["pulse.v1", "pulse.token.<token>"])`. The daemon checks it and selects `pulse.v1` (it must not echo the token). A rejected token closes the socket with code **4401**; the app then stops retrying and explains how to open it properly. Without a token the app does not connect at all and shows the same explanation.
+- `pulse open` (or the desktop shell) opens `http://127.0.0.1:<port>/#login=<code>`: a code that works once, for two minutes, and only on the daemon that was running when it was minted. The token itself never sits in a process's arguments or in browser history. Before anything else runs, `rpc/login.ts` removes the fragment with `history.replaceState` and posts the code to `POST /auth/login`, which answers with the daemon token.
+- The token is kept in `sessionStorage`: a reload of that tab keeps working (also after the daemon restarts, since the token is the daemon's persistent secret); a new tab needs `pulse open` again. A refused code falls back to a token the tab already holds, so opening the same link twice in one tab is harmless.
+- The WebSocket offers the subprotocols `["pulse", "pulse.token.<token>"]`; the daemon selects `pulse` and never echoes the token.
+- A browser cannot read the status of a refused upgrade (a 401 looks like a daemon that is down: close 1006), so the daemon accepts a browser upgrade with a bad token and closes it with **4401**. The app then forgets the token, stops retrying and shows how to log in again. Any other close means reconnect with backoff.
+- Each failure has its own screen (`NoAccess`, `data-reason`): no code, a refused code (expired, spent, or from another home), a daemon that did not answer the exchange, and a token the daemon no longer accepts.
 
-In development the app is served by Vite and proxies `/ws` to `PULSE_DAEMON` (default `http://127.0.0.1:7477`), rewriting `Origin` to the daemon's so the daemon's origin check passes. No origin is ever baked into the bundle.
+In development Vite proxies `/ws` and `/auth` to `PULSE_DAEMON`, rewriting `Origin` to the daemon's so its origin check passes. No origin is ever baked into the bundle. See `apps/web/README.md` for the loop.
 
 ## State
 
@@ -68,11 +72,11 @@ In development the app is served by Vite and proxies `/ws` to `PULSE_DAEMON` (de
 
 ## Delivery markers in the feed
 
-Batches carry events, not deliveries, but the feed must show at a glance what each event caused, loop protection above all. `app/deliveries.ts` fetches `events.get` lazily for rows on screen: only events whose type some rule listens to (a delivery needs a matching rule), only after the row has stayed on screen for 250 ms (a storm scrolling past asks for nothing), four at a time, cached up to 3,000 entries, and invalidated when a run for that event changes. See "Contract gaps": a summary of outcomes on the event would make this unnecessary.
+The feed must show at a glance what each event caused, loop protection above all. The daemon sends it with the events: every `events.batch` and every `events.query` page carries an `EventOutcome` (rule, delivery outcome, run) per delivery of its events, and a batch also carries outcomes recorded later for events it sent earlier (a debounce that elapsed). `app/outcomes.ts` merges them by event; the detail pane, which fetches the full deliveries anyway, replaces an event's entry. No request is made per row. (The first version fetched `events.get` for rows that stayed on screen; under a storm that is one request per row, and it could not know about a fire that happens ten seconds later.)
 
 ## Run output
 
-`runs.subscribe_output` with `after` = the last `seq` received; stored chunks come first, then live ones. Chunks are appended in place and published once per frame. The view follows the tail while scrolled to the bottom; scrolling up stops following and offers to return (End).
+`runs.subscribe_output` with `after` = the last `seq` received; stored chunks come first, then live ones (the daemon reads new chunks from the store at most every 100 ms), then `done`. Chunks are appended in place and published once per frame. The view follows the tail while scrolled to the bottom; scrolling up stops following and offers to return (End).
 
 Rows are not measured. Measuring rows as they scroll by cost a synchronous React render per row, and 40,000 rows of output stuttered badly (long tasks up to 241 ms). Row heights are computed from the text instead: a fixed 18 px line height, a monospace font whose cell width is measured once, and wrapping at any character (`word-break: break-all`), so a line of `n` characters in a column of `w` cells takes `ceil(n / w)` lines. Heights are cached per chunk. Rows containing characters that may not be one cell wide (CJK, emoji, symbols from a fallback font) are still measured. The CSS for `.ch` and `chunkLayout` in `views/runs/output.ts` must change together.
 
@@ -99,45 +103,59 @@ Calm and dense: 13 px type, 30 px rows, monospace for machine data, tabular nume
 
 ## The mock daemon
 
-`src/mock/` implements every method in `RpcMethods` (the `Handlers` type makes a missing one a compile error) over in-memory state, behind a socket that speaks JSON strings, so the app and the tests run the same client code path as with the real daemon. It routes events with a simplified version of `pulse_core::routing` (same order of checks, same outcomes and block reasons), runs scripted agents whose output looks like each adapter's, batches live events like the daemon will (at most 100 per batch every 250 ms, the rest counted as dropped), omits default fields from definitions the way serde does, and sends `state.changed` with topics.
+`src/mock/` implements every method in `RpcMethods` (the `Handlers` type makes a missing one a compile error) over in-memory state, behind a socket that speaks JSON strings, so the app and the tests run the same client code path as with the real daemon. It routes events with a simplified version of `pulse_core::routing` (same order of checks, same outcomes and block reasons), runs scripted agents whose output looks like each adapter's, batches live events like the daemon does (at most 200 per batch every 250 ms, the rest counted as dropped, with outcomes on events and pages), omits default fields from definitions the way serde does, and sends `state.changed` with topics.
 
 It seeds three hours of history: fires, debounces, every block reason the UI explains, a formatter whose own write is blocked by loop protection, a rule with a tripped circuit breaker, a snoozed rule, a disabled and an archived rule, runs in every status, a pending approval, a degraded and a failed source, project files in each trust state, and config errors. Controls (also in the palette in mock builds): an event storm, a run with megabytes of output, a supervised fire, dropping the connection, stopping and starting the daemon.
 
 It is only imported when the build mode is `mock` (`pnpm dev:mock`, `pnpm build:mock`). `import.meta.env.MODE` is a build-time constant, so the production bundle contains neither the mock nor its controls.
 
-Where the mock is simpler than the daemon: no dedupe, no `debounce_capacity`, the circuit breaker is a fixed 20 fires in 10 minutes, permission paths are compared with a JavaScript glob matcher, and the debounce elapsing records a second delivery for the event (fired) after the first (debounced). Treat these as guesses about the daemon, not as its specification.
+Where the mock is simpler than the daemon: no dedupe, no `debounce_capacity`, no folding of file storms into `fs.burst`, no inferred causation from working directories, the circuit breaker is a fixed 20 fires in 10 minutes, permission paths are compared with a JavaScript glob matcher, and run output is pushed per chunk instead of read from the store every 100 ms. Like the daemon, a debounce elapsing records a second delivery (fired) after the first (debounced). Treat the rest as guesses about the daemon, not as its specification; when the daemon turns out to differ, change the mock.
 
-## What the daemon must do for this app
+## Wiring it to the real daemon
 
-- Serve `apps/web/dist` at `/`, and `index.html` for any other GET path that is not a file (the app routes with the History API: `/runs/<id>`, `/rules/<name>`, `/feed?type=…`).
-- Accept the WebSocket at **`/ws`**, with subprotocols `pulse.v1` and `pulse.token.<token>`; select `pulse.v1`; close with **4401** for a missing or wrong token.
-- Answer a subscribe call before sending that subscription's first notification (the client tolerates the reverse, briefly).
-- Send `state.changed` when any field of `SystemStatus` changes, including run counts and source health, with `topics` possibly empty; include `rules`/`agents`/`sources`/`projects`/`config` when those lists change (source health counts as `sources`).
-- `events.query`: `cursor` is exclusive and in the direction of `order` (`newest_first` returns ids below the cursor).
-- `runs.subscribe` with an empty filter delivers every run change; a run leaving the filter's statuses is still reported once.
-- `runs.subscribe_output` sends stored chunks after `after` (in pages), then live chunks, and a notification with `done: true` when the run is terminal (also when it already was).
-- Expand `~` in `EventFilter.path` and `subject` (the UI passes what the user typed).
+The UI and the daemon were written at the same time without seeing each other. What disagreed, worst first, and where it was fixed:
 
-## Contract gaps and awkwardness
+1. **Login** (both). The UI expected `#token=<token>` and offered subprotocol `pulse.v1`, which the daemon does not select, so the browser dropped every connection; the daemon refused a bad token with an HTTP 401 that a browser cannot see. Now the login code flow above, subprotocol `pulse`, and 4401 for a browser upgrade with a bad token.
+2. **Spent login codes worked again after a restart** (daemon): the single-use memory is in RAM. A daemon now refuses codes minted before it started.
+3. **Outcomes per row** (contract): see "Delivery markers". Live batches and query pages carry outcomes; agents over MCP get the batch without them.
+4. **Generated types lied about optional fields** (contract): `where`, `debounce_by`, `ignore`, `allowed_tools`, `disallowed_tools`, `extra_args`, `env` are omitted at their defaults but were typed as required, and `after` on run output params was required. A struct-level `ts(optional_fields)` overrides ts-rs's serde-based detection for non-`Option` fields; they are now marked, and a test compares the generated types with what serde emits.
+5. **`~` in a project directory** (daemon): `projects.trust` refused `~/code/repo` (the UI's own placeholder) as not absolute. The dialog also showed the refusal in a toast hidden behind it; it now shows it in the dialog.
+6. **`~` in filters** (daemon): `EventFilter.path` and `subject` were not expanded; `path:~/University` matched nothing.
+7. **No home directory** (contract): `SystemStatus.user_home` added; paths show as `~/…`, with the absolute path in titles and copy buttons.
+8. **Run counts went stale** (daemon): `state.changed` was sent only for topic changes. It is now also sent, with no topics, when run counts change. The sidebar still counts from the run index it keeps anyway; the status's counts are right for clients without one (the desktop shell's badge).
+9. **Subscription response order** (daemon): output already stored could overtake the subscribe response. Subscriptions now deliver nothing until their response is queued. The client still tolerates the reverse.
+10. **`rules.test` for a debounced rule** (UI): the daemon already returned `after_debounce`; the tester re-tested a copy without the debounce. It uses the field now.
+11. **Config errors** (UI and contract doc): the notice said definitions from a broken file are not loaded; the daemon keeps the last good version of the user's file (a project file with errors is inactive).
+12. **Batch size** (mock): 200, not 100.
+13. **`runs.subscribe`** (mock): the mock reported a run once more when it left the filter's statuses; the daemon does not. The UI only subscribes with an empty filter.
+14. **Storms of files** (mock): the real fs source folds more than 200 pending changes in one directory into one `fs.burst`; 10,000 unzipped files reach the UI as one event. The mock's storm is now ingested external events, which the daemon does deliver one by one.
+15. Form fields had no accessible names (UI): each `Field` now gives its control an id.
 
-1. **No delivery summary on live or queried events.** The feed needs each event's outcomes at a glance, so it calls `events.get` per visible row. Suggest `EventsBatch` and `EventPage` carry `outcomes: { [event_id]: DeliverySummary[] }` (rule, outcome kind, block reason tag) for events with deliveries.
-2. **Defaults missing on the wire contradict the generated types.** Serde skips `where`, `debounce_by` (rule), `ignore` (fs source), `allowed_tools`, `extra_args`, `env` (agent) when they hold defaults, but the TypeScript types mark them required. The UI reads them defensively. Either always serialize them or mark them optional in the generated types.
-3. **`RunOutputParams.after` and `RunOutputSubscribeParams.after`** are `Option<u64>` in Rust but `number` (required) in TypeScript, because `#[ts(type = "number")]` drops the optionality.
-4. **`rules.test` cannot show what a debounced rule would send.** It returns `debounced` and no prompt. The UI tests the same rule again as a draft without its debounce and shows that as "when the debounce elapses". A second decision (`after_debounce`) in `RuleTestResult` would be exact.
-5. **"What it was coalesced from"** is only a count (`pulsecoalesced`). Nothing says which raw signals were folded; fine if that is the intent, but the UI cannot show more than the count.
-6. **No WebSocket auth handshake in the contract.** The subprotocol scheme above is this app's proposal; it needs to be agreed and written down next to the threat model.
-7. **`SystemStatus` lacks the home directory.** Paths in events are absolute (`/home/ada/…`) while config uses `~`; the UI cannot shorten paths to `~/…` or expand `~` in a filter itself.
-8. **No way to discover project files.** `projects.list` returns known projects; trusting needs a directory typed by the user. Fine for v1, worth noting.
-9. **`state.changed` topics have no `runs`**, which is right (runs have a subscription), but the status's run counts change far more often than anything else in it. If the daemon only sends `state.changed` for topic changes, the counts in `SystemStatus` go stale; the UI derives its counts from the run index for this reason.
+Verified as assumed: `index.html` for paths without a file extension (`/runs/<id>`, `/rules/<name>`; names cannot contain dots); `events.query` cursors are exclusive in the direction of `order`; `runs.subscribe` with an empty filter delivers every change, latest state per 250 ms window (intermediate states can be skipped: views show state); run output ends with `done: true`, also for a finished run; dropped events are older than the batch.
+
+Decided as is for v1:
+
+- **Coalescing is a count.** `pulsecoalesced` says how many raw signals were folded, not which. The UI says so ("Pulse records how many, not which ones"). Keeping the signals would grow every event for little use.
+- **Projects are not discovered.** Trusting takes a directory the user types (`~` allowed). Discovering `pulse.toml` files would mean scanning, or guessing from git sources; the user knows which repository they mean.
+- **Inferred causation can block a legitimate event.** A new PDF that lands in `~/University` while a `lecture-notes` run (working directory `~/University`) is active is attributed to that run and blocked as a self-trigger. That is the engine's documented trade-off (0002, 0003); the UI shows it as a loop block with the inferred cause, which is what it is.
 
 ## Testing
 
 - Unit (Vitest, `pnpm --dir apps/web test`): the RPC client (out-of-order responses, errors with data, timeouts, queued calls, no resend after a drop, backoff and reset, 4401, resubscribe with fresh params, early notifications, unsubscribe races, `state.changed`), the feed buffer (bounds, batching, gaps and their counts, merging history, disconnection gaps), filters (EventFilter mapping, URL round trip, query syntax), the rule and agent forms (round trips of every field and adapter, problems per field), formatting of untrusted text and prompts, and the mock's scenarios through the real client.
+- Browser against the real daemon (Playwright, `pnpm --dir apps/web test:real`, after `pnpm build` and `cargo build -p pulse-cli`): each test starts the `pulse` binary on a temp home and port 0 with a real fs source and the fake agents. Login (spent, expired and missing codes), the live feed with outcomes, live run output, approve and reject, a rule written back to `pulse.toml` with hand edits and a broken file, and recovery after a restart.
 - Browser (Playwright, `pnpm --dir apps/web test:browser`): the production build with the mock compiled in. Storms, gap rows, holding the tail, a dropped connection, keyboard paths, the palette, the filter syntax, shortcut discovery, a draft dry run, creating a rule and taking it through every reverse state, untrusting and re-trusting a project, megabytes of output, structured output, and the measurements below. Tests wait for conditions, never for time.
 
 ## Measurements
 
 Chromium 156 (headless shell) on the development machine (Linux arm64, 8 cores, shared with other builds), 1440×900, production build with the mock in the page. The mock's own work (routing, serializing frames) runs on the same main thread, so these numbers overstate what the UI costs with the real daemon.
+
+Against the real daemon (debug build, same machine), feed open, measured in the page and from the page's own WebSocket frames:
+
+| Case | What the daemon sent | Frames | Long tasks |
+|---|---|---|---|
+| 10,000 files unzipped into a watched folder | one `events.batch` with one `fs.burst` (2.3 KB) | p50 16.7 ms, p95 16.7 ms, max 33.3 ms | none |
+| 10,000 events through `pulse ingest` (2.8 s) | 12 batches, 4 per second, at most 200 events and 53 KB each; 2,300 shown, 7,700 counted as dropped | p50 16.7 ms, p95 16.7 ms, max 16.8 ms | none |
+| 30,000 events through `pulse ingest` (8.3 s) | 34 batches; 6,700 shown, 23,300 dropped | p50 16.7 ms, p95 16.7 ms, max 33.3 ms | none |
 
 | Case | Frames | Long tasks |
 |---|---|---|
