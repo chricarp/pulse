@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use pulse_contracts::config::{ConfigOrigin, LogLevel, parse_config_file};
-use pulse_contracts::rpc::{Empty, method};
+use pulse_contracts::rpc::{ConfigErrorList, Empty, method};
 use pulse_daemon::home::InstanceLock;
 use pulse_daemon::{Daemon, DaemonOptions, PulseHome, StartError, Wiring};
 
@@ -56,9 +56,18 @@ pub fn start(ctx: &Ctx, args: StartArgs) -> ExitCode {
             }
         };
         let port = daemon.port();
+        // Say what is wrong with the config now, while the user is looking.
+        let problems = problem_lines(&daemon.services().config_report());
         if args.ready_line {
+            // `--detach` passes these on before it returns.
+            for p in &problems {
+                print_line(&format!("note {p}"));
+            }
             print_line(&format!("ready {port}"));
         } else {
+            for p in &problems {
+                eprint_line(p);
+            }
             eprint_line(&format!(
                 "Pulse {} on http://127.0.0.1:{port} (home {}). `pulse open` for the UI; Ctrl-C stops.",
                 pulse_daemon::VERSION,
@@ -119,12 +128,24 @@ fn detach(ctx: &Ctx, args: &StartArgs) -> ExitCode {
     let (tx, rx) = mpsc::channel();
     if let Some(stdout) = child.stdout.take() {
         std::thread::spawn(move || {
-            let mut line = String::new();
-            let _ = BufReader::new(stdout).read_line(&mut line);
-            let _ = tx.send(line);
+            let mut stdout = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                let n = stdout.read_line(&mut line).unwrap_or(0);
+                let done = n == 0 || line.starts_with("ready ");
+                if tx.send(line).is_err() || done {
+                    break;
+                }
+            }
         });
     }
-    let line = rx.recv_timeout(Duration::from_secs(30)).unwrap_or_default();
+    let line = loop {
+        let line = rx.recv_timeout(Duration::from_secs(30)).unwrap_or_default();
+        match line.strip_prefix("note ") {
+            Some(note) => eprint_line(note.trim_end()),
+            None => break line,
+        }
+    };
     if let Some(port) = line.trim().strip_prefix("ready ") {
         if ctx.json {
             print_json(&serde_json::json!({ "pid": child.id(), "port": port.parse::<u16>().ok() }));
@@ -145,6 +166,23 @@ fn detach(ctx: &Ctx, args: &StartArgs) -> ExitCode {
     eprint_line(err.trim_end());
     eprint_line("pulse: the daemon did not start");
     ExitCode::from(1)
+}
+
+/// Config errors and warnings as lines for people.
+pub fn problem_lines(report: &ConfigErrorList) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !report.errors.is_empty() {
+        lines.push(format!(
+            "config: {} error(s); the last good config is in effect (`pulse status` shows them again):",
+            report.errors.len()
+        ));
+        lines.extend(report.errors.iter().map(|e| format!("  error: {e}")));
+    }
+    if !report.warnings.is_empty() {
+        lines.push(format!("config: {} warning(s):", report.warnings.len()));
+        lines.extend(report.warnings.iter().map(|e| format!("  warning: {e}")));
+    }
+    lines
 }
 
 pub async fn stop(ctx: &Ctx) -> Res {
@@ -177,13 +215,17 @@ pub async fn stop(ctx: &Ctx) -> Res {
 pub async fn status(ctx: &Ctx) -> Res {
     let client = ctx.client().await?;
     let s = client.call::<method::SystemStatusGet>(Empty {}).await?;
-    let errors = if s.config_errors > 0 {
-        client.call::<method::SystemConfigErrors>(Empty {}).await?.errors
+    let report = if s.config_errors + s.config_warnings > 0 {
+        client.call::<method::SystemConfigErrors>(Empty {}).await?
     } else {
-        Vec::new()
+        ConfigErrorList { errors: Vec::new(), warnings: Vec::new() }
     };
     if ctx.json {
-        print_json(&serde_json::json!({ "status": s, "config_errors": errors }));
+        print_json(&serde_json::json!({
+            "status": s,
+            "config_errors": report.errors,
+            "config_warnings": report.warnings,
+        }));
         return Ok(ExitCode::SUCCESS);
     }
     print_line(&format!(
@@ -202,16 +244,26 @@ pub async fn status(ctx: &Ctx) -> Res {
         "runs     {} running, {} queued, {} waiting for approval",
         s.runs.running, s.runs.queued, s.runs.pending_approval
     ));
-    if errors.is_empty() {
+    if report.errors.is_empty() && report.warnings.is_empty() {
         print_line("config   ok");
-    } else {
+    }
+    if !report.errors.is_empty() {
         print_line(&format!(
             "config   {} error(s); the last good config is in effect:",
-            errors.len()
+            report.errors.len()
         ));
-        for e in errors {
+        for e in &report.errors {
             print_line(&format!("  {e}"));
         }
+    }
+    if !report.warnings.is_empty() {
+        print_line(&format!("config   {} warning(s):", report.warnings.len()));
+        for e in &report.warnings {
+            print_line(&format!("  {e}"));
+        }
+    }
+    if src.degraded + src.failed > 0 {
+        print_line("         `pulse sources` says what is wrong with the sources.");
     }
     Ok(ExitCode::SUCCESS)
 }

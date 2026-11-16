@@ -19,6 +19,7 @@ pub mod dedupe;
 pub mod filter;
 pub mod glob;
 pub mod limits;
+pub mod lint;
 pub mod matcher;
 pub mod path;
 pub mod prompt;

@@ -2,7 +2,7 @@
 
 use pulse_contracts::catalog::{EventTypeInfo, event_types};
 use pulse_contracts::config::ConfigError;
-use pulse_contracts::rpc::StateTopic;
+use pulse_contracts::rpc::{ConfigErrorList, StateTopic};
 use pulse_contracts::status::{SourceCounts, SourceState, SystemStatus};
 use pulse_store::flags;
 
@@ -35,6 +35,7 @@ impl Services {
             rules: n(snapshot.config.rules.iter().filter(|r| !r.config.archived).count()),
             agents: n(snapshot.config.agents.len()),
             config_errors: n(self.shared.config_errors().len()),
+            config_warnings: n(self.config_warnings().len()),
         })
     }
 
@@ -76,6 +77,17 @@ impl Services {
 
     pub fn config_errors(&self) -> Vec<ConfigError> {
         self.shared.config_errors()
+    }
+
+    /// Errors (what did not load) and warnings (what loaded but cannot work as written).
+    pub fn config_report(&self) -> ConfigErrorList {
+        ConfigErrorList { errors: self.shared.config_errors(), warnings: self.config_warnings() }
+    }
+
+    /// Checked now, not at load: creating a missing directory or installing the agent's CLI
+    /// clears its warning without touching the config.
+    fn config_warnings(&self) -> Vec<ConfigError> {
+        crate::config::warnings(&self.shared.snapshot().config, &self.shared.user_home)
     }
 
     /// Re-reads every config file now (also done on file changes and SIGHUP).

@@ -125,7 +125,16 @@ field?: string | null,
  */
 message: string, };
 
-export type ConfigErrorList = { errors: Array<ConfigError>, };
+export type ConfigErrorList = { 
+/**
+ * Problems that keep a file (or the whole config) from loading.
+ */
+errors: Array<ConfigError>, 
+/**
+ * Definitions in effect that cannot work as written: a rule that can never fire, an agent
+ * whose program or working directory does not exist.
+ */
+warnings: Array<ConfigError>, };
 
 export type ConfigOrigin = { "kind": "user", path: string, } | { "kind": "project", name: string, dir: string, path: string, };
 
@@ -664,7 +673,12 @@ paused: boolean, pulse_home: string, port: number, sources: SourceCounts, runs: 
  * Problems in config files; see `system.config_errors`. Definitions from a file with errors
  * are not loaded.
  */
-config_errors: number, };
+config_errors: number, 
+/**
+ * Definitions that load but cannot work as written (a rule that can never fire, an agent
+ * whose program is not installed); see `system.config_errors`.
+ */
+config_warnings: number, };
 
 export type Timestamp = string;
 

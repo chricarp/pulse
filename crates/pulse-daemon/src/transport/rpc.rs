@@ -406,6 +406,6 @@ impl RpcHandler for RpcServer {
         Ok(EventTypeList { types: self.services.event_types() })
     }
     async fn system_config_errors(&self, _: &Self::Context, _: Empty) -> R<ConfigErrorList> {
-        Ok(ConfigErrorList { errors: self.services.config_errors() })
+        Ok(self.services.config_report())
     }
 }

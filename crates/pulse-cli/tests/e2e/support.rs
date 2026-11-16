@@ -164,7 +164,16 @@ impl Env {
         let pid = child.id().unwrap();
         let stdout = child.stdout.take().unwrap();
         let mut lines = BufReader::new(stdout).lines();
-        let line = within("the daemon to be ready", lines.next_line()).await.unwrap();
+        // Config problems come first as `note …` lines.
+        let line = within("the daemon to be ready", async {
+            loop {
+                match lines.next_line().await.unwrap() {
+                    Some(l) if l.starts_with("note ") => continue,
+                    other => return other,
+                }
+            }
+        })
+        .await;
         let Some(port) = line.as_deref().and_then(|l| l.strip_prefix("ready ")) else {
             let mut err = String::new();
             if let Some(mut e) = child.stderr.take() {
@@ -177,6 +186,18 @@ impl Env {
         // Keep reading stdout so the daemon never blocks on a full pipe.
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
         Daemon { child: Some(child), pid, port, home: self.home.clone() }
+    }
+}
+
+impl Drop for Env {
+    /// A failing test keeps its homes (config, `logs/pulse.log`, the database) for a look.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            if let Ok(spare) = tempfile::tempdir() {
+                let kept = std::mem::replace(&mut self.dir, spare).keep();
+                eprintln!("kept {} for inspection", kept.display());
+            }
+        }
     }
 }
 
@@ -389,7 +410,12 @@ impl Watch {
         self.until(what, |w| w.events.iter().find(|e| f(e)).cloned()).await
     }
 
+    /// Waits for a run matching `f`. Runs that changed before the subscription (a source can
+    /// fire within milliseconds of startup) are read from the log first.
     pub async fn run_in(&mut self, what: &str, f: impl Fn(&RunSummary) -> bool) -> RunSummary {
+        for r in self.all_runs().await {
+            self.runs.entry(r.id).or_insert(r);
+        }
         self.until(what, |w| w.runs.values().find(|r| f(r)).cloned()).await
     }
 

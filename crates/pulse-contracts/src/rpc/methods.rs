@@ -499,7 +499,12 @@ pub struct EventTypeList {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ConfigErrorList {
+    /// Problems that keep a file (or the whole config) from loading.
     pub errors: Vec<ConfigError>,
+    /// Definitions in effect that cannot work as written: a rule that can never fire, an agent
+    /// whose program or working directory does not exist.
+    #[serde(default)]
+    pub warnings: Vec<ConfigError>,
 }
 
 // ---- notifications ----
