@@ -375,22 +375,45 @@ run = {{ agent = "echo" }}
 /// The run is recorded as running before its process is spawned, so a crash in between leaves
 /// a `running` run (recovered as `interrupted`) and never a `queued` one whose start would be
 /// retried: that would run the agent twice, the first copy orphaned in its own process group.
+/// The engine knows of it from then too, so a file the agent writes in its first moment is
+/// already attributed to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_is_running_before_its_process_is_spawned() {
     let (tx, mut spawned) = tokio::sync::mpsc::unbounded_channel();
     let setup = Setup { supervisor: std::sync::Arc::new(SpawnGate(tx)), ..Setup::default() };
     let mut t = TestDaemon::start_with(
         &format!(
-            "{COMMAND_AGENT}\n[[rule]]\nname = \"r\"\non = \"ext.*\"\nrun = {{ agent = \"sh\" }}\n"
+            "[[source]]\nname = \"fake\"\nkind = \"fs\"\npath = \"/\"\n{COMMAND_AGENT}\n[[rule]]\nname = \"r\"\non = \"ext.*\"\nrun = {{ agent = \"sh\" }}\n"
         ),
         setup,
     )
     .await;
     let client = t.client().await;
+    let mut notes = client.notifications().unwrap();
+    client.call::<method::EventsSubscribe>(EventsSubscribeParams::default()).await.unwrap();
     client.call::<method::EventsIngest>(ext("one")).await.unwrap();
     let id = within("the spawn", spawned.recv()).await.unwrap();
     let run = client.call::<method::RunsGet>(RunIdParams { id }).await.unwrap();
     assert_eq!(run.status, RunStatus::Running);
     assert!(run.started_at.is_some() && run.pid.is_none(), "{run:?}");
+
+    // The process has not even been spawned; a write in its folder is already its own.
+    let cwd = run.invocation.unwrap().cwd;
+    let path = format!("{cwd}/out.txt");
+    t.sources.push("fake", file_created("fake", &path)).await;
+    let written = within("the file event", async {
+        loop {
+            if let Notification::EventsBatch(b) = notes.recv().await.unwrap() {
+                if let Some(e) =
+                    b.batch.events.into_iter().find(|e| e.subject.as_deref() == Some(&path))
+                {
+                    return e;
+                }
+            }
+        }
+    })
+    .await;
+    assert_eq!(written.causation_run, Some(id));
+    assert_eq!(written.causation, Some(pulse_contracts::Causation::Inferred));
     t.stop().await;
 }
