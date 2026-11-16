@@ -70,7 +70,7 @@ describe("mock daemon", () => {
     const batches: EventsBatch[] = [];
     let total = 0;
     await new Promise<void>((resolve) => {
-      client.subscribe("events.subscribe", () => ({ filter: { types: [], sources: ["downloads"] } }), (b) => {
+      client.subscribe("events.subscribe", () => ({ filter: { types: [], sources: ["camera"] } }), (b) => {
         batches.push(b);
         total += b.events.length + b.dropped;
         if (total >= 2000) resolve();
