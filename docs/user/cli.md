@@ -90,7 +90,7 @@ changes nothing. `pulse mcp` keeps stdout for MCP messages; its failures are tex
 
 | Command | Does |
 |---|---|
-| `pulse tail [filters] [--no-runs]` | Follow events, and run state changes, live. Ctrl-C stops. |
+| `pulse tail [filters] [--no-runs]` | Follow events live, and the state changes of the runs they cause, always after the event. With filters, only the runs of the events shown (and of events from before `tail` started). Ctrl-C stops. |
 | `pulse events [filters] [-n/--limit <N>] [--cursor <C>] [--oldest-first] [--since <T>]` | Query the log, newest first, 50 at a time. `--since` takes RFC 3339 or a duration ago (`2h`). A page ends with `More: pulse events --cursor …` when there is more. |
 | `pulse events show <ID>` | One event: its data, its cause, every rule it reached and why, the runs it caused. |
 | `pulse replay <EVENT> [--rule <RULE>]…` | Re-emit a past event as a new one (with no cause) and route it, to every rule or only the named ones. |

@@ -10,6 +10,7 @@ mod commands;
 mod failure;
 mod format;
 mod output;
+mod tail;
 mod templates;
 
 use std::path::PathBuf;

@@ -112,15 +112,15 @@ About two seconds later (Pulse waits for a file to stop changing), `pulse tail` 
 and the run it caused:
 
 ```
-run 01M7HXVDXTRBNQR0XEKAPNR8D1  queued           rule=count-bytes agent=counter
 2026-11-16T10:18:38.953Z  fs.file.created /home/me/pulse-demo/note.txt  [01M7HXVDXTRBNQR0XEKAPNR8D0]
+run 01M7HXVDXTRBNQR0XEKAPNR8D1  queued           rule=count-bytes agent=counter
 run 01M7HXVDXTRBNQR0XEKAPNR8D1  succeeded        rule=count-bytes agent=counter exit=0
 ```
 
-(The run's line can arrive before the event's line; they are separate notifications.)
+The end of an id is enough wherever a command takes one, as long as only one id ends that way:
 
 ```console
-$ pulse runs logs 01M7HXVDXTRBNQR0XEKAPNR8D1
+$ pulse runs logs NR8D1
 6 /home/me/pulse-demo/note.txt
 $ pulse rules history count-bytes
 2026-11-16T10:18:40.954Z  count-bytes          fired  run 01M7HXVDXTRBNQR0XEKAPNR8D1  [event 01M7HXVDXTRBNQR0XEKAPNR8D0]

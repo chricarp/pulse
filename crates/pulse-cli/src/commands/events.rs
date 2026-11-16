@@ -49,39 +49,64 @@ pub async fn tail(ctx: &Ctx, args: TailArgs) -> Res {
     client
         .call::<method::EventsSubscribe>(EventsSubscribeParams { filter: filter(args.filter)? })
         .await?;
-    if !args.no_runs {
-        client.call::<method::RunsSubscribe>(RunsSubscribeParams::default()).await?;
-    }
+    let runs = if args.no_runs {
+        None
+    } else {
+        Some(client.call::<method::RunsSubscribe>(RunsSubscribeParams::default()).await?)
+    };
+    // Read after subscribing: a run of any later event waits for it (see `tail::Order`).
+    let newest = EventQuery { limit: Some(1), ..EventQuery::default() };
+    let newest =
+        client.call::<method::EventsQuery>(newest).await?.page.events.first().map(|e| e.id);
+    let mut order = crate::tail::Order::new(newest);
     // For people on stderr in both modes; it also tells a script that tail is subscribed.
     note("Following events and runs; Ctrl-C stops.");
     let out = ctx.out();
-    while let Some(n) = notes.recv().await {
-        let text = match &out {
-            Out::Json(json) => {
-                json.line(&n);
-                continue;
-            }
-            Out::Text(text) => text,
-        };
-        match n {
-            Notification::EventsBatch(b) => {
-                let b = b.batch;
-                for e in &b.events {
-                    text.line(&format::event_line(e));
-                }
-                if b.dropped > 0 {
-                    text.line(&format!(
-                        "… {} more not shown live (the log has them: pulse events)",
-                        b.dropped
-                    ));
-                }
-            }
-            Notification::RunsChanged(c) => {
-                for r in &c.runs {
+    let show_runs = |runs_changed: RunsChanged| {
+        if runs_changed.runs.is_empty() {
+            return;
+        }
+        match &out {
+            Out::Json(json) => json.line(&Notification::RunsChanged(runs_changed)),
+            Out::Text(text) => {
+                for r in &runs_changed.runs {
                     text.line(&format!("run {}", format::run_line(r)));
                 }
             }
-            _ => {}
+        }
+    };
+    while let Some(n) = notes.recv().await {
+        match n {
+            Notification::EventsBatch(b) => {
+                let batch = &b.batch;
+                let ready = order.events(batch.events.iter().map(|e| e.id), batch.dropped > 0);
+                match &out {
+                    Out::Json(json) => json.line(&Notification::EventsBatch(b.clone())),
+                    Out::Text(text) => {
+                        for e in &batch.events {
+                            text.line(&format::event_line(e));
+                        }
+                        if batch.dropped > 0 {
+                            text.line(&format!(
+                                "… {} more not shown live (the log has them: pulse events)",
+                                batch.dropped
+                            ));
+                        }
+                    }
+                }
+                if let Some(subscribed) = &runs {
+                    show_runs(RunsChanged { subscription: subscribed.subscription, runs: ready });
+                }
+            }
+            Notification::RunsChanged(c) => {
+                let ready = order.runs(c.runs);
+                show_runs(RunsChanged { subscription: c.subscription, runs: ready });
+            }
+            other => {
+                if let Out::Json(json) = &out {
+                    json.line(&other);
+                }
+            }
         }
     }
     Err(Failure::connection("the daemon closed the connection"))

@@ -596,3 +596,62 @@ async fn every_command_answers_json_or_a_json_error() {
     assert_eq!(code, 3);
     drop(daemon);
 }
+
+/// `pulse tail` shows an event before the runs it caused. They are committed together, but
+/// events and runs reach a client on two subscriptions, each sending at most every 250 ms: an
+/// event right after another waits for its subscription's next send while its run's goes out
+/// at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn tail_shows_an_event_before_its_runs() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let env = Env::new();
+    env.write_config(
+        "[[agent]]\nname = \"a\"\nadapter = \"command\"\ncommand = [\"true\"]\nallow = [\"ext.*\"]\n\n[[rule]]\nname = \"go\"\non = \"ext.ci.go\"\nrun = { agent = \"a\" }\n",
+    );
+    let daemon = env.start().await;
+    let mut watch = daemon.watch().await;
+    let mut tail = env.pulse();
+    tail.args(["--json", "tail"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut tail = tail.spawn().unwrap();
+    let mut out = BufReader::new(tail.stdout.take().unwrap()).lines();
+    let mut err = BufReader::new(tail.stderr.take().unwrap()).lines();
+    within("tail to subscribe", err.next_line()).await.unwrap().unwrap();
+
+    let mut earlier = Vec::new();
+    for round in 0..5 {
+        // The first event opens the events subscription's window; the second waits for it.
+        for kind in ["warm", "go"] {
+            let line = format!("{{\"type\":\"{kind}\",\"subject\":\"{round}\"}}\n");
+            let (code, _, e) = env.run_stdin(&["ingest", "-s", "ci"], &line).await;
+            assert_eq!(code, 0, "{e}");
+        }
+        let run = watch.run_in("this round's run", |r| !earlier.contains(&r.id)).await;
+        earlier.push(run.id);
+        let mut seen_event = false;
+        loop {
+            let line = within("a tail line", out.next_line()).await.unwrap().unwrap();
+            let note = json(&line);
+            let params = &note["params"];
+            if note["method"] == "events.batch" {
+                let ids = params["events"].as_array().unwrap();
+                seen_event |= ids.iter().any(|e| e["id"] == run.event.to_string());
+            }
+            if note["method"] == "runs.changed" {
+                let ours = params["runs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["id"] == run.id.to_string());
+                if ours {
+                    assert!(seen_event, "round {round}: run {} shown before its event", run.id);
+                    break;
+                }
+            }
+        }
+    }
+    drop(tail);
+    daemon.stop().await;
+}
