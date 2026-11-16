@@ -28,7 +28,10 @@ Controls:
 - The rule's template is the instruction. Event content is **data**, and rendering keeps the two apart: the prompt ends with a block, fenced by a per-run random delimiter, that holds the event as JSON and is introduced as untrusted data that must not be followed as instructions.
 - Values substituted inline into the instruction (`{{subject}}`) are reduced to a single line, stripped of control characters, and truncated. The delimiter cannot be forged because event content never contains the run's random token.
 - Every field has a size limit, and so does the whole data block. Process output is a bounded tail.
-- For the `command` adapter, values are substituted **per argument**. Nothing is passed through a shell, so event content cannot add arguments or commands. Event data is also available as environment variables and as a JSON file, which is the recommended way to consume it.
+- For the `command` adapter, values are substituted **per argument**. Nothing is passed through a shell, so event content cannot add arguments or commands, and the program (`command[0]`) cannot contain placeholders. Event data is also available as environment variables and as a JSON file, which is the recommended way to consume it.
+- Inline substitution also removes invisible formatting characters (bidi overrides, zero-width characters), so what the user reads in a prompt is what the model reads.
+
+**Honest limit (command adapter):** a substituted argument that starts with `-` can still be read as an option by the program (a file named `--exec=sh`). Templates should put `--` before event-derived positional arguments; Pulse cannot know each program's option syntax.
 
 **Honest limit:** delimiting lowers the success rate of injection; it does not make a model immune. The controls that actually bound the damage are the next three.
 
@@ -37,6 +40,8 @@ Controls:
 - **Scopes.** An agent only receives events its `allow` list covers. Enforcement is in the router and in MCP queries, not in prompt text.
 - **Supervised rules.** A rule can require a human to approve each run. Approval is only possible with the daemon token; agents get a derived token that cannot approve, edit rules, or read outside their scope.
 - **The agent's own permissions.** Pulse passes through the agent's permission mode or sandbox settings and never widens them by default. Templates we ship use the most restrictive mode that still does the job.
+
+Scopes compare path **text**: only clean absolute paths can be in scope (anything with `.`, `..`, `//` or a relative form is denied, not normalized), matching is case-sensitive, and symlinks are not resolved. A symlink inside a granted directory that points elsewhere is in scope by its name.
 
 **Honest limit:** Pulse's scopes control what an agent is *told*. They do not sandbox what a spawned agent can *do* once it is running; that is the agent runtime's job. Isolation and permissions are separate controls and neither is a complete safety boundary.
 

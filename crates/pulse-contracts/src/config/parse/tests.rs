@@ -28,6 +28,8 @@ name = "university"
 kind = "fs"
 path = "~/University"
 ignore = ["**/.git/**"]
+quiet = "3s"
+burst_threshold = 500
 
 [[agent]]
 name    = "study"
