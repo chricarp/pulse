@@ -54,7 +54,7 @@ describe("navigation", () => {
   it("routes and the login fragment", () => {
     expect(routePath({ kind: "run", id: "01J/../x" })).toBe("/runs/01J%2F..%2Fx");
     expect(routePath({ kind: "rule", name: "proj/lint" })).toBe("/rules/proj%2Flint");
-    expect(loginUrl(origin, { kind: "approvals" }, "123.abc")).toBe(`${origin}/runs?status=pending_approval#login=123.abc`);
+    expect(loginUrl(origin, { kind: "approvals" }, "123.abc")).toBe(`${origin}/runs?show=approval#login=123.abc`);
     expect(loginCodeFrom(`${origin}/#login=1763.0f9a`, origin)).toBe("1763.0f9a");
     expect(loginCodeFrom("http://127.0.0.1:9999/#login=1763.0f9a", origin)).toBeNull();
     expect(loginCodeFrom(`${origin}/#login=<script>`, origin)).toBeNull();

@@ -1,0 +1,57 @@
+# Packaging for the desktop app. Run through `node scripts/package.mjs` (or the repository's
+# scripts/build.sh), which builds first and sets the version from the bundled `pulse` binary.
+appId: dev.pulse.desktop
+productName: Pulse
+copyright: Copyright © Pulse contributors
+directories:
+  output: release
+  buildResources: build
+# The app is two bundles; it has no runtime node_modules.
+files:
+  - dist/main.cjs
+  - dist/preload.cjs
+  - package.json
+extraMetadata:
+  main: dist/main.cjs
+extraResources:
+  # The same `pulse` binary as the headless install: the app starts the daemon with it, and
+  # "Install command line tool" links to it.
+  - from: ../../target/release/pulse
+    to: bin/pulse
+  - from: build/icons
+    to: icons
+    filter: ["*.png"]
+asar: true
+npmRebuild: false
+# Before the AppImage or dmg is assembled: no group- or world-writable files in the app.
+afterPack: scripts/after-pack.cjs
+nodeGypRebuild: false
+publish: null
+# Electron features the app does not use, switched off in the binary itself.
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
+linux:
+  target: AppImage
+  category: Development
+  icon: build/icons/icon.png
+  # Not `pulse`: that name belongs to the CLI.
+  executableName: pulse-desktop
+  synopsis: The local event layer for AI agents
+  artifactName: Pulse-${version}-linux-${arch}.${ext}
+mac:
+  target: dmg
+  category: public.app-category.developer-tools
+  icon: build/icons/icon.png
+  # Ad-hoc signature only: Apple Silicon refuses to run unsigned code, and there is no Developer
+  # ID yet. Gatekeeper still blocks the app on first open (docs/internals/0010-desktop-shell.md).
+  identity: "-"
+  hardenedRuntime: false
+  artifactName: Pulse-${version}-mac-${arch}.${ext}
+dmg:
+  artifactName: Pulse-${version}-mac-${arch}.${ext}

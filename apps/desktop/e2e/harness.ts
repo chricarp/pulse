@@ -1,0 +1,390 @@
+// End-to-end harness: boots the real shell (src/main.ts) under Electron and drives it the way a
+// person would, through the real menu items, the page and the daemon. Not part of the app; built
+// with `node scripts/build.mjs --e2e` and run by e2e/run.sh.
+//
+// Only side effects that would leave the machine are replaced, so they can be observed:
+// `shell.openExternal` (the system browser), `shell.showItemInFolder` (the file manager) and
+// message boxes (answered from PULSE_E2E_ANSWER). Everything else is the app as shipped.
+//
+// PULSE_E2E selects the scenario; results go to $PULSE_E2E_OUT/<scenario>.json, screenshots next
+// to it. Waits are on events, with one ceiling per wait.
+
+import { execFile, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import electron, { type BrowserWindow, type MenuItem, type Notification, app } from "electron";
+
+import { boot } from "../src/main.ts";
+import type { LifecycleState } from "../src/lifecycle.ts";
+import type { ShownNotice } from "../src/shell.ts";
+
+const scenario = process.env.PULSE_E2E ?? "main";
+const OUT = process.env.PULSE_E2E_OUT ?? ".";
+const BIN = process.env.PULSE_BIN ?? "pulse";
+const HOME = process.env.PULSE_HOME ?? "";
+const CEILING = 30_000;
+
+const results: Record<string, unknown> = { scenario };
+const record = (key: string, value: unknown) => {
+  results[key] = value;
+  process.stderr.write(`[e2e] ${key}: ${JSON.stringify(value)}\n`);
+};
+
+// Any of these means "something may have changed": re-check what is being waited for.
+const tick = new EventEmitter();
+tick.setMaxListeners(100);
+
+const opened: string[] = [];
+electron.shell.openExternal = async (url: string) => {
+  opened.push(url);
+  tick.emit("tick");
+};
+const revealed: string[] = [];
+electron.shell.showItemInFolder = (path: string) => {
+  revealed.push(path);
+  tick.emit("tick");
+};
+const dialogs: string[] = [];
+const answer = Number(process.env.PULSE_E2E_ANSWER ?? "1");
+electron.dialog.showMessageBox = (async (...args: unknown[]) => {
+  const opts = (args.length > 1 ? args[1] : args[0]) as { message: string };
+  dialogs.push(opts.message);
+  tick.emit("tick");
+  return { response: answer, checkboxChecked: false };
+}) as typeof electron.dialog.showMessageBox;
+
+app.on("web-contents-created", (_e, wc) => {
+  for (const ev of ["did-finish-load", "did-navigate", "did-navigate-in-page", "did-fail-load", "will-frame-navigate"] as const) {
+    wc.on(ev as "did-finish-load", () => tick.emit("tick"));
+  }
+});
+
+async function until<T>(what: string, check: () => T | null | undefined | false | Promise<T | null | undefined | false>): Promise<T> {
+  const first = await check();
+  if (first) return first;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      tick.off("tick", on);
+      reject(new Error(`timed out waiting for ${what}`));
+    }, CEILING);
+    let busy = false;
+    const on = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const v = await check();
+        if (v) {
+          clearTimeout(timer);
+          tick.off("tick", on);
+          resolve(v);
+        }
+      } finally {
+        busy = false;
+      }
+    };
+    tick.on("tick", on);
+  });
+}
+
+function pulse(args: string[], input?: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = execFile(BIN, ["--home", HOME, ...args], { timeout: 60_000 }, (err, stdout, stderr) => {
+      resolve({ code: err === null ? 0 : typeof err.code === "number" ? err.code : 1, stdout, stderr });
+    });
+    if (input !== undefined) child.stdin?.end(input);
+  });
+}
+
+async function daemonPaused(): Promise<boolean | null> {
+  const r = await pulse(["--json", "status"]);
+  try {
+    return (JSON.parse(r.stdout) as { status: { paused: boolean } }).status.paused;
+  } catch {
+    return null;
+  }
+}
+
+function menuItem(label: string): MenuItem {
+  const menu = electron.Menu.getApplicationMenu();
+  const pulseMenu = menu?.items[0]?.submenu;
+  const find = (items: MenuItem[]): MenuItem | undefined => {
+    for (const i of items) {
+      if (i.label === label) return i;
+      const sub = i.submenu ? find(i.submenu.items) : undefined;
+      if (sub) return sub;
+    }
+    return undefined;
+  };
+  const item = pulseMenu ? find(pulseMenu.items) : undefined;
+  if (!item) throw new Error(`no menu item "${label}"`);
+  return item;
+}
+
+function menuLabels(): string[] {
+  return electron.Menu.getApplicationMenu()?.items[0]?.submenu?.items.map((i) => i.label || "---") ?? [];
+}
+
+/** Clicks a menu item the way Electron does when a person picks it. */
+function click(label: string): void {
+  const item = menuItem(label);
+  if (!item.enabled) throw new Error(`menu item "${label}" is disabled`);
+  record(`clicked`, label);
+  item.click();
+}
+
+async function screenshot(win: BrowserWindow, name: string): Promise<void> {
+  const image = await win.webContents.capturePage();
+  const file = join(OUT, `${scenario}-${name}.png`);
+  writeFileSync(file, image.toPNG());
+  record(`screenshot:${name}`, file);
+}
+
+const inPage = <T>(win: BrowserWindow, code: string): Promise<T> => win.webContents.executeJavaScript(code, true) as Promise<T>;
+
+/** Waits until the page has rendered something into its root element. */
+function rendered(win: BrowserWindow): Promise<boolean> {
+  return inPage(
+    win,
+    `new Promise((resolve) => {
+      const ready = () => document.body && document.body.innerText.trim().length > 0 && !document.querySelector('[aria-busy="true"]');
+      if (ready()) return resolve(true);
+      const o = new MutationObserver(() => { if (ready()) { o.disconnect(); resolve(true); } });
+      o.observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
+    })`,
+  );
+}
+
+const urlOf = (win: BrowserWindow) => new URL(win.webContents.getURL());
+
+async function main(): Promise<void> {
+  const booted = await boot();
+  if (booted === null) {
+    record("second_instance", "exited: another instance holds the lock");
+    return; // boot() already called app.quit().
+  }
+  const shell = booted.shell;
+  const notices: { shown: ShownNotice; note: Notification | null }[] = [];
+  shell.on("state", () => tick.emit("tick"));
+  shell.on("model", () => tick.emit("tick"));
+  shell.on("ready", () => tick.emit("tick"));
+  shell.on("notification", (shown: ShownNotice, note: Notification | null) => {
+    notices.push({ shown, note });
+    process.stderr.write(`[e2e] notification: ${shown.kind}: ${shown.title} | ${shown.body.replace(/\n/g, " / ")}\n`);
+    tick.emit("tick");
+  });
+  const connected = () => (shell.state.kind === "connected" ? shell.state : null);
+  const state = (kind: LifecycleState["kind"]) => () => shell.state.kind === kind;
+  const win = () => shell.window as BrowserWindow;
+  const onDaemonPage = () => {
+    const origin = shell.origin();
+    return origin !== null && shell.window !== null && win().webContents.getURL().startsWith(origin) && !win().webContents.isLoading();
+  };
+
+  switch (scenario) {
+    case "main": {
+      const c = await until("a daemon", connected);
+      record("daemon", { owned: c.daemon.owned, port: c.daemon.info.port, pid: c.daemon.info.pid, version: c.daemon.info.version });
+      await until("the UI to load from the daemon", onDaemonPage);
+      const url = urlOf(win());
+      record("window_url", { origin: url.origin, path: url.pathname, fragment_has_login_code: /^#login=\d+\.[0-9a-f]+$/.test(url.hash), fragment_has_token: url.hash.includes("token") });
+      record("web_preferences", (() => {
+        // Not in the typings, but present at runtime in recent Electron versions.
+        const wc = win().webContents as unknown as { getLastWebPreferences?: () => Record<string, unknown> | null };
+        const p = wc.getLastWebPreferences?.() ?? {};
+        return { contextIsolation: p.contextIsolation, nodeIntegration: p.nodeIntegration, sandbox: p.sandbox, webSecurity: p.webSecurity, webviewTag: p.webviewTag };
+      })());
+      await rendered(win());
+      await screenshot(win(), "1-ui-as-shipped");
+
+      // The login code in the fragment, redeemed from the page's own origin as 0004 specifies.
+      const exchange = await inPage<{ status: number; tokenLength: number; again: number }>(
+        win(),
+        `(async () => {
+          const code = new URLSearchParams(location.hash.slice(1)).get("login");
+          const post = () => fetch("/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+          const r = await post();
+          const body = r.ok ? await r.json() : {};
+          const again = (await post()).status;
+          if (body.token) { sessionStorage.setItem("pulse.token", body.token); history.replaceState(null, "", location.pathname); }
+          return { status: r.status, tokenLength: (body.token || "").length, again };
+        })()`,
+      );
+      record("login_exchange_from_page", exchange);
+      win().webContents.reload();
+      await until("the UI to reload", onDaemonPage);
+      await rendered(win());
+      record("page_text_after_login", (await inPage<string>(win(), "document.body.innerText")).slice(0, 300));
+      await screenshot(win(), "2-ui-signed-in");
+
+      // The renderer's reach.
+      record(
+        "page_globals",
+        await inPage(win(), `({ require: typeof require, process: typeof process, bridge: Object.keys(window.pulseDesktop || {}), frozen: Object.isFrozen(window.pulseDesktop) })`),
+      );
+      record(
+        "reveal_path",
+        await inPage(win(), `Promise.all([window.pulseDesktop.revealPath("relative/path"), window.pulseDesktop.revealPath("/no/such/file"), window.pulseDesktop.revealPath(${JSON.stringify(HOME)})])`),
+      );
+      record("revealed", [...revealed]);
+
+      // Navigation, windows, frames, permissions.
+      const before = win().webContents.getURL();
+      await inPage(win(), `location.href = "file:///etc/passwd"; 1`);
+      await inPage(win(), `location.href = "https://example.com/navigate"; 1`);
+      await until("the external link to be handed to the browser", () => opened.includes("https://example.com/navigate"));
+      const popup = await inPage(win(), `String(window.open("https://example.com/popup"))`);
+      await until("the popup link to be handed to the browser", () => opened.includes("https://example.com/popup"));
+      await inPage(win(), `window.open("javascript:alert(1)"); window.open("file:///etc/passwd"); 1`);
+      const framed: string[] = [];
+      win().webContents.on("will-frame-navigate", (d) => framed.push(d.url));
+      await inPage(win(), `const f = document.createElement("iframe"); f.src = "https://example.com/frame"; document.body.appendChild(f); 1`);
+      await until("the frame navigation to be seen", () => framed.includes("https://example.com/frame"));
+      const permissions = await inPage(
+        win(),
+        `(async () => {
+          const settle = (p) => p.then((v) => "granted:" + String(v).slice(0, 20), (e) => "denied:" + e.name);
+          return {
+            camera: await settle(navigator.mediaDevices.getUserMedia({ video: true })),
+            notifications: await Notification.requestPermission(),
+            clipboard_read: await settle(navigator.clipboard.readText()),
+            geolocation: await new Promise((r) => navigator.geolocation.getCurrentPosition(() => r("granted"), (e) => r("denied:" + e.code))),
+            midi: await settle(navigator.requestMIDIAccess()),
+          };
+        })()`,
+      );
+      record("security", {
+        url_unchanged: win().webContents.getURL() === before,
+        windows: electron.BrowserWindow.getAllWindows().length,
+        window_open_returned: popup,
+        sent_to_browser: [...opened],
+        frame_blocked: await inPage(win(), `document.querySelector("iframe").contentDocument !== null && document.querySelector("iframe").contentDocument.location.href`),
+        permissions,
+      });
+      await inPage(win(), `window.open(location.origin + "/rules"); 1`);
+      await until("a UI link from window.open to load in the window", () => onDaemonPage() && urlOf(win()).pathname === "/rules");
+      record("ui_link_in_window", { path: urlOf(win()).pathname, windows: electron.BrowserWindow.getAllWindows().length });
+
+      // Pause and resume through the menu, checked with an independent client.
+      await until("the menu to offer pause", () => menuLabels().includes("Pause everything"));
+      click("Pause everything");
+      await until("the menu to offer resume", () => menuLabels().includes("Resume"));
+      record("paused_per_cli", await daemonPaused());
+      record("menu_while_paused", menuLabels());
+      click("Resume");
+      await until("the menu to offer pause again", () => menuLabels().includes("Pause everything"));
+      record("paused_per_cli_after_resume", await daemonPaused());
+
+      // Notifications: a breaker trip, a failed run, then a storm of approvals.
+      const lines = (type: string, n: number) => Array.from({ length: n }, (_, i) => JSON.stringify({ type, subject: `${type} <b>#${i}</b>‮` })).join("\n");
+      record("ingest_hot", (await pulse(["ingest", "-s", "test"], lines("hot", 6))).code);
+      await until("a breaker notification", () => notices.some((n) => n.shown.kind === "breaker"));
+      record("ingest_fail", (await pulse(["ingest", "-s", "test"], lines("fail", 1))).code);
+      await until("a failure notification", () => notices.some((n) => n.shown.kind === "failed"));
+      record("ingest_approve", (await pulse(["ingest", "-s", "test"], lines("approve", 12))).code);
+      await until("an approval notification", () => notices.some((n) => n.shown.kind === "approval"));
+      const shownBeforeSummary = notices.length;
+      await until("the storm summary", () => notices.some((n) => n.shown.kind === "summary"));
+      record("notifications", notices.map((n) => n.shown));
+      record("notifications_before_summary", shownBeforeSummary);
+      await until("approvals in the menu", () => menuLabels().some((l) => l.startsWith("Waiting for approval")));
+      record("menu_with_activity", menuLabels());
+      record("tray_model", shell.model());
+      const approval = notices.find((n) => n.shown.kind === "approval");
+      approval?.note?.emit("click");
+      await until("the run to open from its notification", () => {
+        if (!onDaemonPage() || approval?.shown.route.kind !== "run") return false;
+        return urlOf(win()).pathname === `/runs/${approval.shown.route.id}`;
+      });
+      record("notification_click_opened", urlOf(win()).pathname);
+      await rendered(win());
+      await screenshot(win(), "3-run-from-notification");
+
+      // Closing the window hides it to the tray (XDG_CURRENT_DESKTOP=KDE here).
+      win().close();
+      await until("the window to hide", () => !win().isVisible());
+      record("after_close", { visible: win().isVisible(), destroyed: win().isDestroyed(), state: shell.state.kind });
+      click("Open Pulse");
+      await until("the window to show again", () => win().isVisible());
+
+      // A second instance focuses this one and exits.
+      win().hide();
+      const second = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, PULSE_E2E: "second" }, stdio: ["ignore", "ignore", "pipe"] });
+      let secondErr = "";
+      second.stderr.on("data", (d: Buffer) => (secondErr += d.toString()));
+      const secondExit = await new Promise<number | null>((resolve) => second.on("exit", (code) => resolve(code)));
+      await until("the window to be shown by the second instance", () => win().isVisible());
+      record("second_instance", { pid: second.pid, exit_code: secondExit, first_window_visible: win().isVisible(), said: secondErr.split("\n").filter((l) => l.includes("[pulse-desktop]")) });
+
+      record("app_metrics", app.getAppMetrics().map((m) => ({ type: m.type, pid: m.pid, workingSetMB: Math.round(m.memory.workingSetSize / 1024), privateMB: m.memory.privateBytes === undefined ? null : Math.round(m.memory.privateBytes / 1024) })));
+      record("open_external_calls", [...opened]);
+
+      // Quit: the daemon keeps running.
+      click("Quit Pulse");
+      break;
+    }
+
+    case "adopt": {
+      const c = await until("a daemon", connected);
+      record("daemon", { owned: c.daemon.owned, pid: c.daemon.info.pid, port: c.daemon.info.port });
+      await until("the UI to load", onDaemonPage);
+      const stop = await pulse(["stop"]);
+      record("external_pulse_stop", stop.code);
+      await until("the shell to see the daemon gone", state("unreachable"));
+      await until("a notification about it", () => notices.some((n) => n.shown.kind === "daemon"));
+      await until("the status page", () => win().webContents.getURL().startsWith("data:") && !win().webContents.isLoading());
+      await screenshot(win(), "1-daemon-gone");
+      record("menu_while_gone", menuLabels());
+      record("notifications", notices.map((n) => n.shown));
+      click("Start the daemon");
+      const again = await until("a new daemon", connected);
+      record("restarted", { owned: again.daemon.owned, pid: again.daemon.info.pid, port: again.daemon.info.port });
+      await until("the UI to load again", onDaemonPage);
+      click("Quit Pulse and stop the daemon");
+      break;
+    }
+
+    case "stale": {
+      const c = await until("a daemon", connected);
+      record("daemon", { owned: c.daemon.owned, pid: c.daemon.info.pid, port: c.daemon.info.port });
+      click("Quit Pulse and stop the daemon");
+      break;
+    }
+
+    case "older": {
+      const c = await until("a daemon", connected);
+      record("first_daemon", { owned: c.daemon.owned, version: c.daemon.info.version, pid: c.daemon.info.pid });
+      await until("the restart question", () => dialogs.length > 0);
+      record("dialogs", [...dialogs]);
+      const replaced = await until("the replacement daemon", () => connected()?.daemon.owned && connected());
+      record("replacement", { owned: replaced.daemon.owned, version: replaced.daemon.info.version, pid: replaced.daemon.info.pid });
+      record("menu", menuLabels());
+      click("Quit Pulse and stop the daemon");
+      break;
+    }
+
+    case "gnome": {
+      const c = await until("a daemon", connected);
+      record("daemon", { owned: c.daemon.owned, pid: c.daemon.info.pid });
+      await until("the UI to load", onDaemonPage);
+      record("close_hides", shell.closeHides());
+      win().close();
+      // The app quits by itself; e2e/run.sh checks that the process ended and the daemon did not.
+      break;
+    }
+
+    default:
+      throw new Error(`unknown scenario ${scenario}`);
+  }
+}
+
+app.on("will-quit", () => {
+  writeFileSync(join(OUT, `${scenario}.json`), `${JSON.stringify(results, null, 2)}\n`);
+});
+
+main().catch((e: Error) => {
+  record("error", e.message);
+  writeFileSync(join(OUT, `${scenario}.json`), `${JSON.stringify(results, null, 2)}\n`);
+  app.exit(1);
+});

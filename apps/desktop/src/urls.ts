@@ -53,7 +53,7 @@ export function routePath(route: Route): string {
     case "run":
       return `/runs/${encodeURIComponent(route.id)}`;
     case "approvals":
-      return "/runs?status=pending_approval";
+      return "/runs?show=approval";
     case "rule":
       return `/rules/${encodeURIComponent(route.name)}`;
   }

@@ -1,7 +1,0 @@
-# Only here while apps/desktop is installed on its own. When the repository gets a root
-# pnpm-workspace.yaml, move these entries there and delete this file (see
-# docs/internals/0010-desktop-shell.md, "Workspace").
-allowBuilds:
-  esbuild: true
-  # Windows-only installer tooling pulled in by electron-builder; not used.
-  electron-winstaller: false

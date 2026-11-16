@@ -442,14 +442,15 @@ export class Shell extends EventEmitter {
       .filter((x) => x !== null)
       .join("\n");
     const shown: ShownNotice = { kind: n.kind, title, body, route: n.route };
-    this.emit("notification", shown);
     if (!Notification.isSupported()) {
       this.log("notifications are not supported here");
+      this.emit("notification", shown, null);
       return;
     }
     const note = new Notification({ title, body });
     note.on("click", () => void this.openRoute(n.route));
     note.show();
+    this.emit("notification", shown, note);
     // Electron drops click handlers of notifications that get garbage-collected.
     this.shownNotifications.push(note);
     if (this.shownNotifications.length > KEEP_NOTIFICATIONS) this.shownNotifications.shift();
