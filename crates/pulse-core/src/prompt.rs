@@ -18,7 +18,8 @@
 //!   characters (bidi overrides, zero-width) are removed, whitespace runs become one space, and
 //!   the result is cut to `inline_max_chars`.
 //! - The data block is JSON, so every string in it is escaped onto one line and no event content
-//!   can produce a line of its own. Each string is cut to `field_max_bytes`, arrays and objects
+//!   can produce a line of its own. Characters that do not show (controls, and the invisible
+//!   formatting characters inline values lose) are written as `\u` escapes: exact data, visible. Each string is cut to `field_max_bytes`, arrays and objects
 //!   to 100 entries and 8 levels, and the whole block to `data_max_bytes` (limits shrink until it
 //!   fits; failing that, `data` is omitted).
 //! - The delimiter comes from the caller's [`NonceSource`]. If it occurs anywhere in the
@@ -193,15 +194,31 @@ fn resolve(var: &TemplateVar, input: &RenderInput<'_>, prompt: Option<&str>) -> 
     })
 }
 
-fn is_invisible(c: char) -> bool {
+/// Characters that change or hide how text around them reads without showing themselves:
+/// bidi controls, zero-width and other default-ignorable characters, invisible fillers, line and
+/// paragraph separators, interlinear annotation, and the tag characters (U+E0000 to U+E007F,
+/// invisible on screen but read by models, so a channel for hidden instructions) with the rest
+/// of that block. Not variation selectors U+FE00 to U+FE0F, which emoji need. C0 and C1
+/// controls are `char::is_control`.
+///
+/// The same list is in `apps/web/src/lib/format.ts` and `apps/desktop/src/text.ts` (and the CLI
+/// uses this one); the tests of all three run over the same cases.
+pub fn is_invisible(c: char) -> bool {
     matches!(c,
-        '\u{00AD}' | '\u{061C}' | '\u{180E}'
+        '\u{00AD}' | '\u{034F}' | '\u{061C}'
+        | '\u{115F}'..='\u{1160}'
+        | '\u{17B4}'..='\u{17B5}'
+        | '\u{180E}'
         | '\u{200B}'..='\u{200F}'
-        | '\u{202A}'..='\u{202E}'
-        | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{2069}'
+        | '\u{2028}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}'
+        | '\u{3164}'
         | '\u{FEFF}'
-        | '\u{FFF9}'..='\u{FFFB}')
+        | '\u{FFA0}'
+        | '\u{FFF0}'..='\u{FFFB}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E0FFF}')
 }
 
 /// One line, no control or invisible characters, at most `max_chars` characters (an ellipsis
@@ -311,7 +328,33 @@ fn bounded_json(v: &Value, limits: &PromptLimits, pretty: bool) -> Option<(Strin
 fn to_json(v: &Value, pretty: bool) -> String {
     // Serializing a `Value` cannot fail: keys are strings and there are no custom types.
     let s = if pretty { serde_json::to_string_pretty(v) } else { serde_json::to_string(v) };
-    s.unwrap_or_default()
+    escape_hidden(s.unwrap_or_default())
+}
+
+/// Writes characters that do not show (controls serde_json leaves raw, and [`is_invisible`]) as
+/// JSON `\u` escapes. Outside strings JSON is ASCII and its only control is the newline of
+/// pretty printing (serde_json escapes newlines inside strings), so every other such character
+/// is inside a string, where an escape decodes to the same text: the data stays exact, and a person reading the
+/// stored prompt sees what is there. Tag characters, which a model reads and a person does not
+/// see, stop being a hidden channel (a model can still decode the escapes; this is about
+/// visibility, not meaning).
+fn escape_hidden(json: String) -> String {
+    let hidden = |c: char| (c.is_control() && c != '\n') || is_invisible(c);
+    if !json.chars().any(hidden) {
+        return json;
+    }
+    let mut out = String::with_capacity(json.len() + 32);
+    for c in json.chars() {
+        if hidden(c) {
+            let mut units = [0u16; 2];
+            for u in c.encode_utf16(&mut units) {
+                out.push_str(&format!("\\u{u:04x}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn omitted(limits: &PromptLimits) -> Value {

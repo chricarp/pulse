@@ -345,3 +345,76 @@ pub fn fixtures() -> PathBuf {
 pub fn fixture(name: &str) -> String {
     fixtures().join(name).display().to_string()
 }
+
+/// A program that took Pulse's port: it records every byte clients send it. Asked for a proof,
+/// it relays the question to `relay_to` (a real daemon on another port) and passes the answer
+/// back, the strongest thing it can do without the token; everything else gets a 404.
+pub struct Squatter {
+    pub port: u16,
+    pub received: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Squatter {
+    pub async fn start(relay_to: Option<u16>) -> Squatter {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let log = received.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let mut pending = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        let Ok(n) = stream.read(&mut buf).await else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        log.lock().unwrap().extend_from_slice(&buf[..n]);
+                        pending.extend_from_slice(&buf[..n]);
+                        let Some(end) = pending.windows(4).position(|w| w == b"\r\n\r\n") else {
+                            continue;
+                        };
+                        let head = String::from_utf8_lossy(&pending[..end]).into_owned();
+                        pending.drain(..end + 4);
+                        let target = head.split(' ').nth(1).unwrap_or("").to_owned();
+                        let reply = match relay_to {
+                            Some(real) if target.starts_with("/auth/proof") => {
+                                relay_get(real, &target).await
+                            }
+                            _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_owned(),
+                        };
+                        if stream.write_all(reply.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        Squatter { port, received }
+    }
+
+    pub fn saw(&self, secret: &str) -> bool {
+        String::from_utf8_lossy(&self.received.lock().unwrap()).contains(secret)
+    }
+}
+
+async fn relay_get(port: u16, target: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let req =
+        format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).await.unwrap();
+    // Re-frame without `Connection: close`, so the client keeps the connection.
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
+    let status = text.lines().next().unwrap_or("HTTP/1.1 500 x").to_owned();
+    format!(
+        "{status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+}

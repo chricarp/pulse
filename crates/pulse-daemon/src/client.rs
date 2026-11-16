@@ -1,5 +1,10 @@
 //! A typed JSON-RPC client for the daemon, used by the CLI and by tests:
 //! `client.call::<method::RunsApprove>(RunIdParams { id }).await`.
+//!
+//! Before it sends the token, the client asks whatever listens on the port to prove that it
+//! knows the token (`GET /auth/proof`, see `pulse_contracts::auth`), on the same HTTP/1.1
+//! connection that then carries the WebSocket upgrade, so the answer and the token go to the
+//! same peer. A wrong answer is [`ClientError::NotPulse`] and the token is not sent.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -7,14 +12,22 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
+use http_body_util::{BodyExt, Empty, Limited};
+use hyper::body::Bytes;
+use hyper::client::conn::http1::SendRequest;
+use hyper::{Request, StatusCode, header};
+use hyper_util::rt::TokioIo;
+use pulse_contracts::auth::{DaemonProof, PROOF_PATH, WS_PATH};
 use pulse_contracts::rpc::{
     JsonRpcNotification, JsonRpcResponse, Notification, RequestId, RpcError, RpcMethod,
     decode_response, request,
 };
 use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::handshake::client::generate_key;
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_util::sync::CancellationToken;
 
 use crate::home::PulseHome;
@@ -24,6 +37,12 @@ pub enum ClientError {
     /// No daemon is running for this Pulse home (or `daemon.json` is stale).
     #[error("Pulse is not running ({0}). Start it with `pulse start`.")]
     NotRunning(String),
+    /// Something answers on the port but cannot prove that it knows the token, so the token
+    /// was not sent.
+    #[error(
+        "something else is listening on Pulse's port {port}: it could not prove that it knows this Pulse home's token ({why}), so the token was not sent to it. If the Pulse daemon is stopped, find and stop the program on that port, or set another `[daemon] port` in pulse.toml. A Pulse daemon older than this client cannot prove itself either: stop it with the binary that started it."
+    )]
+    NotPulse { port: u16, why: String },
     #[error("the daemon refused the connection: {0}")]
     Refused(String),
     #[error("{}", .0.message)]
@@ -48,6 +67,40 @@ pub struct Client {
     port: u16,
 }
 
+/// Asks the peer behind `sender` for a proof of `token` and checks it. Nothing secret is sent.
+async fn require_proof(
+    sender: &mut SendRequest<Empty<Bytes>>,
+    port: u16,
+    token: &str,
+) -> Result<(), ClientError> {
+    let not_pulse = |why: &str| ClientError::NotPulse { port, why: why.to_owned() };
+    let nonce = crate::auth::random_hex::<32>()
+        .map_err(|e| ClientError::Protocol(format!("cannot draw a nonce: {e}")))?;
+    let req = Request::get(format!("{PROOF_PATH}?nonce={nonce}"))
+        .header(header::HOST, format!("127.0.0.1:{port}"))
+        .body(Empty::new())
+        .map_err(|e| ClientError::Protocol(e.to_string()))?;
+    let resp = sender
+        .send_request(req)
+        .await
+        .map_err(|e| ClientError::NotRunning(format!("port {port}: {e}")))?;
+    if resp.status() != StatusCode::OK {
+        return Err(not_pulse(&format!("it answered HTTP {}", resp.status())));
+    }
+    let body = Limited::new(resp.into_body(), 4096)
+        .collect()
+        .await
+        .map_err(|_| not_pulse("its answer was unreadable or too long"))?
+        .to_bytes();
+    let answer: DaemonProof =
+        serde_json::from_slice(&body).map_err(|_| not_pulse("its answer is not a proof"))?;
+    if crate::auth::proof_matches(token, port, &nonce, &answer) {
+        Ok(())
+    } else {
+        Err(not_pulse("its proof is wrong"))
+    }
+}
+
 impl Client {
     /// Connects to the daemon of `home` using its `daemon.json` and token.
     pub async fn connect(home: &Path) -> Result<Client, ClientError> {
@@ -64,22 +117,61 @@ impl Client {
         Client::connect_to(info.port, &token).await
     }
 
-    pub async fn connect_to(port: u16, token: &str) -> Result<Client, ClientError> {
-        let url = format!("ws://127.0.0.1:{port}/ws");
-        let mut req =
-            url.as_str().into_client_request().map_err(|e| ClientError::Protocol(e.to_string()))?;
-        let auth = HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|_| ClientError::Refused("the token is not a valid header value".into()))?;
-        req.headers_mut().insert("authorization", auth);
-        let (ws, _) = tokio_tungstenite::connect_async(req).await.map_err(|e| match e {
-            tokio_tungstenite::tungstenite::Error::Io(io) => {
-                ClientError::NotRunning(format!("nothing is listening on port {port}: {io}"))
-            }
-            tokio_tungstenite::tungstenite::Error::Http(resp) => {
-                ClientError::Refused(format!("HTTP {}", resp.status()))
-            }
-            other => ClientError::Protocol(other.to_string()),
+    /// Checks that the program on `port` is the daemon that holds `token`, without sending the
+    /// token (`pulse open` does this before it opens a browser there).
+    pub async fn verify(port: u16, token: &str) -> Result<(), ClientError> {
+        let mut sender = Self::http(port).await?.0;
+        require_proof(&mut sender, port, token).await
+    }
+
+    async fn http(
+        port: u16,
+    ) -> Result<(SendRequest<Empty<Bytes>>, tokio::task::JoinHandle<()>), ClientError> {
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| {
+            ClientError::NotRunning(format!("nothing is listening on port {port}: {e}"))
         })?;
+        let (sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|e| ClientError::NotRunning(format!("port {port}: {e}")))?;
+        // Ends when the connection does, or hands the socket over on upgrade.
+        let driver = tokio::spawn(async move {
+            let _ = conn.with_upgrades().await;
+        });
+        Ok((sender, driver))
+    }
+
+    pub async fn connect_to(port: u16, token: &str) -> Result<Client, ClientError> {
+        let (mut sender, _driver) = Self::http(port).await?;
+        require_proof(&mut sender, port, token).await?;
+        // The connection takes the next request only once it has finished the last one.
+        sender.ready().await.map_err(|e| {
+            ClientError::NotRunning(format!("port {port} closed the connection: {e}"))
+        })?;
+        let key = generate_key();
+        let req = Request::get(WS_PATH)
+            .header(header::HOST, format!("127.0.0.1:{port}"))
+            .header(header::CONNECTION, "Upgrade")
+            .header(header::UPGRADE, "websocket")
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .header(header::SEC_WEBSOCKET_KEY, &key)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Empty::new())
+            .map_err(|_| ClientError::Refused("the token is not a valid header value".into()))?;
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| ClientError::Protocol(format!("the upgrade failed: {e}")))?;
+        if resp.status() != StatusCode::SWITCHING_PROTOCOLS {
+            return Err(ClientError::Refused(format!("HTTP {}", resp.status())));
+        }
+        let accept = resp.headers().get(header::SEC_WEBSOCKET_ACCEPT).map(|v| v.as_bytes());
+        if accept != Some(derive_accept_key(key.as_bytes()).as_bytes()) {
+            return Err(ClientError::Protocol("a bad WebSocket accept key".into()));
+        }
+        let upgraded = hyper::upgrade::on(resp)
+            .await
+            .map_err(|e| ClientError::Protocol(format!("the upgrade failed: {e}")))?;
+        let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
         let (mut sink, mut stream) = ws.split();
         let (out, mut outgoing) = mpsc::channel::<Message>(64);
         let (notify_tx, notify_rx) = mpsc::channel(256);

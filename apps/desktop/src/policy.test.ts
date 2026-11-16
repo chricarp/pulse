@@ -91,6 +91,9 @@ describe("text", () => {
     expect(page).toContain("&lt;/p&gt;&lt;script&gt;");
     expect(page).not.toContain("<script>");
     expect(page).toContain("default-src 'none'");
+    const hostile = decodeURIComponent(statusPage("a\u202Eb", ["c\u{E0041}d"]));
+    expect(hostile).toContain("<h1>ab</h1>");
+    expect(hostile).toContain("<p>cd</p>");
   });
 });
 
@@ -192,5 +195,22 @@ describe("paths", () => {
       await writeFile(join(dir, "daemon.json"), bad);
       expect(await readDaemonInfo(dir)).toBeNull();
     }
+  });
+});
+
+// The cases of `pulse-core/src/prompt/tests.rs`, `pulse-cli/src/format.rs` and
+// `apps/web/src/lib/format.test.ts`; the four lists must agree.
+const HIDDEN = [
+  0x00AD, 0x034F, 0x061C, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180E, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2028, 0x2029, 0x202A, 0x202E, 0x2060, 0x2064, 0x2065, 0x2066, 0x2069, 0x206A, 0x206F, 0x3164, 0xFEFF, 0xFFA0, 0xFFF0, 0xFFF9, 0xFFFB, 0x1BCA0, 0x1BCA3, 0x1D173, 0x1D17A, 0xE0000, 0xE0001, 0xE0041, 0xE007F, 0xE0100, 0xE01EF, 0xE0FFF,
+];
+const KEPT = [0x0041, 0x00E9, 0x0301, 0x2764, 0xFE0F, 0x1F600, 0x4E2D];
+
+describe("hidden characters", () => {
+  it.each(HIDDEN.map((cp) => [cp.toString(16).toUpperCase(), cp] as const))("U+%s is removed", (_name, cp) => {
+    expect(["ab", "a b"]).toContain(plainText(`a${String.fromCodePoint(cp)}b`, 80));
+  });
+  it.each(KEPT.map((cp) => [cp.toString(16).toUpperCase(), cp] as const))("U+%s is left alone", (_name, cp) => {
+    const s = `a${String.fromCodePoint(cp)}b`;
+    expect(plainText(s, 80)).toBe(s);
   });
 });

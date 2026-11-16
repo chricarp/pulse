@@ -2,12 +2,17 @@
 //! (a plain `cargo build` without Node), a small page says how to build it.
 //!
 //! Single-page app: paths without a file extension fall back to `index.html`. Hashed assets
-//! under `assets/` are cached for a year; everything else is revalidated (ETag).
+//! under `assets/` are cached for a year; the HTML page is never stored; everything else is
+//! revalidated (ETag). Every response carries a Content-Security-Policy and the usual headers
+//! that go with it.
 
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
+
+use super::App;
 
 #[derive(RustEmbed)]
 #[folder = "../../apps/web/dist"]
@@ -28,14 +33,41 @@ cargo build --release</code></pre>
 </body></html>
 "#;
 
-fn security_headers(headers: &mut HeaderMap) {
-    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    // The UI has approve buttons; it must not be framed by another page.
-    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+/// The UI needs its own scripts, styles and images, and a WebSocket to this daemon; nothing
+/// inline, nothing from elsewhere. `connect-src` names the WebSocket origins because not every
+/// browser counts `ws:` as `'self'`. This limits what a script injected into the page could
+/// load or reach; it does not make untrusted text safe to render, which the UI does as text.
+fn content_security_policy(port: u16, inline_style: bool) -> String {
+    let style = if inline_style { "'unsafe-inline'" } else { "'self'" };
+    format!(
+        "default-src 'none'; script-src 'self'; style-src {style}; img-src 'self'; font-src 'self'; \
+         connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port}; manifest-src 'self'; \
+         worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; \
+         frame-ancestors 'none'"
+    )
 }
 
-pub(crate) async fn serve(method: Method, uri: Uri, headers: HeaderMap) -> Response {
+fn security_headers(headers: &mut HeaderMap, port: u16, inline_style: bool) {
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    // The UI has approve buttons; it must not be framed by another page (old browsers ignore
+    // `frame-ancestors`).
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    // A page of another origin that opened this one, or that it opens, gets no handle
+    // (`window.opener`) on it.
+    headers.insert("cross-origin-opener-policy", HeaderValue::from_static("same-origin"));
+    if let Ok(v) = HeaderValue::from_str(&content_security_policy(port, inline_style)) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+}
+
+pub(crate) async fn serve(
+    State(app): State<App>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    let port = app.services.shared.port();
     if method != Method::GET && method != Method::HEAD {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
@@ -46,9 +78,9 @@ pub(crate) async fn serve(method: Method, uri: Uri, headers: HeaderMap) -> Respo
         Some(f) => (path, f),
         None if !looks_like_file => match Assets::get("index.html") {
             Some(f) => ("index.html", f),
-            None => return placeholder(),
+            None => return placeholder(port),
         },
-        None if path == "index.html" => return placeholder(),
+        None if path == "index.html" => return placeholder(port),
         None => return StatusCode::NOT_FOUND.into_response(),
     };
     let etag = format!("\"{}\"", crate::auth::hex(&file.metadata.sha256_hash()[..16]));
@@ -62,8 +94,11 @@ pub(crate) async fn serve(method: Method, uri: Uri, headers: HeaderMap) -> Respo
         }
         r
     };
+    // The page reads login codes from its address; it is small, so it is never stored.
     let cache = if name.starts_with("assets/") {
         "public, max-age=31536000, immutable"
+    } else if name.ends_with(".html") {
+        "no-store"
     } else {
         "no-cache"
     };
@@ -72,15 +107,15 @@ pub(crate) async fn serve(method: Method, uri: Uri, headers: HeaderMap) -> Respo
     if let Ok(v) = HeaderValue::from_str(&etag) {
         h.insert(header::ETAG, v);
     }
-    security_headers(h);
+    security_headers(h, port, false);
     res
 }
 
-fn placeholder() -> Response {
+fn placeholder(port: u16) -> Response {
     let mut res = Response::new(Body::from(PLACEHOLDER));
     let h = res.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    security_headers(h);
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    security_headers(h, port, true);
     res
 }

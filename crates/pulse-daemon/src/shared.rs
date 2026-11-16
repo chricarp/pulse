@@ -37,6 +37,9 @@ pub(crate) struct Shared {
     pub store: StoreHandle,
     pub hub: Hub,
     pub secret: String,
+    /// Random per start: resume codes and proofs name it, so a restarted daemon refuses the
+    /// resume codes of the previous one.
+    pub instance: String,
     pub login_codes: LoginCodes,
     pub started_at: Timestamp,
     pub port: OnceLock<u16>,
@@ -97,6 +100,7 @@ pub(crate) struct SharedParts {
     /// The newest event in the log: new ids continue after it.
     pub last_event: Option<pulse_contracts::EventId>,
     pub secret: String,
+    pub instance: String,
     pub snapshot: Snapshot,
     pub loader: Loader,
     pub engine: EngineHandle,
@@ -116,6 +120,7 @@ impl Shared {
             store: p.store,
             hub: Hub::default(),
             secret: p.secret,
+            instance: p.instance,
             login_codes: LoginCodes::new(started_at),
             started_at,
             port: OnceLock::new(),

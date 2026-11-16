@@ -8,6 +8,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { DaemonInfo } from "./contracts.ts";
+import { requestProof } from "./proof.ts";
 import { RpcClient, type SocketFactory } from "./rpc.ts";
 import { plainText } from "./text.ts";
 import { daemonOrigin, loginCodeFrom } from "./urls.ts";
@@ -15,11 +16,15 @@ import { daemonOrigin, loginCodeFrom } from "./urls.ts";
 export interface DaemonEnv {
   /** The Pulse home, absolute. */
   home: string;
+  /** Where to say why a port was not trusted with the token. */
+  log?: (msg: string) => void;
   /** The `pulse` binary to run. */
   binary: string;
   /** Environment for the processes the shell starts. */
   env: NodeJS.ProcessEnv;
   factory?: SocketFactory;
+  /** For the proof request (tests). */
+  fetch?: typeof fetch;
 }
 
 /** `daemon.json` if it exists and looks like one; anything else counts as "no daemon". */
@@ -69,12 +74,20 @@ async function sameDir(a: string, b: string): Promise<boolean> {
 
 /**
  * Connects to the daemon `daemon.json` names and checks it is the one for this home: a stale
- * file can name a port that some other program (or another Pulse home's daemon) now uses.
+ * file can name a port that some other program (or another Pulse home's daemon) now uses. The
+ * program on the port must prove it knows the token before the token is sent to it.
  * Returns an open client, or `null`.
  */
 export async function connectVerified(d: DaemonEnv, info: DaemonInfo, timeoutMs = 3000): Promise<RpcClient | null> {
   const token = await readToken(d.home);
   if (token === null) return null;
+  const proof = await requestProof(info.port, token, d.fetch, timeoutMs);
+  if (proof.kind !== "proven") {
+    if (proof.kind === "unproven") {
+      d.log?.(`something else is listening on Pulse's port ${info.port} (${proof.why}); the token was not sent to it`);
+    }
+    return null;
+  }
   let client: RpcClient;
   try {
     client = await RpcClient.connect({

@@ -2,6 +2,7 @@
 // apps/web ends up in the shell's bundle. This file is the one place that knows where they live.
 export type {
   DaemonInfo,
+  DaemonProof,
   Event,
   EventDetail,
   Notification,

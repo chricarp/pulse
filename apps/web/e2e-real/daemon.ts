@@ -22,6 +22,8 @@ export interface Daemon {
   port: number;
   /** A fresh `pulse open` URL with a login code. */
   loginUrl(): string;
+  /** The daemon token, to check that it never reaches anything else. */
+  token(): string;
   /** A login code that expired a second ago, signed with the real secret. */
   expiredLoginUrl(): string;
   pulse(...args: string[]): string;
@@ -131,6 +133,7 @@ export async function startDaemon(config?: (home: string) => string): Promise<Da
       return port;
     },
     loginUrl: () => pulse("open", "--print"),
+    token: () => readFileSync(join(pulseHome, "token"), "utf8").trim(),
     expiredLoginUrl: () => {
       const secret = readFileSync(join(pulseHome, "token"), "utf8").trim();
       const expiry = String(Date.now() - 1000);
