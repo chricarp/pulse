@@ -274,9 +274,11 @@ mod tests {
             ("ext.ci.failed", "", "\"ext.deploy.*\"", &["run.agent"]),
             ("ext.ci.*", "", "\"fs.*\"", &[]),
             // A relative glob on a path field never matches an absolute path; on other fields
-            // (a branch name) it is an ordinary text glob.
+            // (a branch name) it is an ordinary text glob. One that starts with a wildcard is a
+            // text glob that matches anywhere (`*` crosses `/`): it works, so no warning.
             ("fs.file.created", "path = \"notes/**\"", "\"fs.*\"", &["where.path"]),
             ("fs.file.created", "path = \"**/*.pdf\"", "\"fs.*\"", &[]),
+            ("fs.file.created", "path = \"*.pdf\"", "\"fs.*\"", &[]),
             ("git.branch.switched", "to = \"feature/*\"", "\"git.*\"", &[]),
             // A glob over several types is fine if any of them is covered.
             ("fs.*", "", "\"fs.file.deleted\"", &[]),

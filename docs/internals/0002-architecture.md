@@ -199,8 +199,12 @@ run        = { agent = "study", prompt = "Summarize {{subject}} and create flash
 ```
 pending_approval ─approve─▶ queued ─▶ running ─▶ succeeded | failed | timed_out | cancelled
         ├─reject─▶ rejected      │                └─ daemon shut down or died ─▶ interrupted
-        └─cancel─▶ cancelled     ├─cancel─▶ cancelled
+        ├─cancel─▶ cancelled     ├─cancel─▶ cancelled
+        └─withdrawn─▶ cancelled  ├─withdrawn─▶ cancelled
                                  └─could not spawn─▶ failed
+
+withdrawn: its agent, or its rule's `run`, changed or was removed before it started
+(nothing ran; the reason is in the run's `error`, see below).
 ```
 
 A running run is cancelled by signalling its process group; the supervisor's result is then recorded as `cancelled`. A graceful shutdown cancels every run the same way and records them `interrupted` ("the daemon shut down") once reaped; after a crash they become `interrupted` at the next start. Global pause also holds runs already `queued` (they start on resume); running runs continue. A rerun is an explicit request with the daemon token: it skips routing (no approval, cooldown or rate limit) and resends the stored prompt. A run without a configured `cwd` works in its own `runs/<id>/`. Chain depth: a run triggered by an uncaused event has depth 1; an event caused by a run carries that run's depth; a rule fires only if the new run's depth is at most `max_chain_depth`.

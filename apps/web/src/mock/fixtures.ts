@@ -200,7 +200,8 @@ export function rules(): Def<RuleConfig>[] {
         run: {
           agent: "fixer",
           prompt:
-            "`{{subject}}` failed with exit code {{exit_code}} in {{cwd}}. Read the output tail, find the cause, and propose a minimal fix. Do not commit.",
+            // Like the shipped build-failure template: the command line stays in the data block, not in the instruction.
+            "A command wrapped with `pulse run` failed in {{cwd}}. The event data below has its command line, exit code and output tail. Find the cause and propose a minimal fix. Do not commit.",
         },
       },
       origin: USER_FILE,

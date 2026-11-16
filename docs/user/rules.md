@@ -70,8 +70,9 @@ where = { source = "university" }                        # the source's name
 
 Path globs (strings starting with `/` or `~`): `*` stays within one path segment, `**` spans any
 number, `?`, `{a,b}`. Any other string is a plain text glob in which `*` also matches `/`, so
-`path = "*.pdf"` matches every PDF anywhere, while `path = "University/*.pdf"` never matches (event
-paths are absolute; Pulse warns about it).
+`path = "*.pdf"` matches every PDF anywhere (the rule's sources and the agent's scopes are what
+limit where), while `path = "University/*.pdf"` never matches (event paths are absolute; Pulse
+warns about it).
 
 ## Limits: debounce, cooldown, rate limit
 
