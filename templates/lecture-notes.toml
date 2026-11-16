@@ -1,0 +1,52 @@
+# Template "lecture-notes": a new lecture PDF -> a summary and flashcards next to it.
+#
+# When a PDF appears anywhere under ~/University, Claude Code reads it and writes two
+# Markdown files beside it. Change ~/University (four places) to where your lectures land.
+#
+# How little the agent can do:
+# - It only hears about files created under ~/University (`allow`).
+# - Only the Read and Write tools are pre-approved. A run is headless and cannot ask for
+#   more, so anything else (shell commands, web access, edits elsewhere) is refused.
+# - Claude Code keeps file access to its working directory (`cwd`).
+# - At most one run at a time, at most 20 per hour.
+# Pulse's scopes control what the agent is told; Claude Code's own permissions control what it
+# can do. Neither is a complete sandbox: see docs/internals/0003-threat-model.md.
+
+[[source]]
+name = "university"
+kind = "fs"
+path = "~/University"
+
+[[agent]]
+name = "study"
+adapter = "claude-code"
+allowed_tools = ["Read", "Write"]
+cwd = "~/University"
+allow = ["fs.file.created:~/University/**"]
+timeout = "15m"
+max_concurrent = 1
+max_queued = 4
+
+[[rule]]
+name = "lecture-notes"
+description = "Summarize each new lecture PDF and make flashcards from it."
+on = "fs.file.created"
+where = { path = "~/University/**/*.pdf" }
+# Each PDF fires once, after it has stopped changing for 10 seconds (large downloads).
+debounce = "10s"
+debounce_by = "subject"
+rate_limit = "20/hour"
+
+[rule.run]
+agent = "study"
+prompt = """
+A new lecture PDF was saved at {{path}}.
+
+Read it, then write two files in the same directory, named after the PDF without its .pdf
+extension:
+1. <name>.summary.md: a structured summary (main topics, key definitions, results), at most
+   one page.
+2. <name>.flashcards.md: 15 to 30 flashcards, each a question line followed by an answer line.
+
+Write only those two files.
+"""

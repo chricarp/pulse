@@ -838,12 +838,14 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "pulse-contracts",
+ "pulse-core",
  "pulse-daemon",
  "pulse-sources",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]

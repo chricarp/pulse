@@ -1,0 +1,41 @@
+# Template "build-failure": a wrapped build or test fails -> a diagnosis.
+#
+# Wrap commands with `pulse run`, for example `pulse run -- cargo test` or
+# `pulse run -- make`. When a wrapped command fails under ~/code, Claude Code reads its output
+# tail and the code around it and explains the likely cause and fix. The diagnosis is the
+# run's output: `pulse runs logs <id>`, or the run in the UI. Change ~/code (three places) to
+# where your repositories live.
+#
+# How little the agent can do:
+# - It only hears about wrapped commands that ran under ~/code (`allow`).
+# - Only read-only tools (Read, Grep, Glob) are pre-approved; a headless run cannot ask for
+#   more, so it cannot edit files or run commands.
+# - A cooldown and a rate limit keep a failing loop from waking it over and over.
+
+[[agent]]
+name = "diagnose"
+adapter = "claude-code"
+allowed_tools = ["Read", "Grep", "Glob"]
+cwd = "~/code"
+allow = ["process.exited:~/code/**"]
+timeout = "10m"
+max_concurrent = 1
+max_queued = 2
+
+[[rule]]
+name = "build-failed"
+description = "Explain why a wrapped build or test command failed."
+on = "process.exited"
+where = { success = false, cwd = "~/code/**" }
+cooldown = "2m"
+rate_limit = "10/hour"
+
+[rule.run]
+agent = "diagnose"
+prompt = """
+The command `{{subject}}` failed with exit code {{exit_code}} in {{cwd}}.
+
+Its last output is in the event data below. Find the most likely cause in the code under
+{{cwd}} and explain it in a few sentences, then give the fix you suggest. Do not change any
+files.
+"""
