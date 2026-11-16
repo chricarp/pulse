@@ -19,6 +19,7 @@ sep3415 = ["pulse-daemon/sep3415"]
 [dependencies]
 pulse-contracts.workspace = true
 pulse-daemon.workspace = true
+pulse-mcp.workspace = true
 pulse-sources.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -30,6 +31,9 @@ clap = { version = "4.5.40", features = ["derive"] }
 [dev-dependencies]
 pulse-core.workspace = true
 tempfile.workspace = true
+# The `pulse mcp` bridge test drives the binary with an MCP client.
+rmcp = { version = "=3.10.0", default-features = false, features = ["client"] }
+tokio = { workspace = true, features = ["time"] }
 
 [lints]
 workspace = true

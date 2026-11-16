@@ -104,7 +104,10 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    match runtime.block_on(commands::run(&ctx, cli.command)) {
+    let result = runtime.block_on(commands::run(&ctx, cli.command));
+    // Do not wait for blocking reads that are still pending (stdin in `pulse mcp`).
+    runtime.shutdown_background();
+    match result {
         Ok(code) => code,
         Err(Failure::NotRunning(msg)) => {
             eprint_line(&msg);
