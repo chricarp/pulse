@@ -16,7 +16,8 @@ pulse-store = { path = "crates/pulse-store" }
 pulse-sources = { path = "crates/pulse-sources" }
 pulse-agents = { path = "crates/pulse-agents" }
 pulse-mcp = { path = "crates/pulse-mcp" }
-pulse-daemon = { path = "crates/pulse-daemon" }
+# Without default features, so `pulse-cli --no-default-features` really drops SEP-3415.
+pulse-daemon = { path = "crates/pulse-daemon", default-features = false }
 
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

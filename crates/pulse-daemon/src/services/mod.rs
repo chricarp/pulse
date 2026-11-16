@@ -1,9 +1,11 @@
 //! The daemon's features as plain Rust APIs: `events`, `rules`, `agents`, `runs`, `sources`,
-//! `projects`, `system`. Every transport (the RPC server, `POST /ingest`, the MCP backend) calls
+//! `projects`, `system`, and what MCP clients may ask (`mcp`). Every transport (the RPC server,
+//! `POST /ingest`, the MCP backend) calls
 //! exactly one method here per request and only maps errors; logic belongs here, not there.
 
 mod agents; // and sources
 mod events;
+mod mcp;
 mod projects;
 mod rules;
 mod runs;

@@ -11,7 +11,7 @@ use pulse_contracts::config::ConfigError;
 use pulse_contracts::rpc::{StateChanged, StateTopic};
 use pulse_contracts::status::Project;
 use pulse_store::StoreHandle;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::LoginCodes;
@@ -56,6 +56,8 @@ pub(crate) struct Shared {
 
     pending_topics: Mutex<BTreeSet<StateTopicKey>>,
     state_notify: Notify,
+    /// Bumped whenever a new configuration takes effect.
+    config_version: watch::Sender<u64>,
 
     pub source_builder: SourceBuilder,
     pub adapters: AdapterLookup,
@@ -90,6 +92,8 @@ pub(crate) struct SharedParts {
     pub user_home: PathBuf,
     pub clock: Clock,
     pub store: StoreHandle,
+    /// The newest event in the log: new ids continue after it.
+    pub last_event: Option<pulse_contracts::EventId>,
     pub secret: String,
     pub snapshot: Snapshot,
     pub loader: Loader,
@@ -103,7 +107,7 @@ impl Shared {
     pub(crate) fn new(p: SharedParts) -> Shared {
         let started_at = p.clock.now();
         Shared {
-            ids: Ids::new(p.clock),
+            ids: Ids::new(p.clock, p.last_event.map(|e| e.ulid())),
             home: p.home,
             user_home: p.user_home,
             clock: p.clock,
@@ -126,6 +130,7 @@ impl Shared {
             running: Mutex::new(HashMap::new()),
             pending_topics: Mutex::new(BTreeSet::new()),
             state_notify: Notify::new(),
+            config_version: watch::channel(0).0,
             source_builder: p.wiring.sources,
             adapters: p.wiring.adapters,
             supervisor: p.wiring.supervisor,
@@ -142,6 +147,11 @@ impl Shared {
 
     pub(crate) fn projects(&self) -> Vec<Project> {
         self.projects.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Changes whenever a new configuration takes effect.
+    pub(crate) fn config_changes(&self) -> watch::Receiver<u64> {
+        self.config_version.subscribe()
     }
 
     pub(crate) fn port(&self) -> u16 {
@@ -223,11 +233,19 @@ impl Shared {
                 if old.config.daemon.port != snapshot.config.daemon.port {
                     tracing::info!("the new [daemon] port takes effect when the daemon restarts");
                 }
+                if old.config.daemon.mcp_events_extension
+                    != snapshot.config.daemon.mcp_events_extension
+                {
+                    tracing::info!(
+                        "the new [daemon] mcp_events_extension takes effect when the daemon restarts"
+                    );
+                }
                 let snapshot = Arc::new(snapshot);
                 *self.snapshot.write().unwrap_or_else(|p| p.into_inner()) = snapshot.clone();
                 let _ = self.engine.control(Control::Config(snapshot.clone())).await;
                 self.sources.reconcile(self, &snapshot.config);
                 self.worker.wake();
+                self.config_version.send_modify(|v| *v = v.wrapping_add(1));
             } else {
                 // Same meaning; keep the files (they may differ in formatting only).
                 *self.snapshot.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(snapshot);

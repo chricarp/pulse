@@ -16,6 +16,10 @@
 //!
 //! - [`Store::commit`] writes events, deliveries, runs, outbox rows and rule state in **one
 //!   transaction**: a routing result is all there or not at all.
+//! - Events become visible in id order: a commit whose events are not in increasing id order,
+//!   or not all after the newest event already stored, is refused (`OutOfOrder`). Readers that
+//!   follow the log by cursor (MCP subscriptions) never look below a cursor again, so an event
+//!   committed below one would be skipped silently.
 //! - Run status changes go through [`Store::transition_run`], which rejects illegal transitions
 //!   (`RunStatus::can_transition_to`). Approval writes the outbox row in the same transaction.
 //! - Output is capped per run, keeping the head and the tail with a marker chunk in between.
@@ -59,6 +63,9 @@ pub enum StoreError {
     /// The query itself is invalid (for example an unclosed `{` in a subject glob).
     #[error("invalid query: {0}")]
     InvalidQuery(String),
+    /// An event id at or below one already in the log (see the module docs).
+    #[error("event {id} is not after {after}: events must be appended in id order")]
+    OutOfOrder { id: pulse_contracts::EventId, after: pulse_contracts::EventId },
     #[error("stored data is unreadable: {0}")]
     Corrupt(String),
     #[error("the store has shut down")]
@@ -127,7 +134,12 @@ impl Store {
     /// Writes one routing result atomically.
     pub fn commit(&mut self, batch: &Commit) -> Result<()> {
         let tx = self.conn.transaction()?;
+        let mut last = if batch.events.is_empty() { None } else { events::last_id(&tx)? };
         for e in &batch.events {
+            if let Some(after) = last.filter(|after| e.id <= *after) {
+                return Err(StoreError::OutOfOrder { id: e.id, after });
+            }
+            last = Some(e.id);
             events::insert(&tx, e)?;
         }
         for r in &batch.runs {

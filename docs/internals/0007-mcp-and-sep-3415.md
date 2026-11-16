@@ -17,7 +17,7 @@ Pulse launches agents, but it also tells agents that are **already running** wha
 
 **Transports.** `pulse_mcp::router` is streamable HTTP for the daemon's `/mcp`. `pulse_mcp::stdio::proxy` is `pulse mcp --agent <name>`. `pulse_mcp::serve_io` serves a fixed, already-authenticated identity over any byte stream (tests, embedding).
 
-**SEP-3415** (cargo feature `sep3415` and `McpConfig::events_extension`, both off by default): `events/list`, poll (`events/poll`) and push (`events/stream`). See section 4.
+**SEP-3415**: `events/list`, poll (`events/poll`) and push (`events/stream`). See section 4. The `sep3415` cargo feature is off in this crate but a default feature of `pulse-daemon` and `pulse-cli`, so the shipped `pulse` binary **compiles it in**; it is **off at runtime** until `[daemon] mcp_events_extension = true` (read at start: restart the daemon after changing it). Trying it is one config line; `cargo build -p pulse-cli --no-default-features` leaves it out entirely.
 
 Nothing in this crate can approve a run, edit a rule or read outside the caller's scope. There is no backend method for the first two; for the third, every call passes the authenticated identity to the `Backend`, which applies the agent's `allow` list.
 
@@ -34,7 +34,7 @@ The proxy is a small amount of protocol knowledge: it sets `MCP-Protocol-Version
 
 ### Identity per request
 
-The HTTP middleware resolves `Authorization: Bearer` through `Backend::resolve_agent` and answers `401` before rmcp sees the request. The identity is stored in the request's extensions under a private type, so nothing else in the process can forge it, and tools read it from there on every call. There is no session-level identity to switch, and tool arguments that name an agent are rejected as unknown fields. On protocol 2026-07-28 rmcp builds a fresh handler per request anyway, which is why all state (subscriptions, stream counts) lives in a shared `Arc`, never in the handler.
+The HTTP middleware resolves `Authorization: Bearer` through `Backend::resolve_agent` and answers `401` before rmcp sees the request. In the daemon this layer is the only authority for who is calling (`Services::mcp_agent`: a constant-time HMAC check, and the agent must be configured now); the daemon's listener guard only checks `Host` and refuses any `Origin` on `/mcp`. The identity is stored in the request's extensions under a private type, so nothing else in the process can forge it, and tools read it from there on every call. There is no session-level identity to switch, and tool arguments that name an agent are rejected as unknown fields. On protocol 2026-07-28 rmcp builds a fresh handler per request anyway, which is why all state (subscriptions, stream counts) lives in a shared `Arc`, never in the handler.
 
 ### The log is the queue
 
@@ -45,13 +45,14 @@ Why this is better:
 - Nothing is buffered per subscription, so nothing can overflow and nothing is dropped. A slow agent is behind in the log and catches up page by page (`has_more`).
 - Delivery is at-least-once with no acknowledgement bookkeeping: the caller's cursor is its acknowledgement. A result lost in transit (Codex's 60 s tool timeout firing while the server answers) is re-read with the same cursor.
 - A subscription resumes without server memory. After it expires, or the daemon restarts, `subscribe` again and keep the last cursor: everything since it is delivered, within retention.
-- Scoping is exactly the backend's: every event an agent receives came from `Backend::query_events` as that agent. Revocation is noticed on the next read.
+- Scoping is exactly the backend's: every event an agent receives came from `Backend::query_events` as that agent. Revocation is noticed on the next read. The daemon scopes *while* reading (before the page limit), so a page or cursor never names a hidden event; see 0002.
+- The backend's live subscription is a wakeup channel (`AgentSubscription::wake`, one pending at most), not copies of events. The daemon closes it when the agent is removed or can no longer receive any type.
 
 Costs: a log query per wakeup per waiting subscription. Wakeups follow the daemon's live fan-out, which is already batched, and idle subscriptions cost nothing. Subscriptions are bounded (16 per agent, 256 in total), subscribing twice with the same filter returns the same subscription, and an entry nobody waits on for 30 minutes is removed by its own timer.
 
-**Requirement on the daemon:** events must become visible to `query_events` in event-id order. A reader past id N never looks below N again, so an event that became visible after a higher id would be skipped. The single engine task assigning ids and committing in order satisfies this.
+**Requirement on the daemon:** events must become visible to `query_events` in event-id order. A reader past id N never looks below N again, so an event that became visible after a higher id would be skipped. The single engine task assigning ids and committing in order satisfies this; ids continue after the newest stored one across restarts (even with a clock that went back), and the store refuses an out-of-order commit rather than letting it be skipped.
 
-**"From now"** is the head of the log as the agent sees it (one newest-first query, using the row the backend examined even if the agent cannot see it), not the clock. With the clock, an event logged in the same millisecond just before a subscribe would count as new. The clock is used only for an empty log and for SEP `maxAgeMs`.
+**"From now"** is the head of the log as the agent sees it (one newest-first query: its newest visible event, or a later row the backend examined past its scan budget), not the clock. With the clock, an event logged in the same millisecond just before a subscribe would count as new. The clock is used only for an empty log and for SEP `maxAgeMs`.
 
 ### Waiting with today's clients
 
@@ -134,6 +135,8 @@ The header is stored in Claude Code's config in plain text. Do not use `--scope 
 ```sh
 claude mcp add pulse -- pulse mcp --agent <agent>
 ```
+
+`pulse mcp --agent X` takes the token from `PULSE_MCP_TOKEN` if set (it must be X's), otherwise derives it from `$PULSE_HOME/token`, and finds the port in `daemon.json`. Before serving it presents the token once (`pulse_mcp::stdio::check`): no daemon is exit 3, an unknown agent exit 1, a token for another agent exit 2, each with a message on stderr; stdout only ever carries MCP messages. If the daemon stops while it is connected, each request gets a JSON-RPC error and the bridge keeps running (requests work again when the daemon is back on the same port); it exits 0 when stdin closes. `pulse agents mcp-credentials <agent>` prints all of this ready to paste.
 
 **Codex CLI, HTTP:**
 

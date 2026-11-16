@@ -6,6 +6,12 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["sep3415"]
+# The draft MCP Events extension (SEP-3415), compiled in; it is still off at runtime unless
+# `[daemon] mcp_events_extension = true`. See docs/internals/0007-mcp-and-sep-3415.md.
+sep3415 = ["pulse-mcp/sep3415"]
+
 [dependencies]
 pulse-contracts.workspace = true
 pulse-core.workspace = true
@@ -36,6 +42,8 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "std", "ansi"] }
 
 [dev-dependencies]
+# An MCP client for the `/mcp` tests (in process, over the stdio proxy).
+rmcp = { version = "=3.10.0", default-features = false, features = ["client"] }
 rusqlite.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process", "test-util", "io-util"] }

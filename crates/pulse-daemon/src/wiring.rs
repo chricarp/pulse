@@ -1,5 +1,6 @@
 //! The edges the daemon is built with. [`Wiring::real`] uses the real sources, adapters and
-//! supervisor; tests replace any of them with fakes.
+//! supervisor; tests replace any of them with fakes. The MCP server is not an edge: `/mcp` is
+//! always `pulse_mcp::router` over the daemon's own services.
 
 use std::fmt;
 use std::sync::Arc;
@@ -51,35 +52,26 @@ pub type SourceBuilder =
 /// Finds the adapter for an agent kind ([`pulse_agents::adapter_for`] by default).
 pub type AdapterLookup = fn(AgentKind) -> Option<&'static dyn AgentAdapter>;
 
-/// Builds the router mounted at `/mcp` from the daemon's MCP backend. Requests reach it only
-/// after the daemon checked Host, Origin and the agent token; the resolved
-/// [`pulse_mcp::AgentIdentity`] is in the request extensions.
-pub type McpMount = Arc<dyn Fn(crate::McpBackend) -> axum::Router + Send + Sync>;
-
 #[derive(Clone)]
 pub struct Wiring {
     pub sources: SourceBuilder,
     pub adapters: AdapterLookup,
     pub supervisor: Arc<dyn Supervisor>,
-    /// `None` until the MCP server is wired in: `/mcp` then answers 501.
-    pub mcp: Option<McpMount>,
 }
 
 impl Wiring {
-    /// The real edges. To mount the MCP server, set `mcp` here to
-    /// `Some(Arc::new(|backend| pulse_mcp::router(backend)))` once `pulse-mcp` provides it.
+    /// The real edges.
     pub fn real() -> Wiring {
         Wiring {
             sources: Arc::new(pulse_sources::build),
             adapters: pulse_agents::adapter_for,
             supervisor: Arc::new(RealSupervisor),
-            mcp: None,
         }
     }
 }
 
 impl fmt::Debug for Wiring {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Wiring").field("mcp", &self.mcp.is_some()).finish_non_exhaustive()
+        f.debug_struct("Wiring").finish_non_exhaustive()
     }
 }

@@ -28,7 +28,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use pulse_contracts::catalog::EventTypeInfo;
-use pulse_contracts::rpc::{EventFilter, EventPage, EventQuery, EventsBatch};
+use pulse_contracts::rpc::{EventFilter, EventPage, EventQuery};
 use pulse_contracts::{EventId, SubscriptionId, Timestamp, Ulid};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -62,13 +62,15 @@ pub enum BackendError {
     Unavailable(String),
 }
 
-/// A live, scoped subscription. Batches arrive on `events`; dropping it unsubscribes. The
-/// backend closes the channel when the subscription can no longer be served (the agent was
-/// removed, the daemon is stopping).
+/// A live, scoped subscription. It carries no events: a message on `wake` says that something
+/// matching the filter, that the agent may see, was committed, and the server reads it from the
+/// log by cursor. One pending wakeup is enough (the backend may coalesce them). Dropping it
+/// unsubscribes. The backend closes the channel when the subscription can no longer be served
+/// (the agent was removed or lost access, the daemon is stopping).
 #[derive(Debug)]
 pub struct AgentSubscription {
     pub id: SubscriptionId,
-    pub events: mpsc::Receiver<EventsBatch>,
+    pub wake: mpsc::Receiver<()>,
 }
 
 /// What the MCP server needs from the daemon.
@@ -86,7 +88,8 @@ pub trait Backend: Send + Sync + 'static {
     fn event_types(&self, agent: &AgentIdentity) -> Vec<EventTypeInfo>;
 
     /// Queries history as `agent`: only events its scopes cover are returned. Pages may be
-    /// shorter than `limit` because of scoping; follow `next_cursor`.
+    /// shorter than `limit` (even empty) because of scoping; follow `next_cursor`, which must
+    /// advance past every row the backend examined so that a reader is never stuck.
     fn query_events(
         &self,
         agent: &AgentIdentity,

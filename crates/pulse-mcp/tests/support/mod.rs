@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pulse_contracts::catalog::{CATALOG, EventTypeInfo};
-use pulse_contracts::rpc::{EventFilter, EventPage, EventQuery, EventsBatch, Order};
+use pulse_contracts::rpc::{EventFilter, EventPage, EventQuery, Order};
 use pulse_contracts::{
     Event, EventId, EventType, NewEvent, SourceKind, SourceRef, SubscriptionId, Timestamp, Ulid,
 };
@@ -37,7 +37,7 @@ struct LiveSub {
     id: SubscriptionId,
     agent: AgentIdentity,
     filter: EventFilter,
-    tx: mpsc::Sender<EventsBatch>,
+    tx: mpsc::Sender<()>,
 }
 
 pub const ALICE_TOKEN: &str = "tok-alice";
@@ -110,15 +110,11 @@ impl Fake {
         }
         .into_event(id, None, None);
         self.log.lock().unwrap().push(event.clone());
-        // Live fan-out drops batches when a subscriber is behind, like the daemon's bounded
-        // channels. The log keeps everything.
+        // A wakeup per matching event, coalesced while one is pending, like the daemon's. The
+        // log keeps everything.
         for s in self.subs.lock().unwrap().iter() {
             if visible(&s.agent, &event) && matches(&s.filter, &event) {
-                let _ = s.tx.try_send(EventsBatch {
-                    subscription: s.id,
-                    events: vec![event.clone()],
-                    dropped: 0,
-                });
+                let _ = s.tx.try_send(());
             }
         }
         event
@@ -284,14 +280,14 @@ impl Backend for Fake {
         if self.is_revoked(agent) {
             return Err(BackendError::Unauthorized);
         }
-        // Capacity 1: a subscriber that is not draining loses live batches.
+        // Capacity 1: wakeups coalesce while one is pending.
         let (tx, rx) = mpsc::channel(1);
         let id = SubscriptionId::from_ulid(Ulid::from_parts(
             u64::try_from(self.now_ms.load(Ordering::SeqCst)).unwrap(),
             u128::from(self.seq.fetch_add(1, Ordering::SeqCst)),
         ));
         self.subs.lock().unwrap().push(LiveSub { id, agent: agent.clone(), filter, tx });
-        Ok(AgentSubscription { id, events: rx })
+        Ok(AgentSubscription { id, wake: rx })
     }
 }
 
