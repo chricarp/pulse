@@ -136,9 +136,10 @@ pulse open
 ```
 
 opens the UI in your browser, signed in with a one-time code that is valid for two minutes
-(`pulse open --print` prints the URL instead). The **Feed** shows the event with a green
-`count-bytes fired` marker; `×2` next to it means two raw filesystem signals were folded into
-this one event. Click the event for its detail, or **Runs** for the run and its output.
+(`pulse open --print` prints the URL instead). The **Feed** shows the event with a
+`count-bytes` marker that says what became of the run it started: `queued`, `running`, then a
+green `succeeded`. `×2` next to it means two raw filesystem signals were folded into this one
+event. Click the event for its detail, or **Runs** for the run and its output.
 
 The UI is served by the daemon itself at `http://127.0.0.1:7477/`. A new browser tab needs a new
 `pulse open`.

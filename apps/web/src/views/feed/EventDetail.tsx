@@ -67,6 +67,8 @@ export function EventDetailPane({ id, onClose, onFilter }: { id: string; onClose
   }
   const e = detail.event;
   const runsById = new Map(detail.runs.map((r) => [r.id, r]));
+  // Deliveries come in the order they were recorded; the last one of a rule says where it stands.
+  const latestByRule = new Map(detail.deliveries.map((d) => [d.rule, d.id]));
   const loops = detail.deliveries.filter((d) => deliveryTone(d.outcome) === "loop");
   const data = JSON.stringify(e.data, null, 2) ?? "null";
 
@@ -133,7 +135,7 @@ export function EventDetailPane({ id, onClose, onFilter }: { id: string; onClose
           ) : (
             <ul className="deliveries">
               {detail.deliveries.map((d) => (
-                <DeliveryItem key={d.id} d={d} run={d.run ? runsById.get(d.run) : undefined} eventId={e.id} />
+                <DeliveryItem key={d.id} d={d} run={d.run ? runsById.get(d.run) : undefined} superseded={latestByRule.get(d.rule) !== d.id} eventId={e.id} />
               ))}
             </ul>
           )}
@@ -223,15 +225,17 @@ function Causation({ event }: { event: Detail["event"] }) {
   );
 }
 
-function DeliveryItem({ d, run, eventId }: { d: Delivery; run: RunSummary | undefined; eventId: string }) {
-  const tone = deliveryTone(d.outcome);
+function DeliveryItem({ d, run, superseded, eventId }: { d: Delivery; run: RunSummary | undefined; superseded: boolean; eventId: string }) {
+  // A delivery that created a run reads as the run's state now, like its marker in the feed.
+  const tone = run ? runTone(run.status) : deliveryTone(d.outcome);
+  const label = run ? RUN_STATUS_LABEL[run.status] : deliveryLabel(d.outcome);
   const when = (iso: string) => dayAndTime(iso, Date.now());
   const testHref = `/rules/${encodeURIComponent(d.rule)}?test=${encodeURIComponent(eventId)}`;
   return (
     <li className={cx("delivery", `tone-${tone}`)}>
       <div className="delivery-head">
         <Pill tone={tone} {...(tone === "loop" ? { icon: "loop" as const } : {})}>
-          {deliveryLabel(d.outcome)}
+          {label}
         </Pill>
         <a className="mono delivery-rule" href={href({ view: "rules", name: d.rule, mode: "show" })} onClick={(e) => { e.preventDefault(); navigate({ view: "rules", name: d.rule, mode: "show" }); }}>
           {d.rule}
@@ -243,7 +247,7 @@ function DeliveryItem({ d, run, eventId }: { d: Delivery; run: RunSummary | unde
           Test
         </a>
       </div>
-      <p className="delivery-why">{outcomeSentence(d.outcome, d.agent, when)}</p>
+      <p className="delivery-why">{outcomeSentence(d.outcome, d.agent, when, superseded)}</p>
       {d.outcome.kind === "blocked" && d.outcome.reason.reason === "loop_self_trigger" && (
         <p className="delivery-why">
           Its own run:{" "}

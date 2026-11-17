@@ -87,15 +87,19 @@ impl Default for Hub {
 
 impl Hub {
     /// Publishes one commit: its new events, and `earlier` events that got deliveries in it.
+    /// `runs` are the runs the commit created, for the status their outcomes carry.
     pub(crate) fn publish_events(
         &self,
         events: Vec<Event>,
         deliveries: &[Delivery],
+        runs: &[RunSummary],
         earlier: Vec<Event>,
     ) {
+        let status = |id: RunId| runs.iter().find(|r| r.id == id).map(|r| r.status);
         let mut by_event: HashMap<EventId, Vec<EventOutcome>> = HashMap::new();
         for d in deliveries {
-            by_event.entry(d.event).or_default().push(EventOutcome::from(d));
+            let outcome = EventOutcome::new(d, d.run.and_then(status));
+            by_event.entry(d.event).or_default().push(outcome);
         }
         let mut items = Vec::with_capacity(events.len() + earlier.len());
         for event in events {
@@ -479,7 +483,7 @@ mod tests {
         let got = subscribe(&hub, ready.clone());
         tokio::task::yield_now().await;
         let e = event(1);
-        hub.publish_events(vec![e.clone()], &[fired(&e, 1)], vec![]);
+        hub.publish_events(vec![e.clone()], &[fired(&e, 1)], &[], vec![]);
         settle().await;
         assert!(got.lock().unwrap().is_empty(), "held until the subscribe call is answered");
         ready.cancel();
@@ -500,10 +504,10 @@ mod tests {
         let mut agent = hub.subscribe_events();
         tokio::task::yield_now().await;
         let (a, b) = (event(1), event(2));
-        hub.publish_events(vec![a.clone(), b.clone()], &[fired(&b, 1)], vec![]);
+        hub.publish_events(vec![a.clone(), b.clone()], &[fired(&b, 1)], &[], vec![]);
         settle().await;
         // A debounce elapsing later: only the outcome is news.
-        hub.publish_events(vec![], &[fired(&a, 2)], vec![a.clone()]);
+        hub.publish_events(vec![], &[fired(&a, 2)], &[], vec![a.clone()]);
         settle().await;
         let full = full.lock().unwrap();
         let events: Vec<_> =

@@ -248,11 +248,21 @@ export type EventId = string;
 
 export type EventIdParams = { id: EventId, };
 
-export type EventOutcome = { event: EventId, rule: string, outcome: DeliveryOutcome, 
+export type EventOutcome = { 
+/**
+ * The delivery this summarizes.
+ */
+delivery: DeliveryId, event: EventId, rule: string, outcome: DeliveryOutcome, 
 /**
  * The run it created (fired, awaiting approval).
  */
-run?: RunId | null, };
+run?: RunId | null, 
+/**
+ * That run's status when this was read or published. Later changes arrive on
+ * `runs.subscribe` (a client keeps the later state; a run only moves forward). `None`
+ * without a run, or when the run is no longer in the log.
+ */
+run_status?: RunStatus | null, };
 
 export type EventPageWithOutcomes = { 
 /**

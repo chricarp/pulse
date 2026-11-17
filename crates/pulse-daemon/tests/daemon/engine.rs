@@ -315,6 +315,9 @@ run = { agent = "sh" }
         ("other".to_owned(), DeliveryOutcome::Fired, true),
     ];
     assert_eq!(summary(&outcomes), want);
+    // With the state the created run had when the batch was published.
+    let other = outcomes.iter().find(|o| o.rule == "other").unwrap();
+    assert_eq!(other.run_status, Some(RunStatus::Queued));
     // So does a page from the log.
     let page = client.call::<method::EventsQuery>(EventQuery::default()).await.unwrap();
     assert_eq!(page.page.events[0].id, again);

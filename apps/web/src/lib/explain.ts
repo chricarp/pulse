@@ -1,6 +1,6 @@
 // Words for routing outcomes and run states: what happened, and why, in one line.
 
-import type { BlockReason, Causation, DeliveryOutcome, Outcome, RunStatus, SourceState, TrustState } from "../contracts";
+import type { BlockReason, Causation, DeliveryOutcome, EventOutcome, Outcome, RunStatus, SourceState, TrustState } from "../contracts";
 
 export type Tone = "ok" | "attention" | "waiting" | "loop" | "blocked" | "error" | "neutral" | "running";
 
@@ -96,21 +96,55 @@ export function blockSentence(r: BlockReason, agent: string, when: (iso: string)
   }
 }
 
-export function outcomeSentence(o: DeliveryOutcome | Outcome, agent: string, when: (iso: string) => string): string {
+/**
+ * One sentence about a decision, true whenever it is read: what became of a run it created is
+ * the run's state, shown next to it. `superseded`: a later delivery of the same rule for the
+ * same event says what happened next (a debounce that elapsed, a waiting delivery routed again).
+ */
+export function outcomeSentence(o: DeliveryOutcome | Outcome, agent: string, when: (iso: string) => string, superseded = false): string {
   switch (o.kind) {
     case "fired":
     case "fire":
       return `Woke ${agent}.`;
     case "awaiting_approval":
     case "await_approval":
-      return `A run of ${agent} is waiting for approval (the rule is supervised).`;
+      return `The rule is supervised: a run of ${agent} starts only once you approve it.`;
     case "debounced":
-      return `Held by the debounce until ${when(o.until)}; if no newer matching event comes, it fires then.`;
+      return superseded
+        ? `Held by the debounce until ${when(o.until)}, then routed again (below).`
+        : `Held by the debounce until ${when(o.until)}; if no newer matching event comes, it fires then.`;
     case "waiting":
-      return `${blockSentence(o.reason, agent, when)} The debounce holds the event and fires it when one of ${agent}'s runs ends, unless a newer matching event replaces it.`;
+      return superseded
+        ? `${blockSentence(o.reason, agent, when)} The debounce held the event until one of ${agent}'s runs ended, then routed it again (below).`
+        : `${blockSentence(o.reason, agent, when)} The debounce holds the event and fires it when one of ${agent}'s runs ends, unless a newer matching event replaces it.`;
     case "blocked":
       return blockSentence(o.reason, agent, when);
   }
+}
+
+/** What one rule's delivery for an event amounts to now, for a marker. */
+export interface CurrentOutcome {
+  rule: string;
+  label: string;
+  tone: Tone;
+  /** The latest delivery of that rule for the event. */
+  outcome: EventOutcome;
+}
+
+/**
+ * Per rule, the latest delivery for the event (a debounce that elapsed or a waiting delivery
+ * routed again is followed by the delivery that says what then happened), shown as the state
+ * of the run it created when it created one: an approved run no longer reads "awaiting
+ * approval". In the order the rules first decided.
+ */
+export function currentOutcomes(list: readonly EventOutcome[]): CurrentOutcome[] {
+  const latest = new Map<string, EventOutcome>();
+  for (const o of [...list].sort((a, b) => (a.delivery < b.delivery ? -1 : a.delivery > b.delivery ? 1 : 0))) latest.set(o.rule, o);
+  return [...latest.values()].map((o) =>
+    o.run && o.run_status
+      ? { rule: o.rule, label: RUN_STATUS_LABEL[o.run_status], tone: runTone(o.run_status), outcome: o }
+      : { rule: o.rule, label: deliveryLabel(o.outcome), tone: deliveryTone(o.outcome), outcome: o },
+  );
 }
 
 /** How an event's causing run is known: a pill, a feed flag, and the explanation. */

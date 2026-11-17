@@ -3,7 +3,7 @@
 use pulse_contracts::config::AgentConfig;
 use pulse_contracts::rpc::*;
 use pulse_contracts::run::RunSnapshot;
-use pulse_contracts::{RunStatus, Timestamp, Ulid};
+use pulse_contracts::{DeliveryOutcome, RunStatus, Timestamp, Ulid};
 use pulse_store::{Commit, Effect, NewRun, RunTransition, Store};
 
 use crate::support::*;
@@ -89,6 +89,14 @@ run = {{ agent = "sh" }}
     assert_eq!(rejected.status, RunStatus::Rejected);
     let full = client.call::<method::RunsGet>(RunIdParams { id: b.id }).await.unwrap();
     assert_eq!(full.error.as_deref(), Some("not now"));
+    // The log answers with what became of each supervised delivery, not only the decision.
+    let page = client.call::<method::EventsQuery>(EventQuery::default()).await.unwrap();
+    let outcome_of = |run| {
+        let o = page.outcomes.iter().find(|o| o.run == Some(run)).unwrap();
+        (o.outcome.clone(), o.run_status)
+    };
+    assert_eq!(outcome_of(a.id), (DeliveryOutcome::AwaitingApproval, Some(RunStatus::Succeeded)));
+    assert_eq!(outcome_of(b.id), (DeliveryOutcome::AwaitingApproval, Some(RunStatus::Rejected)));
     let again = client.call::<method::RunsApprove>(RunIdParams { id: b.id }).await.unwrap_err();
     assert!(
         matches!(&again, pulse_daemon::client::ClientError::Rpc(e) if e.kind() == Some(ErrorCode::Conflict)),

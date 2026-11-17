@@ -610,7 +610,7 @@ impl Engine {
         match self.shared.store.write(move |s| s.commit(&commit)).await {
             Ok(()) => {
                 answer(p.replies);
-                self.shared.hub.publish_events(events, &deliveries, p.earlier);
+                self.shared.hub.publish_events(events, &deliveries, &p.runs, p.earlier);
                 self.shared.publish_runs(p.runs);
                 if p.breaker_tripped {
                     self.shared.notify_state(&[StateTopic::Rules]);

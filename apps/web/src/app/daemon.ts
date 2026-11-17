@@ -16,6 +16,7 @@ import type {
   EventTypeInfo,
   Project,
   RuleInfo,
+  RunStatus,
   RunSummary,
   SourceInfo,
   StateTopic,
@@ -223,6 +224,13 @@ export function newerRun(a: RunSummary | undefined, b: RunSummary): RunSummary {
   if (sa !== sb) return sa > sb ? a : b;
   const filled = (r: RunSummary) => (r.started_at ? 1 : 0) + (r.ended_at ? 1 : 0);
   return filled(a) > filled(b) ? a : b;
+}
+
+/** Of two states of one run, the later: a run only moves forward. */
+export function laterStatus(a: RunStatus | undefined, b: RunStatus | undefined): RunStatus | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return STAGE[b] > STAGE[a] ? b : a;
 }
 
 /** Merges run summaries into the index, keeping every active run and the newest finished ones. */

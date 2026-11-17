@@ -114,6 +114,27 @@ test("a supervised run waits for approval everywhere, and approve and reject bot
   expect(daemon.pulse("runs", "list")).toMatch(/rejected/);
 });
 
+test("the feed's marker follows a supervised run through its life, live and from the log", async ({ page, daemon }) => {
+  await login(page, daemon);
+  const marker = (subject: string) => page.locator(".event-row", { hasText: subject }).locator(".marker", { hasText: "careful" });
+  const pending = () => (JSON.parse(daemon.pulse("--json", "runs", "list", "--status", "pending_approval")) as { runs: { id: string }[] }).runs;
+  daemon.ingest("review", "commit", "approve-me");
+  await expect(marker("approve-me")).toContainText("awaiting approval");
+  daemon.pulse("runs", "approve", pending()[0]?.id ?? "");
+  await expect(marker("approve-me")).toContainText("succeeded");
+  daemon.ingest("review", "commit", "reject-me");
+  await expect(marker("reject-me")).toContainText("awaiting approval");
+  daemon.pulse("runs", "reject", pending()[0]?.id ?? "");
+  await expect(marker("reject-me")).toContainText("rejected");
+  // The event detail says the same.
+  await page.locator(".event-row", { hasText: "approve-me" }).click();
+  await expect(page.locator(".delivery .delivery-head .pill")).toHaveText("succeeded");
+  // A page from the log carries the runs' states too.
+  await page.reload();
+  await expect(marker("approve-me")).toContainText("succeeded");
+  await expect(marker("reject-me")).toContainText("rejected");
+});
+
 test("a rule made in the UI is written to pulse.toml, and hand edits show up live", async ({ page, daemon }) => {
   const before = daemon.readConfig();
   await login(page, daemon);

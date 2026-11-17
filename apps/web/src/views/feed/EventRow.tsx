@@ -2,7 +2,7 @@ import { memo, useSyncExternalStore } from "react";
 
 import { useApp } from "../../app/context";
 import type { Event, EventOutcome } from "../../contracts";
-import { CAUSATION, deliveryLabel, deliveryTone } from "../../lib/explain";
+import { CAUSATION, currentOutcomes, type CurrentOutcome } from "../../lib/explain";
 import { clockTime, count, sourceName } from "../../lib/format";
 import { Icon } from "../../ui/icons";
 import { Trunc, cx } from "../../ui/primitives";
@@ -25,25 +25,19 @@ function Markers({ event }: { event: Event }) {
   const list = useOutcomes(event);
   if (!list || list.length === 0) return null;
   // The most important outcome first: loop protection, then approvals, fires, the rest.
-  const rank = (d: EventOutcome) => {
-    const t = deliveryTone(d.outcome);
-    return t === "loop" ? 0 : t === "attention" ? 1 : t === "ok" ? 2 : t === "waiting" ? 3 : 4;
-  };
-  const sorted = [...list].sort((a, b) => rank(a) - rank(b));
+  const rank = (d: CurrentOutcome) => (d.tone === "loop" ? 0 : d.tone === "attention" ? 1 : d.tone === "ok" ? 2 : d.tone === "waiting" ? 3 : 4);
+  const sorted = currentOutcomes(list).sort((a, b) => rank(a) - rank(b));
   const shown = sorted.slice(0, 2);
   const rest = sorted.length - shown.length;
   return (
     <span className="markers">
-      {shown.map((d, i) => {
-        const tone = deliveryTone(d.outcome);
-        return (
-          <span key={`${d.rule}-${i}`} className={cx("marker", `tone-${tone}`)} title={`${d.rule}: ${deliveryLabel(d.outcome)}`}>
-            {tone === "loop" && <Icon name="loop" size={11} />}
-            <span className="marker-rule">{d.rule}</span>
-            <span className="marker-outcome">{deliveryLabel(d.outcome)}</span>
-          </span>
-        );
-      })}
+      {shown.map((d) => (
+        <span key={d.rule} className={cx("marker", `tone-${d.tone}`)} title={`${d.rule}: ${d.label}`}>
+          {d.tone === "loop" && <Icon name="loop" size={11} />}
+          <span className="marker-rule">{d.rule}</span>
+          <span className="marker-outcome">{d.label}</span>
+        </span>
+      ))}
       {rest > 0 && <span className="marker tone-neutral">+{rest}</span>}
     </span>
   );

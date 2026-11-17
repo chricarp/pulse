@@ -81,7 +81,7 @@ pub async fn rules(ctx: &Ctx, cmd: RulesCmd) -> Res {
                     out.line("No decisions recorded for this rule yet.");
                 }
                 for d in &page.deliveries {
-                    out.line(&format::delivery_line(d, page.causes.get(&d.event).copied()));
+                    out.line(&format::delivery_line(d, page.causes.get(&d.event).copied(), None));
                 }
             }
             return Ok(ExitCode::SUCCESS);

@@ -57,7 +57,6 @@ import * as fx from "./fixtures";
 import { bigOutput, scriptFor, type Script } from "./scripts";
 import { UlidGenerator } from "./ulid";
 
-const outcomeOf = (d: Delivery): EventOutcome => ({ event: d.event, rule: d.rule, outcome: d.outcome, run: d.run ?? null });
 
 type Handlers = {
   [M in RpcMethodName]: (
@@ -482,8 +481,13 @@ export class MockDaemon {
       src.health.last_event_at = event.time;
     }
     const deliveries = this.route(event, at, spec.only ?? null);
-    this.fanOutEvent(event, deliveries.map(outcomeOf), true);
+    this.fanOutEvent(event, deliveries.map((d) => this.outcomeOf(d)), true);
     return { event, deliveries };
+  }
+
+  /** As the daemon sends it: with the status the run has now. */
+  private outcomeOf(d: Delivery): EventOutcome {
+    return { delivery: d.id, event: d.event, rule: d.rule, outcome: d.outcome, run: d.run ?? null, run_status: d.run ? (this.runs.get(d.run)?.status ?? null) : null };
   }
 
   /** Like the daemon: outcomes travel with their event; later ones (`fresh` false) alone. */
@@ -748,7 +752,7 @@ export class MockDaemon {
           const timer = setTimeout(() => {
             this.debounces.delete(key);
             const later = this.route(e, this.now(), null, d.rule);
-            this.fanOutEvent(e, later.map(outcomeOf), false);
+            this.fanOutEvent(e, later.map((d) => this.outcomeOf(d)), false);
           }, wait);
           this.debounces.set(key, { timer, event: e });
         } else {
@@ -984,7 +988,7 @@ export class MockDaemon {
     const w = i < 0 ? undefined : this.waiting.splice(i, 1)[0];
     if (!w) return;
     const later = this.route(w.event, this.now(), null, w.rule);
-    this.fanOutEvent(w.event, later.map(outcomeOf), false);
+    this.fanOutEvent(w.event, later.map((d) => this.outcomeOf(d)), false);
   }
 
   private runChanged(run: Run): void {
@@ -1155,7 +1159,7 @@ export class MockDaemon {
           out.push(e);
         }
       }
-      const outcomes = out.flatMap((e) => (this.deliveriesByEvent.get(e.id) ?? []).map(outcomeOf));
+      const outcomes = out.flatMap((e) => (this.deliveriesByEvent.get(e.id) ?? []).map((d) => this.outcomeOf(d)));
       return { events: out, next_cursor: more ? (out.at(-1)?.id ?? null) : null, outcomes };
     },
     "events.get": ({ id }) => {

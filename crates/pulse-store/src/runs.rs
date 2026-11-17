@@ -97,7 +97,7 @@ const RUN_COLUMNS: &str = "id, rule, agent, event_id, status, created_at, starte
 const SUMMARY_COLUMNS: &str =
     "id, rule, agent, event_id, status, created_at, started_at, ended_at, exit_code, chain_depth";
 
-fn status(s: &str) -> Result<RunStatus> {
+pub(crate) fn status(s: &str) -> Result<RunStatus> {
     RunStatus::parse(s).ok_or_else(|| StoreError::Corrupt(format!("bad run status {s:?}")))
 }
 

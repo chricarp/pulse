@@ -2,7 +2,7 @@
 
 use pulse_contracts::pattern::{GlobAlternative, GlobToken, parse_text_glob, parse_type_glob};
 use pulse_contracts::rpc::{
-    DeliveryKind, DeliveryPage, EventFilter, EventPage, EventQuery, Order, page_limit,
+    DeliveryKind, DeliveryPage, EventFilter, EventOutcome, EventPage, EventQuery, Order, page_limit,
 };
 use pulse_contracts::{
     Delivery, DeliveryId, DeliveryOutcome, Event, EventId, SourceKind, Timestamp,
@@ -270,19 +270,29 @@ impl Queries<'_> {
         rows.into_iter().map(to_delivery).collect()
     }
 
-    /// Every delivery of these events, in the order they were recorded.
-    pub fn deliveries_for_events(&self, ids: &[EventId]) -> Result<Vec<Delivery>> {
+    /// Every delivery of these events, in the order they were recorded, with the current
+    /// status of the run each created (if it is still in the log).
+    pub fn outcomes_for_events(&self, ids: &[EventId]) -> Result<Vec<EventOutcome>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
         let marks = vec!["?"; ids.len()].join(",");
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {DELIVERY_COLUMNS} FROM deliveries WHERE event_id IN ({marks}) ORDER BY id"
+            "SELECT d.id, d.event_id, d.rule, d.agent, d.at, d.detail, d.run_id, r.status
+             FROM deliveries d LEFT JOIN runs r ON r.id = d.run_id
+             WHERE d.event_id IN ({marks}) ORDER BY d.id"
         ))?;
         let rows = stmt
-            .query_map(params_from_iter(ids.iter().map(|i| i.to_string())), read_delivery)?
+            .query_map(params_from_iter(ids.iter().map(|i| i.to_string())), |row| {
+                Ok((read_delivery(row)?, row.get::<_, Option<String>>(7)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows.into_iter().map(to_delivery).collect()
+        rows.into_iter()
+            .map(|(d, status)| {
+                let status = status.as_deref().map(crate::runs::status).transpose()?;
+                Ok(EventOutcome::new(&to_delivery(d)?, status))
+            })
+            .collect()
     }
 
     /// A rule's deliveries, newest first.

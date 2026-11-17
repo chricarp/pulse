@@ -53,7 +53,8 @@ async function boot(): Promise<void> {
   });
   const daemon = new Daemon(client);
   daemon.store.subscribe(() => userHome.set(daemon.store.get().status?.user_home ?? null));
-  const outcomes = new OutcomeStore();
+  const outcomes = new OutcomeStore((run) => daemon.store.get().runs.get(run)?.status);
+  daemon.onRunsChanged((runs) => outcomes.applyRuns(runs));
   const feed = new FeedController(client, outcomes);
   client.start();
 

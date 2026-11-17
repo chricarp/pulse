@@ -160,23 +160,36 @@ pub struct EventPage {
 
 /// What one matching rule decided for one event: the compact form of a [`Delivery`] that live
 /// views need to show outcomes at a glance (loop protection above all) without asking per event.
+///
+/// `outcome` is the decision as recorded. What became of it since is in two places: a later
+/// delivery for the same event and rule (a debounce that elapsed, a waiting delivery routed
+/// again; deliveries sort by `delivery` in the order they were recorded), and the status of
+/// the run it created.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(optional_fields = nullable)]
 pub struct EventOutcome {
+    /// The delivery this summarizes.
+    pub delivery: DeliveryId,
     pub event: EventId,
     pub rule: String,
     pub outcome: crate::run::DeliveryOutcome,
     /// The run it created (fired, awaiting approval).
     pub run: Option<RunId>,
+    /// That run's status when this was read or published. Later changes arrive on
+    /// `runs.subscribe` (a client keeps the later state; a run only moves forward). `None`
+    /// without a run, or when the run is no longer in the log.
+    pub run_status: Option<RunStatus>,
 }
 
-impl From<&Delivery> for EventOutcome {
-    fn from(d: &Delivery) -> Self {
+impl EventOutcome {
+    pub fn new(d: &Delivery, run_status: Option<RunStatus>) -> Self {
         EventOutcome {
+            delivery: d.id,
             event: d.event,
             rule: d.rule.clone(),
             outcome: d.outcome.clone(),
             run: d.run,
+            run_status: d.run.and(run_status),
         }
     }
 }

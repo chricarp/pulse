@@ -3,9 +3,9 @@
 use pulse_contracts::catalog::BuiltinEvent;
 use pulse_contracts::config::validate_name;
 use pulse_contracts::rpc::{
-    EventDetail, EventFilter, EventOutcome, EventPageWithOutcomes, EventQuery,
-    EventsBatchWithOutcomes, IngestParams, IngestResult, ReplayParams, ReplayResult, ReportParams,
-    ReportResult, ReportedEvent, SHORT_ID_WINDOW,
+    EventDetail, EventFilter, EventPageWithOutcomes, EventQuery, EventsBatchWithOutcomes,
+    IngestParams, IngestResult, ReplayParams, ReplayResult, ReportParams, ReportResult,
+    ReportedEvent, SHORT_ID_WINDOW,
 };
 use pulse_contracts::{EventId, EventType, NewEvent, SourceKind, SourceRef, SubscriptionId};
 use pulse_core::filter::CompiledFilter;
@@ -37,8 +37,7 @@ impl Services {
                 let q = q.query();
                 let page = q.query_events(&query)?;
                 let ids: Vec<EventId> = page.events.iter().map(|e| e.id).collect();
-                let outcomes =
-                    q.deliveries_for_events(&ids)?.iter().map(EventOutcome::from).collect();
+                let outcomes = q.outcomes_for_events(&ids)?;
                 Ok(EventPageWithOutcomes { page, outcomes })
             })
             .await?)

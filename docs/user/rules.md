@@ -105,6 +105,10 @@ rule a `debounce` (with `debounce_by = "subject"` for one run per file) or raise
 its prompt and its command already rendered, so you see exactly what the agent would be told and
 what would be executed (the program and each argument, with the event's values filled in, and
 the working directory); nothing starts until you approve, and what starts is what you saw.
+In the feed, the event's marker follows the run: `awaiting approval`, then `queued`, `running`
+and how it ended once you approve, or `rejected`. The decision stays recorded as it was made:
+`pulse events show` prints the delivery as `awaiting approval`, with what became of its run
+(`run <id>: now succeeded`).
 
 ```sh
 pulse runs list --status pending_approval

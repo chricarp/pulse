@@ -3,7 +3,7 @@
 use pulse_contracts::run::RunOutputChunk;
 use pulse_contracts::{
     BlockReason, Causation, Decision, Delivery, DeliveryOutcome, Event, Outcome, OutputKind,
-    RunSummary,
+    RunStatus, RunSummary,
 };
 
 /// Event content shown on a terminal: escape sequences could recolour or retitle the terminal,
@@ -135,9 +135,21 @@ pub fn causation(c: Causation) -> &'static str {
 }
 
 /// One routing decision. `cause` is how its event's causing run is known (it is recorded on
-/// the event), shown on a loop-protection block.
-pub fn delivery_line(d: &Delivery, cause: Option<Causation>) -> String {
-    let run = d.run.map(|r| format!("  run {r}")).unwrap_or_default();
+/// the event), shown on a loop-protection block. `run_status` is what became of the run the
+/// decision created, when the caller knows: a supervised delivery is recorded as "awaiting
+/// approval" for good, and its run says whether it was approved.
+pub fn delivery_line(
+    d: &Delivery,
+    cause: Option<Causation>,
+    run_status: Option<RunStatus>,
+) -> String {
+    let run = d
+        .run
+        .map(|r| match run_status {
+            Some(s) => format!("  run {r}: now {}", s.as_str()),
+            None => format!("  run {r}"),
+        })
+        .unwrap_or_default();
     let loop_block = matches!(
         &d.outcome,
         DeliveryOutcome::Blocked {
@@ -209,6 +221,24 @@ mod tests {
             assert_eq!(terminal_safe(raw), shown, "{raw:?}");
         }
         assert_eq!(one_line("new\nline.txt"), "new\\nline.txt");
+    }
+
+    #[test]
+    fn a_delivery_says_what_became_of_its_run() {
+        use pulse_contracts::{DeliveryId, EventId, RunId, Timestamp, Ulid};
+        let d = Delivery {
+            id: DeliveryId::from_ulid(Ulid::from_parts(1, 0)),
+            event: EventId::from_ulid(Ulid::from_parts(1, 1)),
+            rule: "careful".into(),
+            agent: "a".into(),
+            at: Timestamp::from_millis(0),
+            outcome: DeliveryOutcome::AwaitingApproval,
+            run: Some(RunId::from_ulid(Ulid::from_parts(1, 2))),
+        };
+        let approved = delivery_line(&d, None, Some(RunStatus::Succeeded));
+        assert!(approved.contains("awaiting approval"), "the decision stays: {approved}");
+        assert!(approved.contains(": now succeeded"), "{approved}");
+        assert!(!delivery_line(&d, None, None).contains("now"));
     }
 
     /// The cases of `pulse-core/src/prompt/tests.rs`, `apps/web/src/lib/format.test.ts` and
