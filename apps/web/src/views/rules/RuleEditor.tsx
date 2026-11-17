@@ -220,7 +220,7 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
               )}
             </Field>
             <Field label="Name" htmlFor="rule-name" error={show("name")} hint={form.project ? `Full name: ${fullName(form)}` : "Lowercase letters, digits, - and _."}>
-              <Input id="rule-name" ref={first} mono value={form.name} onChange={(e) => set("name", e.target.value)} disabled={existing !== null} placeholder="new-lecture" />
+              <Input id="rule-name" ref={first} mono value={form.name} onChange={(e) => set("name", e.target.value)} disabled={existing !== null} placeholder="e.g. new-lecture" />
             </Field>
             <Field label="Description" htmlFor="rule-desc">
               <Input id="rule-desc" value={form.description} onChange={(e) => set("description", e.target.value)} placeholder="What this rule is for (optional)" />
@@ -230,7 +230,7 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
           <fieldset className="group">
             <legend>When</legend>
             <Field label="Event types" htmlFor="rule-on" error={show("on")} hint="Type globs: fs.* covers fs.file.created and fs.burst. Enter to add.">
-              <ListInput id="rule-on" values={form.on} onChange={(v) => set("on", v)} suggestions={typeSuggestions} problem={typeGlobProblem} placeholder="fs.file.created" />
+              <ListInput id="rule-on" values={form.on} onChange={(v) => set("on", v)} suggestions={typeSuggestions} problem={typeGlobProblem} placeholder="e.g. fs.file.created" />
             </Field>
             <Field
               label="Where"
@@ -249,7 +249,7 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
             <legend>Limits</legend>
             <Field label="Debounce" htmlFor="rule-debounce" error={show("debounce")} hint="Wait until matching events stop for this long, then fire once with the latest.">
               <div className="inline">
-                <Input id="rule-debounce" mono value={form.debounce} onChange={(e) => set("debounce", e.target.value)} placeholder="10s" className="w-short" />
+                <Input id="rule-debounce" mono value={form.debounce} onChange={(e) => set("debounce", e.target.value)} placeholder="e.g. 10s" className="w-short" />
                 <Select value={form.debounceBy} onChange={(e) => set("debounceBy", e.target.value as RuleForm["debounceBy"])} aria-label="Debounce per" disabled={!form.debounce}>
                   <option value="rule">one timer for the rule</option>
                   <option value="subject">one timer per subject</option>
@@ -257,10 +257,10 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
               </div>
             </Field>
             <Field label="Cooldown" htmlFor="rule-cooldown" error={show("cooldown")} hint="Minimum time between fires.">
-              <Input id="rule-cooldown" mono value={form.cooldown} onChange={(e) => set("cooldown", e.target.value)} placeholder="30s" className="w-short" />
+              <Input id="rule-cooldown" mono value={form.cooldown} onChange={(e) => set("cooldown", e.target.value)} placeholder="e.g. 30s" className="w-short" />
             </Field>
             <Field label="Rate limit" htmlFor="rule-rate" error={show("rate_limit")} hint="At most this many fires per period: 10/hour, 3/minute, 5/10m.">
-              <Input id="rule-rate" mono value={form.rateLimit} onChange={(e) => set("rateLimit", e.target.value)} placeholder="10/hour" className="w-short" />
+              <Input id="rule-rate" mono value={form.rateLimit} onChange={(e) => set("rateLimit", e.target.value)} placeholder="e.g. 10/hour" className="w-short" />
             </Field>
           </fieldset>
 
@@ -283,7 +283,7 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
               error={show("run.prompt")}
               hint={isCommand ? "Optional for command agents; they get it on stdin if configured." : "The instruction. The event itself is appended as fenced, untrusted data."}
             >
-              <TextArea id="rule-prompt" mono rows={6} value={form.prompt} onChange={(e) => set("prompt", e.target.value)} placeholder="Summarize {{subject}} and write flashcards next to it." />
+              <TextArea id="rule-prompt" mono rows={6} value={form.prompt} onChange={(e) => set("prompt", e.target.value)} placeholder="e.g. Summarize {{subject}} and write flashcards next to it." />
               <div className="vars">
                 <span className="faint">Insert</span>
                 {[...TEMPLATE_VARS, ...[...exampleKeys].filter((k) => !TEMPLATE_VARS.includes(k))].map((v) => (
@@ -336,7 +336,7 @@ function WhereEditor({ rows, onChange, keys, problem }: { rows: WhereRow[]; onCh
       {rows.length === 0 && <p className="faint">No conditions: every event of these types matches.</p>}
       {rows.map((r, i) => (
         <div key={i} className="where-row">
-          <Input mono value={r.key} onChange={(e) => update(i, { key: e.target.value })} placeholder="path" list="where-keys" aria-label="Field" className={cx(problem(i, "key") && "is-invalid")} title={problem(i, "key")} />
+          <Input mono value={r.key} onChange={(e) => update(i, { key: e.target.value })} placeholder="e.g. path" list="where-keys" aria-label="Field" className={cx(problem(i, "key") && "is-invalid")} title={problem(i, "key")} />
           <Select value={r.op} onChange={(e) => update(i, { op: e.target.value as WhereRow["op"] })} aria-label="Operator">
             {WHERE_OPS.map((op) => (
               <option key={op} value={op}>
@@ -347,10 +347,10 @@ function WhereEditor({ rows, onChange, keys, problem }: { rows: WhereRow[]; onCh
           {NO_VALUE_OPS.has(r.op) ? (
             <span className="faint where-novalue">no value</span>
           ) : LIST_OPS.has(r.op) ? (
-            <ListInput values={r.values} onChange={(v) => update(i, { values: v })} placeholder="value, Enter" />
+            <ListInput values={r.values} onChange={(v) => update(i, { values: v })} placeholder="a value, then Enter" />
           ) : (
             <div className="where-value">
-              <Input mono value={r.value} onChange={(e) => update(i, { value: e.target.value })} placeholder={r.op === "match" ? "~/University/**/*.pdf" : "0"} aria-label="Value" title={problem(i, "value")} className={cx(problem(i, "value") && "is-invalid")} />
+              <Input mono value={r.value} onChange={(e) => update(i, { value: e.target.value })} placeholder={r.op === "match" ? "e.g. ~/University/**/*.pdf" : "e.g. 0"} aria-label="Value" title={problem(i, "value")} className={cx(problem(i, "value") && "is-invalid")} />
               {r.value && <span className="where-kind faint">{scalarKind(r.value)}</span>}
             </div>
           )}

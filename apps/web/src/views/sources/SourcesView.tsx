@@ -364,7 +364,7 @@ function SourceEditor({ opened, current }: { opened: SourceInfo | null; current:
           </Field>
         )}
         <Field label="Name" error={err("name")}>
-          <Input mono value={form.name} disabled={existing !== null} onChange={(e) => set("name", e.target.value)} placeholder="university" autoFocus />
+          <Input mono value={form.name} disabled={existing !== null} onChange={(e) => set("name", e.target.value)} placeholder="e.g. university" autoFocus />
         </Field>
         <Field label="Kind">
           <Select value={form.kind} disabled={existing !== null} onChange={(e) => set("kind", e.target.value as Kind)}>
@@ -376,17 +376,17 @@ function SourceEditor({ opened, current }: { opened: SourceInfo | null; current:
         </Field>
         {(form.kind === "fs" || form.kind === "git") && (
           <Field label={form.kind === "fs" ? "Directory" : "Repository"} error={err("path")} hint={form.project ? "Relative paths resolve against the project directory." : "Absolute, or starting with ~."}>
-            <Input mono value={form.path} onChange={(e) => set("path", e.target.value)} placeholder={form.kind === "fs" ? "~/University" : "~/code/pulse"} />
+            <Input mono value={form.path} onChange={(e) => set("path", e.target.value)} placeholder={form.kind === "fs" ? "e.g. ~/University" : "e.g. ~/code/pulse"} />
           </Field>
         )}
         {form.kind === "fs" && (
           <>
             <Field label="Also ignore" hint="Globs relative to the directory, added to the built-in ignores (.git, node_modules…).">
-              <ListInput values={form.ignore} onChange={(v) => set("ignore", v)} placeholder="**/build/**" />
+              <ListInput values={form.ignore} onChange={(v) => set("ignore", v)} placeholder="e.g. **/build/**" />
             </Field>
             <Field label="Subfolders"><Toggle checked={form.recursive} onChange={(v) => set("recursive", v)} label="Watch subfolders too" /></Field>
-            <Field label="Quiet period" error={err("quiet")} hint="A file must stop changing for this long before it becomes an event. Default 2s."><Input mono className="w-short" value={form.quiet} onChange={(e) => set("quiet", e.target.value)} placeholder="2s" /></Field>
-            <Field label="Burst threshold" error={err("burst")} hint="Past this many pending changes in one directory, they fold into one fs.burst event. Default 200."><Input mono className="w-short" value={form.burst} onChange={(e) => set("burst", e.target.value)} placeholder="200" /></Field>
+            <Field label="Quiet period" error={err("quiet")} hint="A file must stop changing for this long before it becomes an event. Default 2s."><Input mono className="w-short" value={form.quiet} onChange={(e) => set("quiet", e.target.value)} placeholder="default 2s" /></Field>
+            <Field label="Burst threshold" error={err("burst")} hint="Past this many pending changes in one directory, they fold into one fs.burst event. Default 200."><Input mono className="w-short" value={form.burst} onChange={(e) => set("burst", e.target.value)} placeholder="default 200" /></Field>
           </>
         )}
         {form.kind === "schedule" && (
@@ -399,11 +399,11 @@ function SourceEditor({ opened, current }: { opened: SourceInfo | null; current:
             </Field>
             {form.scheduleMode === "cron" ? (
               <>
-                <Field label="Cron" error={err("cron")} hint="minute hour day-of-month month day-of-week. 0 9 * * 1-5 is 9:00 on weekdays."><Input mono value={form.cron} onChange={(e) => set("cron", e.target.value)} placeholder="0 9 * * 1-5" /></Field>
-                <Field label="Time zone" hint="IANA name; default is the system zone."><Input mono value={form.timezone} onChange={(e) => set("timezone", e.target.value)} placeholder="Europe/Rome" /></Field>
+                <Field label="Cron" error={err("cron")} hint="minute hour day-of-month month day-of-week. 0 9 * * 1-5 is 9:00 on weekdays."><Input mono value={form.cron} onChange={(e) => set("cron", e.target.value)} placeholder="e.g. 0 9 * * 1-5" /></Field>
+                <Field label="Time zone" hint="IANA name; default is the system zone."><Input mono value={form.timezone} onChange={(e) => set("timezone", e.target.value)} placeholder="e.g. Europe/Rome" /></Field>
               </>
             ) : (
-              <Field label="Every" error={err("every")}><Input mono className="w-short" value={form.every} onChange={(e) => set("every", e.target.value)} placeholder="1h" /></Field>
+              <Field label="Every" error={err("every")}><Input mono className="w-short" value={form.every} onChange={(e) => set("every", e.target.value)} placeholder="e.g. 1h" /></Field>
             )}
           </>
         )}
@@ -416,12 +416,12 @@ function SourceEditor({ opened, current }: { opened: SourceInfo | null; current:
               </Select>
             </Field>
             {form.calMode === "url" ? (
-              <Field label="URL" error={err("url")}><Input mono value={form.url} onChange={(e) => set("url", e.target.value)} placeholder="https://…/calendar.ics" /></Field>
+              <Field label="URL" error={err("url")}><Input mono value={form.url} onChange={(e) => set("url", e.target.value)} placeholder="e.g. https://…/calendar.ics" /></Field>
             ) : (
-              <Field label="File" error={err("path")}><Input mono value={form.path} onChange={(e) => set("path", e.target.value)} placeholder="~/calendar.ics" /></Field>
+              <Field label="File" error={err("path")}><Input mono value={form.path} onChange={(e) => set("path", e.target.value)} placeholder="e.g. ~/calendar.ics" /></Field>
             )}
-            <Field label="Refresh" error={err("refresh")} hint="How often to re-read it. Default 15m."><Input mono className="w-short" value={form.refresh} onChange={(e) => set("refresh", e.target.value)} placeholder="15m" /></Field>
-            <Field label="Lead time" error={err("lead")} hint="How long before an event calendar.event.starting fires. Default 10m."><Input mono className="w-short" value={form.lead} onChange={(e) => set("lead", e.target.value)} placeholder="10m" /></Field>
+            <Field label="Refresh" error={err("refresh")} hint="How often to re-read it. Default 15m."><Input mono className="w-short" value={form.refresh} onChange={(e) => set("refresh", e.target.value)} placeholder="default 15m" /></Field>
+            <Field label="Lead time" error={err("lead")} hint="How long before an event calendar.event.starting fires. Default 10m."><Input mono className="w-short" value={form.lead} onChange={(e) => set("lead", e.target.value)} placeholder="default 10m" /></Field>
           </>
         )}
         <Field label="State"><Toggle checked={form.enabled} onChange={(v) => set("enabled", v)} label="Enabled" /></Field>

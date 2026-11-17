@@ -197,14 +197,14 @@ function AgentDetail({ info }: { info: AgentInfo }) {
     case "claude-code":
       settings.push(["Program", a.program ? <Path key="p" path={a.program} /> : <span key="p" className="mono">claude (from PATH)</span>]);
       if (a.model) settings.push(["Model", <span key="m" className="mono">{a.model}</span>]);
-      settings.push(["Permission mode", <span key="pm" className="mono">{a.permission_mode ?? "default"}</span>]);
+      settings.push(["Permission mode", <span key="pm" className="mono">{a.permission_mode ?? "dontAsk (default)"}</span>]);
       if (a.allowed_tools?.length) settings.push(["Allowed tools", <span key="t" className="mono">{a.allowed_tools.join(", ")}</span>]);
       if (a.extra_args?.length) settings.push(["Extra arguments", <span key="x" className="mono">{a.extra_args.join(" ")}</span>]);
       break;
     case "codex":
       settings.push(["Program", a.program ? <Path key="p" path={a.program} /> : <span key="p" className="mono">codex (from PATH)</span>]);
       if (a.model) settings.push(["Model", <span key="m" className="mono">{a.model}</span>]);
-      settings.push(["Sandbox", <span key="s" className="mono">{a.sandbox ?? "default"}</span>]);
+      settings.push(["Sandbox", <span key="s" className="mono">{a.sandbox ?? "read-only (default)"}</span>]);
       if (a.extra_args?.length) settings.push(["Extra arguments", <span key="x" className="mono">{a.extra_args.join(" ")}</span>]);
       break;
     case "command":
@@ -443,7 +443,7 @@ function AgentEditor({ opened, current }: { opened: AgentInfo | null; current: A
               </Field>
             )}
             <Field label="Name" error={err("name")}>
-              <Input mono value={form.name} disabled={existing !== null} onChange={(e) => set("name", e.target.value)} placeholder="study" autoFocus />
+              <Input mono value={form.name} disabled={existing !== null} onChange={(e) => set("name", e.target.value)} placeholder="e.g. study" autoFocus />
             </Field>
             <Field label="Adapter" hint={ADAPTER_NOTE[form.adapter]}>
               <Select value={form.adapter} onChange={(e) => set("adapter", e.target.value as AgentForm["adapter"])}>
@@ -457,35 +457,35 @@ function AgentEditor({ opened, current }: { opened: AgentInfo | null; current: A
               {(form.adapter === "claude-code" || form.adapter === "codex") && (
                 <>
                   <Field label="Program" hint="Leave empty to find it on PATH.">
-                    <Input mono value={form.program} onChange={(e) => set("program", e.target.value)} placeholder={form.adapter === "codex" ? "codex" : "claude"} />
+                    <Input mono value={form.program} onChange={(e) => set("program", e.target.value)} placeholder={form.adapter === "codex" ? "default codex, from PATH" : "default claude, from PATH"} />
                   </Field>
                   <Field label="Model">
-                    <Input mono value={form.model} onChange={(e) => set("model", e.target.value)} placeholder="default" />
+                    <Input mono value={form.model} onChange={(e) => set("model", e.target.value)} placeholder="default: the CLI's own" />
                   </Field>
                 </>
               )}
               {form.adapter === "claude-code" && (
                 <>
                   <Field label="Permission mode" hint="Passed through as --permission-mode. Pulse never widens it.">
-                    <Input mono value={form.permissionMode} onChange={(e) => set("permissionMode", e.target.value)} list="perm-modes" placeholder="default" />
+                    <Input mono value={form.permissionMode} onChange={(e) => set("permissionMode", e.target.value)} list="perm-modes" placeholder="default dontAsk" />
                     <datalist id="perm-modes"><option value="default" /><option value="acceptEdits" /><option value="plan" /></datalist>
                   </Field>
-                  <Field label="Allowed tools"><ListInput values={form.allowedTools} onChange={(v) => set("allowedTools", v)} placeholder="Read" /></Field>
+                  <Field label="Allowed tools"><ListInput values={form.allowedTools} onChange={(v) => set("allowedTools", v)} placeholder="e.g. Read" /></Field>
                 </>
               )}
               {form.adapter === "codex" && (
                 <Field label="Sandbox" hint="Passed through as --sandbox. Pulse never widens it.">
-                  <Input mono value={form.sandbox} onChange={(e) => set("sandbox", e.target.value)} list="sandboxes" placeholder="read-only" />
+                  <Input mono value={form.sandbox} onChange={(e) => set("sandbox", e.target.value)} list="sandboxes" placeholder="default read-only" />
                   <datalist id="sandboxes"><option value="read-only" /><option value="workspace-write" /></datalist>
                 </Field>
               )}
               {(form.adapter === "claude-code" || form.adapter === "codex") && (
-                <Field label="Extra arguments"><ListInput values={form.extraArgs} onChange={(v) => set("extraArgs", v)} placeholder="--flag" /></Field>
+                <Field label="Extra arguments"><ListInput values={form.extraArgs} onChange={(v) => set("extraArgs", v)} placeholder="e.g. --verbose" /></Field>
               )}
               {form.adapter === "command" && (
                 <>
                   <Field label="Command" error={err("command")} hint={<>One entry per argument; nothing goes through a shell. <code>{"{{path}}"}</code> is replaced per argument. Put <code>--</code> before event-derived arguments, so a file named <code>--exec</code> is not read as an option.</>}>
-                    <ListInput values={form.command} onChange={(v) => set("command", v)} placeholder="prettier" />
+                    <ListInput values={form.command} onChange={(v) => set("command", v)} placeholder="e.g. prettier" />
                   </Field>
                   <Field label="Stdin">
                     <Select value={form.stdin} onChange={(e) => set("stdin", e.target.value as AgentForm["stdin"])}>
@@ -497,7 +497,7 @@ function AgentEditor({ opened, current }: { opened: AgentInfo | null; current: A
                 </>
               )}
               <Field label="Working directory" hint="Default: the Pulse home's runs/ directory.">
-                <Input mono value={form.cwd} onChange={(e) => set("cwd", e.target.value)} placeholder="~/University" />
+                <Input mono value={form.cwd} onChange={(e) => set("cwd", e.target.value)} placeholder="e.g. ~/University" />
               </Field>
               <Field label="Timeout" error={err("timeout")}><Input mono className="w-short" value={form.timeout} onChange={(e) => set("timeout", e.target.value)} /></Field>
               <Field label="At once" error={err("max_concurrent")} hint="Runs executing at the same time."><Input mono className="w-short" inputMode="numeric" value={form.maxConcurrent} onChange={(e) => set("maxConcurrent", e.target.value)} /></Field>
@@ -506,8 +506,8 @@ function AgentEditor({ opened, current }: { opened: AgentInfo | null; current: A
                 <div className="env">
                   {form.env.map((row, i) => (
                     <div key={i} className="env-row">
-                      <Input mono value={row.key} placeholder="NAME" onChange={(e) => set("env", form.env.map((r, j) => (j === i ? { ...r, key: e.target.value } : r)))} />
-                      <Input mono type="password" value={row.value} placeholder="value" onChange={(e) => set("env", form.env.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)))} />
+                      <Input mono value={row.key} placeholder="e.g. RUST_LOG" onChange={(e) => set("env", form.env.map((r, j) => (j === i ? { ...r, key: e.target.value } : r)))} />
+                      <Input mono type="password" value={row.value} placeholder="e.g. debug" onChange={(e) => set("env", form.env.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)))} />
                       <IconButton icon="x" label="Remove" size="sm" variant="ghost" onClick={() => set("env", form.env.filter((_, j) => j !== i))} />
                     </div>
                   ))}
@@ -519,7 +519,7 @@ function AgentEditor({ opened, current }: { opened: AgentInfo | null; current: A
           <fieldset className="group">
             <legend>What it can see</legend>
             <Field label="Scopes" error={err("allow")} hint={<>A type glob, optionally with a path glob: <code>fs.*:~/University/**</code>, <code>calendar.*</code>. Default deny.</>}>
-              <ListInput values={form.allow} onChange={(v) => set("allow", v)} placeholder="fs.*:~/University/**" problem={(s) => parseScope(s).problem} />
+              <ListInput values={form.allow} onChange={(v) => set("allow", v)} placeholder="e.g. fs.*:~/University/**" problem={(s) => parseScope(s).problem} />
             </Field>
           </fieldset>
         </div>

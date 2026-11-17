@@ -13,6 +13,8 @@
   --fg: #1c1c1a;
   --fg-muted: #5f5e59;
   --fg-faint: #94938d;
+  /* Dimmer than a value, as legible as hint text on the field's own background. */
+  --fg-placeholder: #94938d;
   --accent: #7c3aed;
   --accent-strong: #6d28d9;
   --accent-fg: #ffffff;
@@ -63,6 +65,7 @@
     --fg: #e9e8e4;
     --fg-muted: #a8a7a1;
     --fg-faint: #6f6e69;
+    --fg-placeholder: #7c7b75;
     --accent: #a78bfa;
     --accent-strong: #b9a2fb;
     --accent-fg: #160f26;
@@ -103,6 +106,7 @@
   --fg: #e9e8e4;
   --fg-muted: #a8a7a1;
   --fg-faint: #6f6e69;
+  --fg-placeholder: #7c7b75;
   --accent: #a78bfa;
   --accent-strong: #b9a2fb;
   --accent-fg: #160f26;
@@ -1325,6 +1329,14 @@ kbd {
 .input.mono {
   font-family: var(--mono);
   font-size: var(--text-sm);
+}
+/* Placeholders are examples or defaults ("e.g. 30s", "default 15m"), never values: dimmer
+   than a value, as legible as hint text. Browsers' own colours differ (Firefox also fades
+   them), so the colour is set for every field. */
+input::placeholder,
+textarea::placeholder {
+  color: var(--fg-placeholder);
+  opacity: 1;
 }
 .input:focus {
   outline: none;
