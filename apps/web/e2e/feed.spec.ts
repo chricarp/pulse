@@ -72,3 +72,28 @@ test("a dropped connection is marked in the feed and recovered", async ({ page }
   // History reached back past the gap, so nothing is marked missing.
   await expect(page.locator(".gap-row.is-lost")).toHaveCount(0);
 });
+
+test("a path cut to fit keeps its file name's end and shows where it was cut, at every width", async ({ page }) => {
+  // In the desktop window and beside the detail pane, names were clipped at the cell's edge
+  // with no ellipsis (`~/week-07-shortest-paths.p`): the file name never shrank.
+  const clipped = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>(".event-row .trunc")].flatMap((t) => {
+        const box = t.getBoundingClientRect();
+        const cell = (t.closest("[role=cell]") ?? t).getBoundingClientRect();
+        const end = t.querySelector<HTMLElement>(".trunc-end")?.getBoundingClientRect();
+        const fits = t.scrollWidth <= t.clientWidth + 1 && box.right <= cell.right + 1 && (!end || end.right <= box.right + 1);
+        return fits ? [] : [t.title];
+      }),
+    );
+  // 1100 is the desktop window's default width.
+  for (const width of [1440, 1100, 900]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto("/feed?trickle=0");
+    await expect(page.locator(".event-row").first()).toBeVisible();
+    expect(await clipped(), `at ${width}px`).toEqual([]);
+    await page.locator(".event-row").first().click();
+    await expect(page.locator(".detail")).toBeVisible();
+    expect(await clipped(), `at ${width}px beside the detail`).toEqual([]);
+  }
+});

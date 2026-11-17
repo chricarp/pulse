@@ -675,6 +675,11 @@ kbd {
 
 /* ---- truncation ---- */
 
+/* Middle truncation: the head (the directories) shrinks first, to an ellipsis; only then does
+   the file name, keeping its end. Shrinking is proportional to flex-shrink times width, so the
+   head's large factor makes it give way almost entirely before the name moves. The parts must
+   be able to shrink to nothing but an ellipsis (`min-width`), or the name is clipped at the
+   cell's edge with no sign of a cut. */
 .trunc {
   display: inline-flex;
   align-items: baseline;
@@ -682,13 +687,22 @@ kbd {
   max-width: 100%;
   white-space: nowrap;
 }
-.trunc-head {
+.trunc > .copy {
+  flex: none;
+}
+.trunc-head,
+.trunc-mid {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 1ch;
+}
+.trunc-head {
+  flex: 0 10000 auto;
+}
+.trunc-mid {
   flex: 0 1 auto;
 }
-.trunc-tail {
+.trunc-end {
   flex: none;
 }
 

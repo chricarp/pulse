@@ -91,14 +91,23 @@ export function Mono({ children, className, title }: { children: string; classNa
 }
 
 /** One line that truncates in the middle, keeping the file name; the full value is copyable. */
+/** Characters of a file name that are never cut: enough for `.pdf` and what precedes it. */
+const NAME_END = 8;
+
 export function Trunc({ text, mono = true, className, copy = false, tail }: { text: string; mono?: boolean; className?: string; copy?: boolean; tail?: number }) {
   // Paths under the home directory read as `~/…`; the title and the copy button keep it whole.
   const shown = visible(useTildify()(text), { singleLine: true });
-  const [head, end] = splitForMiddle(shown, tail);
+  const [head, name] = splitForMiddle(shown, tail);
+  // The kept file name can be wider than the room left (a narrow column): then it is cut too,
+  // in its middle, keeping its last characters (the extension). The head gives way first.
+  const keep = Math.min(name.length, NAME_END);
+  const mid = name.slice(0, name.length - keep);
+  const end = name.slice(name.length - keep);
   return (
     <span className={cx("trunc", mono && "mono", className)} title={visible(text, { singleLine: true })}>
       <span className="trunc-head">{head}</span>
-      {end && <span className="trunc-tail">{end}</span>}
+      {mid && <span className="trunc-mid">{mid}</span>}
+      {end && <span className="trunc-end">{end}</span>}
       {copy && <CopyButton value={text} />}
     </span>
   );

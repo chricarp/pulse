@@ -1655,7 +1655,9 @@ export class MockDaemon {
   }
 
   private universityPdf(at: number, course: string, n: number): void {
-    const name = `lecture-${String(n).padStart(2, "0")}.pdf`;
+    // Named the way course sites name them: long enough not to fit a narrow column.
+    const topics = ["shortest-paths", "greedy-algorithms", "dynamic-programming", "cache-coherence", "query-optimization"];
+    const name = `week-${String(n).padStart(2, "0")}-${topics[n % topics.length] ?? "notes"}.pdf`;
     const dir = `${fx.HOME}/University/${course}`;
     this.emitAt(at, { type: "fs.file.created", source: "pulse://fs/university", subject: `${dir}/${name}`, data: { path: `${dir}/${name}`, dir, name, ext: "pdf", size: 300_000 + Math.floor(this.rand() * 400_000) }, coalesced: 3 + Math.floor(this.rand() * 9) });
   }
