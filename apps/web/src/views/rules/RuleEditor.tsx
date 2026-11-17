@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
+import { useTildify, useTildifyText } from "../../app/home";
 import { useBindings } from "../../app/keys";
 import { navigate, useLocation } from "../../app/router";
 import { toast } from "../../app/toasts";
@@ -23,7 +24,7 @@ import {
 import { typeGlobMatches, typeGlobProblem } from "../../lib/syntax";
 import { ErrorCodes, RpcCallError } from "../../rpc/client";
 import { Icon } from "../../ui/icons";
-import { Button, Field, IconButton, Input, ListInput, Notice, Select, TextArea, Toggle, cx } from "../../ui/primitives";
+import { Button, Field, IconButton, Input, ListInput, Notice, Path, Select, TextArea, Toggle, cx } from "../../ui/primitives";
 import { ConflictNotice, hasConflict } from "../common/Conflict";
 import { RuleTester } from "./RuleTester";
 
@@ -41,6 +42,8 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
   const projects = useDaemon((s) => s.projects);
   const types = useDaemon((s) => s.eventTypes);
   const status = useDaemon((s) => s.status);
+  const tildify = useTildify();
+  const tildifyText = useTildifyText();
   const { search } = useLocation();
   const params = new URLSearchParams(search);
   const [form, setForm] = useState<RuleForm>(() => {
@@ -148,7 +151,7 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
     });
   };
 
-  const ownerPath = form.project ? trusted.find((p) => p.name === form.project)?.file : status ? `${status.pulse_home}/pulse.toml` : "pulse.toml";
+  const ownerPath = existing ? existing.origin.path : form.project ? trusted.find((p) => p.name === form.project)?.file : status ? `${status.pulse_home}/pulse.toml` : "pulse.toml";
 
   return (
     <div className="editor-layout">
@@ -194,7 +197,7 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
               <ul className="plain">
                 {(unmatchedServer.length ? unmatchedServer : serverErrors).map((e, i) => (
                   <li key={i}>
-                    {e.field && <code>{e.field}</code>} {e.message}
+                    {e.field && <code>{e.field}</code>} {tildifyText(e.message)}
                   </li>
                 ))}
               </ul>
@@ -202,7 +205,7 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
           )}
           <fieldset className="group">
             <legend>Rule</legend>
-            <Field label="Saved in" hint={<span className="mono">{ownerPath}</span>}>
+            <Field label="Saved in" hint={ownerPath ? <Path path={ownerPath} /> : undefined}>
               {existing ? (
                 <Input value={form.project ? `project ${form.project}` : "your pulse.toml"} disabled />
               ) : (
@@ -210,7 +213,7 @@ export function RuleEditor({ opened, current }: { opened: RuleInfo | null; curre
                   <option value="">Your pulse.toml</option>
                   {trusted.map((p) => (
                     <option key={p.name} value={p.name}>
-                      Project {p.name} ({p.file})
+                      Project {p.name} ({tildify(p.file)})
                     </option>
                   ))}
                 </Select>

@@ -14,6 +14,7 @@ import { CLOSE_UNPROVEN } from "../rpc/client";
 import { useStore } from "../store/store";
 import { Icon, type IconName } from "../ui/icons";
 import { Button, Kbd, cx, useTicker } from "../ui/primitives";
+import { useTildifyText } from "../app/home";
 import { CommandPalette } from "./CommandPalette";
 import { HelpOverlay } from "./HelpOverlay";
 
@@ -330,14 +331,16 @@ function ApprovalBanner() {
 
 function Toasts() {
   const list = useStore(toasts, (t) => t);
+  // Toasts carry daemon text that names files ("Written to …", an error): paths as `~/…`.
+  const short = useTildifyText();
   if (list.length === 0) return null;
   return (
     <div className="toasts" role="status" aria-live="polite">
       {list.map((t) => (
         <div key={t.id} className={cx("toast", `tone-${t.tone === "info" ? "neutral" : t.tone}`)}>
           <div>
-            <strong>{t.message}</strong>
-            {t.detail && <p>{t.detail}</p>}
+            <strong>{short(t.message)}</strong>
+            {t.detail && <p>{short(t.detail)}</p>}
           </div>
           <button type="button" aria-label="Dismiss" onClick={() => dismiss(t.id)}>
             <Icon name="x" size={12} />

@@ -2,7 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
-import { useTildify } from "../../app/home";
+import { useTildify, useTildifyText } from "../../app/home";
 import { useBindings } from "../../app/keys";
 import { href, navigate, useLocation } from "../../app/router";
 import { attempt } from "../../app/toasts";
@@ -12,7 +12,7 @@ import { dayAndTime, plural, relative, shortId } from "../../lib/format";
 import { mergeDeliveries } from "../../lib/history";
 import { createStore, useStore } from "../../store/store";
 import { Icon } from "../../ui/icons";
-import { Ago, Button, Confirm, Empty, IconButton, Input, Menu, Notice, Pill, Section, Toggle, Trunc, cx, useNow } from "../../ui/primitives";
+import { Ago, Button, Confirm, Empty, IconButton, Input, Menu, Notice, Path, Pill, Section, Toggle, Trunc, cx, useNow } from "../../ui/primitives";
 import { useFirst } from "../common/Conflict";
 import { useRunList } from "../runs/RunsView";
 import { RuleEditor } from "./RuleEditor";
@@ -83,6 +83,7 @@ export function ConfigWarnings({ warnings }: { warnings: ConfigError[] }) {
 
 function ConfigProblemList({ problems }: { problems: ConfigError[] }) {
   const tildify = useTildify();
+  const tildifyText = useTildifyText();
   return (
     <ul className="config-errors">
       {problems.map((e, i) => (
@@ -92,7 +93,7 @@ function ConfigProblemList({ problems }: { problems: ConfigError[] }) {
             {e.line ? `:${e.line}` : ""}
             {e.column ? `:${e.column}` : ""}
           </span>{" "}
-          {e.item && <span className="mono">{e.item}</span>} {e.field && <code>{e.field}</code>} <span>{e.message}</span>
+          {e.item && <span className="mono">{e.item}</span>} {e.field && <code>{e.field}</code>} <span>{tildifyText(e.message)}</span>
         </li>
       ))}
     </ul>
@@ -366,7 +367,7 @@ function RuleDetail({ info }: { info: RuleInfo }) {
         }}
       >
         <p>
-          The rule is removed from <span className="mono">{info.origin.path}</span>. Its deliveries and runs stay in the log. To stop it but keep it, archive or disable it instead.
+          The rule is removed from <Path path={info.origin.path} />. Its deliveries and runs stay in the log. To stop it but keep it, archive or disable it instead.
         </p>
       </Confirm>
     </aside>

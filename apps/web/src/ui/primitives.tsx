@@ -91,6 +91,20 @@ export function Mono({ children, className, title }: { children: string; classNa
 }
 
 /** One line that truncates in the middle, keeping the file name; the full value is copyable. */
+/**
+ * A path shown whole, inline: `~/…` under the user's home (as in config), the absolute path in
+ * the title. Every path the UI shows goes through this, `Trunc` (when it may be cut) or
+ * `useTildify` / `useTildifyText` (inside a sentence built as a string).
+ */
+export function Path({ path, className }: { path: string; className?: string }) {
+  const shown = visible(useTildify()(path), { singleLine: true });
+  return (
+    <span className={cx("mono", className)} title={visible(path, { singleLine: true })}>
+      {shown}
+    </span>
+  );
+}
+
 /** Characters of a file name that are never cut: enough for `.pdf` and what precedes it. */
 const NAME_END = 8;
 

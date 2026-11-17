@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 
 import { useDaemon } from "../../app/context";
+import { useTildify } from "../../app/home";
 import { useBindings } from "../../app/keys";
 import { EMPTY_FILTER, TIME_PRESETS, applyQuery, filterProblems, isEmptyFilter, isPreset, type FeedFilter } from "../../lib/filter";
 import { dateTime, visible } from "../../lib/format";
@@ -37,10 +38,11 @@ export function FilterBar({ filter, onChange }: { filter: FeedFilter; onChange: 
     setQuery(next.text);
   };
   const problems = filterProblems(filter);
+  const tildify = useTildify();
   const chips: { key: string; label: string; remove: () => void }[] = [];
   for (const t of filter.types) chips.push({ key: `t-${t}`, label: `type: ${t}`, remove: () => onChange({ ...filter, types: filter.types.filter((x) => x !== t) }) });
   for (const s of filter.sources) chips.push({ key: `s-${s}`, label: `source: ${s}`, remove: () => onChange({ ...filter, sources: filter.sources.filter((x) => x !== s) }) });
-  if (filter.path) chips.push({ key: "path", label: `under: ${filter.path}`, remove: () => onChange({ ...filter, path: "" }) });
+  if (filter.path) chips.push({ key: "path", label: `under: ${tildify(filter.path)}`, remove: () => onChange({ ...filter, path: "" }) });
   if (filter.subject) chips.push({ key: "subject", label: `subject: ${filter.subject}`, remove: () => onChange({ ...filter, subject: "" }) });
   if (filter.since) chips.push({ key: "since", label: isPreset(filter.since) ? `last ${filter.since}` : `since ${dateTime(filter.since)}`, remove: () => onChange({ ...filter, since: null }) });
   if (filter.until) chips.push({ key: "until", label: `until ${dateTime(filter.until)}`, remove: () => onChange({ ...filter, until: null }) });

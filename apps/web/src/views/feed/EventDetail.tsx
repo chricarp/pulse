@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
+import { useTildify } from "../../app/home";
 import { href, navigate } from "../../app/router";
 import { attempt } from "../../app/toasts";
 import type { Delivery, EventDetail as Detail, RunSummary } from "../../contracts";
@@ -14,6 +15,7 @@ import { typeFamily } from "./EventRow";
 
 export function EventDetailPane({ id, onClose, onFilter }: { id: string; onClose: () => void; onFilter: (f: FeedFilter) => void }) {
   const { client, daemon, outcomes } = useApp();
+  const tildify = useTildify();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
@@ -172,7 +174,7 @@ export function EventDetailPane({ id, onClose, onFilter }: { id: string; onClose
             this source
           </Button>
           {e.subject?.startsWith("/") && (
-            <Button size="sm" variant="ghost" onClick={() => onFilter({ ...EMPTY_FILTER, path: e.subject?.slice(0, e.subject.lastIndexOf("/")) || "/" })}>
+            <Button size="sm" variant="ghost" onClick={() => onFilter({ ...EMPTY_FILTER, path: tildify(e.subject?.slice(0, e.subject.lastIndexOf("/")) || "/") })}>
               this directory
             </Button>
           )}

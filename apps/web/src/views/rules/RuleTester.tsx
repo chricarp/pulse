@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from "react";
 
+import { useTildifyText } from "../../app/home";
 import { useApp } from "../../app/context";
 import { useBindings } from "../../app/keys";
 import type { ConfigError, Event, RuleRef, RuleTestResult } from "../../contracts";
@@ -41,6 +42,7 @@ export function RuleTester({
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const tildifyText = useTildifyText();
   const onKey = on.join(",");
 
   // Candidate events: the newest that match the rule's types (or anything, before `on` is set).
@@ -158,7 +160,7 @@ export function RuleTester({
       </div>
       {error && (
         <Notice tone="error" title="Cannot test">
-          {error}
+          {tildifyText(error)}
         </Notice>
       )}
       {outcome && <TestResult outcome={outcome} on={on} />}

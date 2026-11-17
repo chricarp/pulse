@@ -1,13 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
+import { useTildify, useTildifyText } from "../../app/home";
 import { href, navigate } from "../../app/router";
 import { attempt, toast } from "../../app/toasts";
 import type { AgentConfig, Project, ProjectReview, SourceConfig } from "../../contracts";
 import { staleOf } from "../../lib/edits";
 import { TRUST_LABEL, trustTone } from "../../lib/explain";
 import { dayAndTime, plural, visible } from "../../lib/format";
-import { Button, Confirm, Dl, Empty, Field, Input, Modal, Notice, Pill, Section, Trunc } from "../../ui/primitives";
+import { Button, Confirm, Dl, Empty, Field, Input, Modal, Notice, Path, Pill, Section, Trunc } from "../../ui/primitives";
 
 export function ProjectsView() {
   const projects = useDaemon((s) => s.projects);
@@ -43,6 +44,7 @@ function ProjectCard({ p }: { p: Project }) {
   const agents = useDaemon((s) => s.agents) ?? [];
   const sources = useDaemon((s) => s.sources) ?? [];
   const errors = (useDaemon((s) => s.configErrors) ?? []).filter((e) => e.file === p.file);
+  const shortText = useTildifyText();
   const [confirm, setConfirm] = useState<"trust" | "untrust" | null>(null);
   const mine = <T extends { origin: { kind: string; name?: string } }>(xs: T[]) => xs.filter((x) => x.origin.kind === "project" && x.origin.name === p.name);
   const defs = { rules: mine(rules), agents: mine(agents), sources: mine(sources) };
@@ -78,7 +80,7 @@ function ProjectCard({ p }: { p: Project }) {
           <ul className="config-errors">
             {errors.map((e, i) => (
               <li key={i}>
-                <span className="mono">line {e.line ?? "?"}</span> {e.item && <span className="mono">{e.item}</span>} {e.field && <code>{e.field}</code>} {e.message}
+                <span className="mono">line {e.line ?? "?"}</span> {e.item && <span className="mono">{e.item}</span>} {e.field && <code>{e.field}</code>} {shortText(e.message)}
               </li>
             ))}
           </ul>
@@ -264,11 +266,15 @@ export function TrustReview({ dir, name, onClose, onTrusted }: { dir: string; na
 // line breaks inside what should be one line.
 function ReviewBody({ review }: { review: ProjectReview }) {
   const line = (t: string) => visible(t, { singleLine: true });
+  const tildify = useTildify();
+  const tildifyText = useTildifyText();
+  // Paths in the file and in messages read as `~/…` under the home, as everywhere else.
+  const text = (t: string) => line(tildifyText(t));
   const nothing = review.rules.length + review.agents.length + review.sources.length === 0;
   return (
     <div className="review stack">
       <p>
-        Trusting loads what <span className="mono">{line(review.file)}</span> defines, as <span className="mono">{line(review.name)}/…</span>: its rules can wake agents and run the commands below. Trust covers exactly this content (<span className="mono" title={review.hash}>{review.hash.slice(0, 12)}</span>); any change makes it inactive again.
+        Trusting loads what <Path path={review.file} /> defines, as <span className="mono">{line(review.name)}/…</span>: its rules can wake agents and run the commands below. Trust covers exactly this content (<span className="mono" title={review.hash}>{review.hash.slice(0, 12)}</span>); any change makes it inactive again.
       </p>
       {review.state === "changed" &&
         (review.changes ? (
@@ -295,7 +301,7 @@ function ReviewBody({ review }: { review: ProjectReview }) {
           <ul className="config-errors">
             {review.errors.map((e, i) => (
               <li key={i}>
-                <span className="mono">line {e.line ?? "?"}</span> {e.item && <span className="mono">{line(e.item)}</span>} {e.field && <code>{line(e.field)}</code>} {line(e.message)}
+                <span className="mono">line {e.line ?? "?"}</span> {e.item && <span className="mono">{line(e.item)}</span>} {e.field && <code>{line(e.field)}</code>} {text(e.message)}
               </li>
             ))}
           </ul>
@@ -307,7 +313,7 @@ function ReviewBody({ review }: { review: ProjectReview }) {
           {review.agents.map((a) => (
             <div key={a.name} className="review-def">
               <h4 className="mono">{line(a.name)} <Pill tone="neutral">{a.adapter}</Pill></h4>
-              <Dl items={agentFacts(a, line)} />
+              <Dl items={agentFacts(a, line, text)} />
             </div>
           ))}
         </Section>
@@ -336,7 +342,7 @@ function ReviewBody({ review }: { review: ProjectReview }) {
           <ul className="plain">
             {review.sources.map((s) => (
               <li key={s.name}>
-                <span className="mono">{line(s.name)}</span> <Pill tone="neutral">{s.kind}</Pill> <span className="mono">{line(sourceTarget(s))}</span>
+                <span className="mono">{line(s.name)}</span> <Pill tone="neutral">{s.kind}</Pill> <span className="mono">{line(tildify(sourceTarget(s)))}</span>
               </li>
             ))}
           </ul>
@@ -362,7 +368,8 @@ function sourceTarget(s: SourceConfig): string {
   }
 }
 
-function agentFacts(a: AgentConfig, line: (t: string) => string): [string, ReactNode][] {
+/** `text` shows a value that may hold a path under the home as `~/…` (a program, a scope). */
+function agentFacts(a: AgentConfig, line: (t: string) => string, text: (t: string) => string): [string, ReactNode][] {
   const mono = (k: string, t: string) => <span key={k} className="mono">{line(t)}</span>;
   const list = (k: string, xs: string[]) => (
     <ol key={k} className="argv">
@@ -377,14 +384,14 @@ function agentFacts(a: AgentConfig, line: (t: string) => string): [string, React
       out.push(["Command", list("c", a.command ?? [])], ["Stdin", mono("s", a.stdin ?? "prompt")]);
       break;
     case "claude-code":
-      out.push(["Program", mono("p", a.program ?? "claude (from PATH)")], ["Permission mode", mono("m", a.permission_mode ?? "dontAsk (default)")]);
+      out.push(["Program", a.program ? <Path key="p" path={a.program} /> : mono("p", "claude (from PATH)")], ["Permission mode", mono("m", a.permission_mode ?? "dontAsk (default)")]);
       if (a.model) out.push(["Model", mono("mo", a.model)]);
       if (a.allowed_tools?.length) out.push(["Allowed tools", list("t", a.allowed_tools)]);
       if (a.disallowed_tools?.length) out.push(["Disallowed tools", list("d", a.disallowed_tools)]);
       if (a.extra_args?.length) out.push(["Extra arguments", list("x", a.extra_args)]);
       break;
     case "codex":
-      out.push(["Program", mono("p", a.program ?? "codex (from PATH)")], ["Sandbox", mono("s", a.sandbox ?? "read-only (default)")], ["Approval policy", mono("ap", a.approval_policy ?? "never (default)")]);
+      out.push(["Program", a.program ? <Path key="p" path={a.program} /> : mono("p", "codex (from PATH)")], ["Sandbox", mono("s", a.sandbox ?? "read-only (default)")], ["Approval policy", mono("ap", a.approval_policy ?? "never (default)")]);
       if (a.model) out.push(["Model", mono("mo", a.model)]);
       if (a.extra_args?.length) out.push(["Extra arguments", list("x", a.extra_args)]);
       break;
@@ -392,7 +399,7 @@ function agentFacts(a: AgentConfig, line: (t: string) => string): [string, React
       out.push(["Runs", "nothing: an identity for an MCP client"]);
       break;
   }
-  out.push(["Sees (scopes)", (a.allow ?? []).length ? list("al", a.allow ?? []) : <span key="n" className="faint">nothing</span>]);
+  out.push(["Sees (scopes)", (a.allow ?? []).length ? list("al", (a.allow ?? []).map(text)) : <span key="n" className="faint">nothing</span>]);
   if (a.adapter !== "mcp") out.push(["Working directory", mono("cwd", a.cwd ?? "its own run directory")]);
   const env = Object.entries(a.env ?? {});
   if (env.length) out.push(["Environment", list("e", env.map(([k, x]) => `${k}=${x}`))]);

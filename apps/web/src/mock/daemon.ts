@@ -827,10 +827,10 @@ export class MockDaemon {
         .map((a) => a.replace(/\{\{\s*path\s*\}\}/g, String((event?.data as { path?: string })?.path ?? "")).replace(/\{\{\s*subject\s*\}\}/g, event?.subject ?? ""));
       return { program: agent.command[0] ?? "", args, cwd };
     }
-    if (agent.adapter === "codex") return { program: "codex", args: ["exec", "--json", "--sandbox", agent.sandbox ?? "read-only", "-"], cwd };
+    if (agent.adapter === "codex") return { program: this.expand(agent.program ?? "codex"), args: ["exec", "--json", "--sandbox", agent.sandbox ?? "read-only", "-"], cwd };
     if (agent.adapter === "claude-code") {
       return {
-        program: "claude",
+        program: this.expand(agent.program ?? "claude"),
         args: ["-p", "--output-format", "stream-json", "--verbose", ...(agent.model ? ["--model", agent.model] : []), ...(agent.permission_mode ? ["--permission-mode", agent.permission_mode] : [])],
         cwd,
       };
@@ -1821,7 +1821,7 @@ export class MockDaemon {
       created_at: iso(at),
       started_at: iso(at),
       prompt: "Run the whole test suite with output and summarize slow tests.",
-      invocation: { program: "codex", args: ["exec", "--json", "-"], cwd: `${fx.HOME}/code/pulse` },
+      invocation: { program: `${fx.HOME}/.local/bin/codex`, args: ["exec", "--json", "-"], cwd: `${fx.HOME}/code/pulse` },
       pid: 51_234,
       chain_depth: 1,
       output: { bytes: 0, dropped_bytes: 0 },

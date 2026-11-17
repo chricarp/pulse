@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
+import { useTildify, useTildifyText } from "../../app/home";
 import { useBindings } from "../../app/keys";
 import { href, navigate } from "../../app/router";
 import { attempt, toast } from "../../app/toasts";
@@ -12,7 +13,7 @@ import { parseScope, typeGlobMatches } from "../../lib/syntax";
 import { ErrorCodes, RpcCallError } from "../../rpc/client";
 import { Icon } from "../../ui/icons";
 import { ConflictNotice, hasConflict, useFirst } from "../common/Conflict";
-import { Button, Confirm, CopyButton, Dl, Empty, Field, IconButton, Input, ListInput, Notice, Pill, Section, Select, Trunc, cx } from "../../ui/primitives";
+import { Button, Confirm, CopyButton, Dl, Empty, Field, IconButton, Input, ListInput, Notice, Path, Pill, Section, Select, Trunc, cx } from "../../ui/primitives";
 
 const ADAPTER_NOTE: Record<AgentConfig["adapter"], string> = {
   "claude-code": "Runs Claude Code headless (claude -p) and reads its stream-json output.",
@@ -54,6 +55,7 @@ function EditAgent({ name, agents, info }: { name: string; agents: AgentInfo[] |
 }
 
 function AgentList({ selected, agents }: { selected: string | null; agents: AgentInfo[] | null }) {
+  const shortText = useTildifyText();
   const list = agents ?? [];
   const move = (d: number) => {
     const i = list.findIndex((a) => a.config.name === selected);
@@ -97,7 +99,7 @@ function AgentList({ selected, agents }: { selected: string | null; agents: Agen
                     <Pill tone="neutral">{a.config.adapter}</Pill>
                   </span>
                   <span className="rule-agent mono" title={(a.config.allow ?? []).join("\n")}>
-                    {(a.config.allow ?? []).length ? (a.config.allow ?? []).join("  ") : "sees nothing"}
+                    {(a.config.allow ?? []).length ? shortText((a.config.allow ?? []).join("  ")) : "sees nothing"}
                   </span>
                   <span className="rule-tags num">
                     {a.running > 0 && <Pill tone="running">{a.running} running</Pill>}
@@ -132,6 +134,7 @@ export function scopeCoverage(allow: string[], types: EventTypeInfo[]): { type: 
 export function ScopeExplainer({ allow }: { allow: string[] }) {
   const types = useDaemon((s) => s.eventTypes) ?? [];
   const rows = scopeCoverage(allow, types);
+  const tildify = useTildify();
   const seen = rows.filter((r) => r.anywhere || r.paths.length > 0);
   const unseen = rows.filter((r) => !r.anywhere && r.paths.length === 0);
   return (
@@ -155,7 +158,7 @@ export function ScopeExplainer({ allow }: { allow: string[] }) {
                       {r.paths.map((p, i) => (
                         <span key={p}>
                           {i > 0 && " or "}
-                          <code>{p}</code>
+                          <code>{tildify(p)}</code>
                         </span>
                       ))}
                       {r.type.path_fields.length === 0 && <span className="tone-text-attention"> (this type carries no paths, so never)</span>}
@@ -192,14 +195,14 @@ function AgentDetail({ info }: { info: AgentInfo }) {
   const settings: [string, ReactNode][] = [];
   switch (a.adapter) {
     case "claude-code":
-      settings.push(["Program", <span key="p" className="mono">{a.program ?? "claude (from PATH)"}</span>]);
+      settings.push(["Program", a.program ? <Path key="p" path={a.program} /> : <span key="p" className="mono">claude (from PATH)</span>]);
       if (a.model) settings.push(["Model", <span key="m" className="mono">{a.model}</span>]);
       settings.push(["Permission mode", <span key="pm" className="mono">{a.permission_mode ?? "default"}</span>]);
       if (a.allowed_tools?.length) settings.push(["Allowed tools", <span key="t" className="mono">{a.allowed_tools.join(", ")}</span>]);
       if (a.extra_args?.length) settings.push(["Extra arguments", <span key="x" className="mono">{a.extra_args.join(" ")}</span>]);
       break;
     case "codex":
-      settings.push(["Program", <span key="p" className="mono">{a.program ?? "codex (from PATH)"}</span>]);
+      settings.push(["Program", a.program ? <Path key="p" path={a.program} /> : <span key="p" className="mono">codex (from PATH)</span>]);
       if (a.model) settings.push(["Model", <span key="m" className="mono">{a.model}</span>]);
       settings.push(["Sandbox", <span key="s" className="mono">{a.sandbox ?? "default"}</span>]);
       if (a.extra_args?.length) settings.push(["Extra arguments", <span key="x" className="mono">{a.extra_args.join(" ")}</span>]);
@@ -296,7 +299,7 @@ function AgentDetail({ info }: { info: AgentInfo }) {
         }}
       >
         <p>
-          The agent is removed from <span className="mono">{info.origin.path}</span>. Rules that wake it must be changed first; the daemon refuses otherwise. Past runs keep their snapshot.
+          The agent is removed from <Path path={info.origin.path} />. Rules that wake it must be changed first; the daemon refuses otherwise. Past runs keep their snapshot.
         </p>
       </Confirm>
     </aside>
@@ -361,6 +364,7 @@ function AgentEditor({ opened, current }: { opened: AgentInfo | null; current: A
   const [form, setForm] = useState<AgentForm>(() => (existing ? agentToForm(existing) : emptyAgentForm()));
   const [touched, setTouched] = useState(false);
   const [serverErrors, setServerErrors] = useState<ConfigError[]>([]);
+  const serverText = useTildifyText();
   const [saving, setSaving] = useState(false);
   const [base, setBase] = useState<AgentInfo | null>(opened);
   const [refused, setRefused] = useState<{ current: AgentInfo | null } | null>(null);
@@ -425,7 +429,7 @@ function AgentEditor({ opened, current }: { opened: AgentInfo | null; current: A
           )}
           {serverErrors.length > 0 && (
             <Notice tone="error" title="The daemon did not accept this agent">
-              <ul className="plain">{serverErrors.map((e, i) => <li key={i}>{e.field && <code>{e.field}</code>} {e.message}</li>)}</ul>
+              <ul className="plain">{serverErrors.map((e, i) => <li key={i}>{e.field && <code>{e.field}</code>} {serverText(e.message)}</li>)}</ul>
             </Notice>
           )}
           <fieldset className="group">

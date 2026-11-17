@@ -2,15 +2,16 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { useApp, useDaemon } from "../../app/context";
 import { isActive } from "../../app/daemon";
+import { useTildifyText } from "../../app/home";
 import { useBindings } from "../../app/keys";
 import { href, navigate } from "../../app/router";
 import { attempt } from "../../app/toasts";
 import type { Event, Run } from "../../contracts";
 import { RUN_STATUS_LABEL, runTone } from "../../lib/explain";
-import { dayAndTime, shortId, sourceName, span, visible } from "../../lib/format";
+import { dayAndTime, shortId, sourceName, span } from "../../lib/format";
 import { RpcCallError } from "../../rpc/client";
 import { Icon } from "../../ui/icons";
-import { Button, Dl, IconButton, Modal, Notice, Pill, TextArea, Trunc, cx, useTicker } from "../../ui/primitives";
+import { Button, Dl, IconButton, Modal, Notice, Path, Pill, TextArea, Trunc, cx, useTicker } from "../../ui/primitives";
 import { PromptView } from "../common/PromptView";
 import { RunOutput } from "./RunOutput";
 
@@ -240,6 +241,7 @@ function Timing({ run }: { run: Run }) {
 
 function ApprovalCard({ run }: { run: Run }) {
   const agent = run.snapshot.agent;
+  const shortText = useTildifyText();
   return (
     <div className="approval">
       <div className="approval-head">
@@ -251,13 +253,13 @@ function ApprovalCard({ run }: { run: Run }) {
             {agent.cwd ? (
               <>
                 {" "}
-                in <span className="mono">{agent.cwd}</span>
+                in <Path path={agent.cwd} />
               </>
             ) : null}
             ) with the prompt below.
           </p>
           <p className="faint">
-            It can see: {(agent.allow ?? []).length ? (agent.allow ?? []).map((s) => <code key={s}>{s}</code>) : "nothing (no scopes)"}
+            It can see: {(agent.allow ?? []).length ? (agent.allow ?? []).map((s) => <code key={s}>{shortText(s)}</code>) : "nothing (no scopes)"}
           </p>
         </div>
       </div>
@@ -277,10 +279,12 @@ function InvocationView({ run, pending }: { run: Run; pending?: boolean }) {
   if (!inv) return <p className="faint">Pulse could not prepare this run's command{pending ? ", so approving it will fail to start it" : ""}.</p>;
   return (
     <div className="invocation">
-      <p className="muted">{pending ? "Approving runs exactly this" : "The command"}, as an argument list (never through a shell). The environment is not shown; it may hold secrets from the agent's config.</p>
+      <p className="muted">
+        {pending ? "Approving runs exactly this" : "The command"}, as an argument list (never through a shell). <code>~</code> in the program and working directory stands for your home directory (hover for the full path); arguments are shown exactly as passed. The environment is not shown; it may hold secrets from the agent's config.
+      </p>
       <Dl
         items={[
-          ["Program", <span key="p" className="mono">{visible(inv.program, { singleLine: true })}</span>],
+          ["Program", <Path key="p" path={inv.program} />],
           [
             "Arguments",
             <ol key="a" className="argv">

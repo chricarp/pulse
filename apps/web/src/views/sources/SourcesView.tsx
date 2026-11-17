@@ -13,7 +13,7 @@ import { count, dayAndTime, plural } from "../../lib/format";
 import { parseDuration } from "../../lib/syntax";
 import { ErrorCodes, RpcCallError } from "../../rpc/client";
 import { ConflictNotice, hasConflict, useFirst } from "../common/Conflict";
-import { Ago, Button, Confirm, Dl, Empty, Field, IconButton, Input, ListInput, Notice, Pill, Section, Select, Toggle, Trunc, cx } from "../../ui/primitives";
+import { Ago, Button, Confirm, Dl, Empty, Field, IconButton, Input, ListInput, Notice, Path, Pill, Section, Select, Toggle, Trunc, cx } from "../../ui/primitives";
 
 type Kind = SourceConfig["kind"];
 
@@ -209,7 +209,7 @@ function SourceDetail({ info }: { info: SourceInfo }) {
           if (ok) navigate({ view: "sources", name: null, mode: "show" });
         }}
       >
-        <p>Pulse stops watching and the source is removed from <span className="mono">{info.origin.path}</span>. Events it already recorded stay in the log. To stop it for a while, disable it instead.</p>
+        <p>Pulse stops watching and the source is removed from <Path path={info.origin.path} />. Events it already recorded stay in the log. To stop it for a while, disable it instead.</p>
       </Confirm>
     </aside>
   );
@@ -293,6 +293,7 @@ function SourceEditor({ opened, current }: { opened: SourceInfo | null; current:
   const [form, setForm] = useState<SourceForm>(() => toForm(existing));
   const [touched, setTouched] = useState(false);
   const [serverErrors, setServerErrors] = useState<ConfigError[]>([]);
+  const serverText = useTildifyText();
   const [base, setBase] = useState<SourceInfo | null>(opened);
   const [refused, setRefused] = useState<{ current: SourceInfo | null } | null>(null);
   const live = opened ? (refused && current?.revision === base?.revision ? refused.current : current) : (refused?.current ?? null);
@@ -351,7 +352,7 @@ function SourceEditor({ opened, current }: { opened: SourceInfo | null; current:
         )}
         {serverErrors.length > 0 && (
           <Notice tone="error" title="The daemon did not accept this source">
-            <ul className="plain">{serverErrors.map((e, i) => <li key={i}>{e.field && <code>{e.field}</code>} {e.message}</li>)}</ul>
+            <ul className="plain">{serverErrors.map((e, i) => <li key={i}>{e.field && <code>{e.field}</code>} {serverText(e.message)}</li>)}</ul>
           </Notice>
         )}
         {!existing && (

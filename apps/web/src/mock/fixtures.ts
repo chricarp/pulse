@@ -110,6 +110,8 @@ export function agents(): Def<AgentConfig>[] {
       config: {
         name: "fixer",
         adapter: "codex",
+        // Installed under the home, as people do: paths there read as `~/…` everywhere.
+        program: `${HOME}/.local/bin/codex`,
         sandbox: "workspace-write",
         extra_args: [],
         allow: ["process.exited", "git.*:~/code/**"],
