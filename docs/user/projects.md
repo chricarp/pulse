@@ -34,7 +34,7 @@ dialog is open, the button trusts nothing and the dialog shows the new content i
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/trust-review-dark.png">
-  <img alt="The review before trusting ~/code/notes-app/pulse.toml: the agent lint with its command argument by argument, its scope and working directory; the rule lint-on-commit, which runs it on every commit without asking; and the Cancel and Trust this content buttons" src="../images/trust-review-light.png">
+  <img alt="The review before trusting ~/code/notes-app/pulse.toml: the agent lint with its command argument by argument, its scope, and the directory it would run in, ~/code/notes-app (. in the file); the rule lint-on-commit, which runs it on every commit without asking; and the Cancel and Trust this content buttons" src="../images/trust-review-light.png">
 </picture>
 
 *Reviewing a repository's `pulse.toml` before trusting it: what each agent would run, argument by

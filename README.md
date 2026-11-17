@@ -32,12 +32,13 @@ development machine.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/feed-dark.png">
-  <img alt="The Lictory Pulse feed: file, git and process events, each tagged with what it caused, such as 'lecture-notes fired', 'review-commit awaiting approval', 'build-failed cooldown' and 'format-docs loop: own run'; the summaries and flashcards an agent wrote are marked 'by agent'" src="docs/images/feed-light.png">
+  <img alt="The Lictory Pulse feed: file, git and process events, each tagged with what became of it, such as 'lecture-notes succeeded', 'review-commit awaiting approval' next to an earlier 'review-commit succeeded', 'build-failed cooldown' and 'format-docs loop: own run'; the summaries and flashcards an agent wrote are marked 'by agent'" src="docs/images/feed-light.png">
 </picture>
 
-*The feed. Each event shows what it caused: a rule that fired, one waiting for your approval, one
-held by its debounce or cooldown, and (orange) a rule that loop protection stopped from reacting
-to its own run's output. Files an agent wrote are marked **by agent** (with a `?` where Pulse
+*The feed. Each event shows what it caused and what became of it: a run that succeeded, one
+waiting for your approval (the commit before it was approved and its run succeeded), a rule held
+by its cooldown or disabled, and (orange) a rule that loop protection stopped from reacting to
+its own run's output. Files an agent wrote are marked **by agent** (with a `?` where Pulse
 infers it). The screenshots show a fictional home directory and the stand-in agents Pulse's
 tests use; `pnpm --dir apps/web docs:images` makes them.*
 
