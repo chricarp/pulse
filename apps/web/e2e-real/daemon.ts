@@ -18,6 +18,8 @@ export const pulseBin = process.env.PULSE_BIN ?? join(repo, "target/debug/pulse"
 export interface Daemon {
   /** The temp HOME (`~`). */
   home: string;
+  /** The environment the daemon and `pulse` commands run with (HOME and PULSE_HOME set). */
+  env: NodeJS.ProcessEnv;
   pulseHome: string;
   port: number;
   /** A fresh `pulse open` URL with a login code. */
@@ -78,14 +80,30 @@ on = "ext.write.*"
 run = { agent = "writer", prompt = "Write it up: {{subject}}" }
 `;
 
-export async function startDaemon(config?: (home: string) => string): Promise<Daemon> {
-  const root = mkdtempSync(join(tmpdir(), "pulse-web-e2e-"));
+export interface DaemonOptions {
+  /** Where the temp directory is made (default: the OS temp directory) and its name's prefix. */
+  tmp?: { parent: string; prefix: string };
+  /** Runs before the daemon starts, after the config is written: files the scenario needs. */
+  prepare?: (home: string) => void;
+  /** Directories put first on the daemon's PATH (and so its runs'). */
+  path?: (home: string) => string[];
+}
+
+export async function startDaemon(config?: (home: string) => string, options: DaemonOptions = {}): Promise<Daemon> {
+  const root = mkdtempSync(join(options.tmp?.parent ?? tmpdir(), options.tmp?.prefix ?? "pulse-web-e2e-"));
   const home = join(root, "home");
   const pulseHome = join(home, ".pulse");
   mkdirSync(join(home, "Inbox"), { recursive: true });
   mkdirSync(pulseHome, { recursive: true });
   writeFileSync(join(pulseHome, "pulse.toml"), (config ?? BASE_CONFIG)(home));
-  const env = { ...process.env, HOME: home, PULSE_HOME: pulseHome };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PULSE_HOME: pulseHome };
+  if (options.path) env.PATH = [...options.path(home), env.PATH ?? ""].join(":");
+  try {
+    options.prepare?.(home);
+  } catch (e) {
+    rmSync(root, { recursive: true, force: true });
+    throw e;
+  }
   let child: ChildProcess | null = null;
   let port = 0;
 
@@ -123,22 +141,25 @@ export async function startDaemon(config?: (home: string) => string): Promise<Da
   try {
     built = readFileSync(resolve(import.meta.dirname, "../dist/index.html"), "utf8");
   } catch {
+    rmSync(root, { recursive: true, force: true });
     throw new Error(`apps/web/dist is missing. ${stale}`);
   }
   const asset = (html: string) => /assets\/index-[^"]+\.js/.exec(html)?.[0];
-  await start();
   try {
+    await start();
     const served = await (await fetch(`http://127.0.0.1:${port}/`)).text();
     if (asset(served) !== asset(built)) {
       throw new Error(`${pulseBin} serves a different UI build than apps/web/dist. ${stale}`);
     }
   } catch (e) {
     await stop();
+    rmSync(root, { recursive: true, force: true });
     throw e;
   }
 
   return {
     home,
+    env,
     pulseHome,
     get port() {
       return port;

@@ -94,4 +94,5 @@ pnpm --dir apps/desktop test   # shell logic; apps/desktop/e2e/run.sh drives the
 - A decision that someone could reasonably have made differently gets a short numbered file in `docs/internals/`.
 - When the code diverges from a design doc, update the doc in the same change and note why.
 - User-facing behaviour is documented in `docs/user/` and, if it is part of the first five minutes, in the README.
+- The images in `docs/images/` come from `pnpm --dir apps/web docs:images` ([0008](docs/internals/0008-web-ui.md#documentation-images)). When a change alters what one shows, regenerate them, look at each, and check its caption.
 - Say what is not a safety boundary. Do not describe a control as stronger than it is.

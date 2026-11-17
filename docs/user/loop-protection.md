@@ -77,11 +77,13 @@ chain depth.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/event-detail-dark.png">
-  <img alt="An event detail pane: caused by run Y45TBD0K, inferred; stopped by loop protection; the format-docs delivery blocked as loop: own run" src="../images/event-detail-light.png">
+  <img alt="An event detail pane for an edit of CHANGELOG.md: caused by a run of format-docs, inferred; stopped by loop protection; the format-docs delivery blocked as loop: own run. In the feed beside it, files the study agent wrote are marked 'by agent'" src="../images/event-detail-light.png">
 </picture>
 
-*An edit attributed (by inference) to the run of `format-docs`, so `format-docs` did not fire on
-it.*
+*An edit attributed (by inference) to the run of `format-docs`, a `command` agent, so
+`format-docs` did not fire on it. In the feed beside it, the summaries and flashcards the
+Claude Code agent wrote are marked **by agent** without a question mark: reported by its tool
+calls, not guessed.*
 
 From the CLI, this is a `command` agent whose `cwd` is the folder its rule watches, and which
 writes a copy of each new file there:

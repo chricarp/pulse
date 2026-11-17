@@ -32,12 +32,14 @@ development machine.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/feed-dark.png">
-  <img alt="The Pulse feed: a list of file, git and process events, each tagged with what it caused, such as 'lecture-notes fired', 'review-commit awaiting approval' and 'format-docs loop: own run'" src="docs/images/feed-light.png">
+  <img alt="The Lictory Pulse feed: file, git and process events, each tagged with what it caused, such as 'lecture-notes fired', 'review-commit awaiting approval', 'build-failed cooldown' and 'format-docs loop: own run'; the summaries and flashcards an agent wrote are marked 'by agent'" src="docs/images/feed-light.png">
 </picture>
 
 *The feed. Each event shows what it caused: a rule that fired, one waiting for your approval, one
 held by its debounce or cooldown, and (orange) a rule that loop protection stopped from reacting
-to its own run's output. The screenshots were taken with the stand-in agents Pulse's tests use.*
+to its own run's output. Files an agent wrote are marked **by agent** (with a `?` where Pulse
+infers it). The screenshots show a fictional home directory and the stand-in agents Pulse's
+tests use; `pnpm --dir apps/web docs:images` makes them.*
 
 > **Status: 0.1.0, early.** Developed and run only on Linux arm64. Read
 > [Status and honest limits](#status-and-honest-limits) before relying on it.

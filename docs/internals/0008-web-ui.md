@@ -162,6 +162,21 @@ Decided as is for v1:
 - Browser against the real daemon (Playwright, `pnpm --dir apps/web test:real`, after `pnpm build` and `cargo build -p pulse-cli`): each test starts the `pulse` binary on a temp home and port 0 with a real fs source and the fake agents. Login (spent, expired and missing codes; nothing stored holds the token), the live feed with outcomes, live run output, approve and reject, a rule written back to `pulse.toml` with hand edits and a broken file, recovery after a restart, a program that takes the port after the daemon stops (it gets proof requests and no token on reconnect; on reload its page reads storage and finds only a resume code the restarted daemon refuses), the CSP headers (and every test fails on a violation), and a hostile subject through a command agent checked for hidden characters in every view it reaches, trusting a project whose file is replaced while the review is open, saving an editor after `pulse rules disable`, and the two storms measured below (`e2e-real/storm.spec.ts`).
 - Browser (Playwright, `pnpm --dir apps/web test:browser`): the production build with the mock compiled in. Storms, gap rows, holding the tail, a dropped connection, keyboard paths, the palette, the filter syntax, shortcut discovery, a draft dry run, creating a rule and taking it through every reverse state, untrusting and re-trusting a project, megabytes of output, structured output, and the measurements below. Tests wait for conditions, never for time.
 
+## Documentation images
+
+Every image in `docs/images/` is made by one command, against the real daemon and the real UI:
+
+```sh
+pnpm --dir apps/web build && cargo clean -p pulse-daemon && cargo build -p pulse-cli   # as for test:real
+pnpm --dir apps/web docs:images        # DOCS_IMAGES_OUT=<dir> to write them elsewhere
+```
+
+`e2e-real/docs-images.ts` (run by `playwright.images.config.ts`, which no test command loads) starts a daemon with `e2e-real/daemon.ts` in a new `/tmp/pulse-demo-*` directory. Its `home` is the daemon's `HOME`, so the UI shows every path under it as `~/…`; `/tmp` rather than `$TMPDIR`, because the absolute path still appears in event data. On it the script plays a fictional student's morning with the real sources: lecture PDFs written into `~/University` (two at once, so one waits for the agent), downloads, `pulse run -- cargo build` and `cargo test` failing in `~/code/notes-app` (a stand-in `cargo`), edits of its `docs/CHANGELOG.md` that a formatter rewrites, and `git` commits by a fictional author with no global or system git config. Every agent's program is a copy of the fixtures (`fake-claude`, `fake-agent`) in `~/bin`, first on the daemon's `PATH`, named in the config before the daemon starts; the script writes the streams they replay. Nothing in it can start a real agent.
+
+It waits for each step through `pulse --json` (a delivery outcome, a run state), never for time. Then it opens a light and a dark page (1440×900, scale 1, reduced motion, a fixed UTC offset that puts the clock at mid-morning) and takes each image in both at once, after waiting for the state the image shows; the run output is taken while the run is still running. Before each capture it fails if the page's text, field values or titles contain the user name, the host name, the repository path or the real `HOME`. Last, on Linux with Electron unpacked and `xvfb-run` installed, the desktop shell's `showcase` scenario ([0010](0010-desktop-shell.md#running-the-end-to-end-scenarios-on-a-machine-without-gtk); `E2E_LD_LIBRARY_PATH` and `E2E_ELECTRON_FLAGS` as there) adopts the same daemon for `desktop-*.png`; elsewhere the command says why and leaves those two alone. The daemon is stopped and the directory removed however the script ends.
+
+Timestamps, ids, the port and durations differ between runs; the rest should not, so a diff is read by eye. A run takes about two minutes. Look at every image before committing it.
+
 ## Measurements
 
 Chromium 156 (headless shell) on the development machine (Linux arm64, 8 cores, shared with other builds), 1440×900, production build.

@@ -118,10 +118,11 @@ Approving needs the daemon token; an agent's own MCP credentials cannot approve 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/approval-dark.png">
-  <img alt="A supervised run waiting for approval, with Approve and Reject buttons, the scopes its agent has, and the prompt that would be sent" src="../images/approval-light.png">
+  <img alt="A supervised run waiting for approval, with Approve and Reject buttons, the scopes its agent has, and the command approving would run: the program, each of its arguments and the working directory" src="../images/approval-light.png">
 </picture>
 
-*A supervised run waiting for approval: nothing has run yet; the prompt it would send is shown in full.*
+*A supervised run waiting for approval: nothing has run yet; what approving would execute is shown
+argument by argument, and the prompt it would send follows it in full.*
 
 ## When a definition changes
 

@@ -22,7 +22,8 @@
     "lint": "oxlint --deny-warnings src e2e e2e-real scripts",
     "test": "vitest run",
     "test:browser": "playwright test",
-    "test:real": "playwright test -c playwright.real.config.ts"
+    "test:real": "playwright test -c playwright.real.config.ts",
+    "docs:images": "playwright test -c playwright.images.config.ts"
   },
   "dependencies": {
     "@tanstack/react-virtual": "3.14.26",

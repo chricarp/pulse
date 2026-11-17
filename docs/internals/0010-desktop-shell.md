@@ -116,4 +116,4 @@ E2E_LD_LIBRARY_PATH=<dir>/usr/lib/aarch64-linux-gnu E2E_ELECTRON_FLAGS=--no-sand
   PULSE_BIN=target/debug/pulse apps/desktop/e2e/run.sh <out-dir>
 ```
 
-`PULSE_E2E=showcase` (not in `run.sh`'s list) adopts a daemon already running on a Pulse home with activity and captures the feed; it made `docs/images/desktop-*.png`.
+`PULSE_E2E=showcase` (not in `run.sh`'s list) adopts a daemon already running on a Pulse home with activity and captures the feed, in the theme `PULSE_E2E_THEME` sets (`light` or `dark`). `pnpm --dir apps/web docs:images` runs it for `docs/images/desktop-*.png` ([0008](0008-web-ui.md#documentation-images)).

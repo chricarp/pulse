@@ -235,6 +235,9 @@ const token = () => readFileSync(join(HOME, "token"), "utf8").trim();
 
 async function main(): Promise<void> {
   const squatter = scenario === "stale" ? await squat() : null;
+  // The page follows the system theme; the documentation images set it (light or dark).
+  const theme = process.env.PULSE_E2E_THEME;
+  if (theme === "light" || theme === "dark") electron.nativeTheme.themeSource = theme;
   const booted = await boot();
   if (booted === null) {
     record("second_instance", "exited: another instance holds the lock");
@@ -478,9 +481,9 @@ async function main(): Promise<void> {
       break;
     }
 
-    // Not in run.sh's list: for the docs screenshot, against a Pulse home that already has
-    // activity (a running daemon is adopted). Run with XDG_CURRENT_DESKTOP=GNOME so closing the
-    // window quits.
+    // Not in run.sh's list: the docs screenshots (`pnpm --dir apps/web docs:images` runs it),
+    // against a Pulse home that already has activity (a running daemon is adopted). Run with
+    // XDG_CURRENT_DESKTOP=GNOME so closing the window quits.
     case "showcase": {
       await until("a daemon", connected);
       await until("the UI to load", onDaemonPage);

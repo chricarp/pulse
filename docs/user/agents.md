@@ -124,11 +124,11 @@ rule has a `debounce`: then it waits until one of the agent's runs ends (see
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../images/run-output-dark.png">
-  <img alt="The runs list, and a running lecture-notes run streaming its output: text, a Write tool call and its result" src="../images/run-output-light.png">
+  <img alt="The runs list, and a running lecture-notes run streaming its output: the agent's summary text, a Write tool call for the summary file and its result, eight flashcards, and a second Write call for the flashcards file with its result" src="../images/run-output-light.png">
 </picture>
 
-*A run streaming its output: assistant text, a tool call (`Write`) and its result. Captured with
-the stand-in agent the tests use.*
+*A run streaming its output: assistant text, and the `Write` calls that created the summary and
+the flashcards, each with its result. Captured with the stand-in agent the tests use.*
 
 ```sh
 pulse runs list                         # newest first

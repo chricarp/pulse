@@ -58,7 +58,7 @@ is stopped is not reported either. A disabled source is not restarted: enable it
 </picture>
 
 *Two sources waiting for things that do not exist yet: a folder ("waiting for it to appear") and
-a calendar file ("retrying in 2m").*
+a calendar file that Pulse keeps retrying, opened on the right with its **Restart** button.*
 
 ## `fs`: a directory tree
 

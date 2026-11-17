@@ -30,8 +30,10 @@ report, the date, who checked) with the decision it supports.
   links crates and embeds a web UI bundle whose licenses require their notices to accompany a
   binary; nothing in the binary, the UI or the desktop package carries them
   ([THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md#what-the-built-products-contain)).
-- The screenshots in `docs/images/` show the earlier "Pulse" brand mark in the sidebar. They
-  use a throwaway home (`/tmp/pulse-demo/home`) and fictional files.
+- The images in `docs/images/` are made by `pnpm --dir apps/web docs:images`
+  ([0008](../internals/0008-web-ui.md#documentation-images)): the real daemon and UI, a
+  fictional scenario in a throwaway home under `/tmp`, and the stand-in agents. Regenerate them
+  after a UI change they show.
 
 ## Owner checklist
 
@@ -72,8 +74,10 @@ Everything pushed to a public repository is published, including the whole histo
 - [ ] The owner checklist's rights declaration is recorded.
 - [ ] No credentials, personal data or machine-specific names in the tree **or the history**:
       run the **Secret scan** workflow manually (it scans the whole history on
-      `workflow_dispatch`) and review every finding; review the screenshots in `docs/images/`
-      and the recorded fixtures by eye. Revoke a credential that ever reached a commit before
+      `workflow_dispatch`) and review every finding; regenerate the images in `docs/images/`
+      (`pnpm --dir apps/web docs:images`, after the build
+      [0008](../internals/0008-web-ui.md#documentation-images) gives) and review them and the
+      recorded fixtures by eye. Revoke a credential that ever reached a commit before
       cleaning it up; rewriting history does not un-publish it.
 - [ ] Every Markdown link resolves, and the README links only to things that exist.
 - [ ] A clean checkout builds and passes the full sequence in

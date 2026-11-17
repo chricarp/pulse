@@ -95,7 +95,9 @@ Explain how you established the problem, how you checked the change, and what yo
   Tests use the fake agents in `crates/pulse-agents/tests/fixtures`, never a real one.
 - For UI changes, include before/after screenshots, and a short recording when timing or
   interaction matters. Upload them to the pull request; never commit them. Screenshots use a
-  throwaway `PULSE_HOME` and fictional paths, never your own.
+  throwaway `PULSE_HOME` and fictional paths, never your own. The images in `docs/images/` are
+  the exception: `pnpm --dir apps/web docs:images` makes them
+  ([0008](docs/internals/0008-web-ui.md#documentation-images)).
 - Before requesting review, run the full sequence and report the results:
 
   ```sh

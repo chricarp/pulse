@@ -31,6 +31,15 @@ In the UI, **Projects → Trust** (or **Review and trust again** for a changed f
 review before the **Trust this content** button does anything. If the file changes while the
 dialog is open, the button trusts nothing and the dialog shows the new content instead.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../images/trust-review-dark.png">
+  <img alt="The review before trusting ~/code/notes-app/pulse.toml: the agent lint with its command argument by argument, its scope and working directory; the rule lint-on-commit, which runs it on every commit without asking; and the Cancel and Trust this content buttons" src="../images/trust-review-light.png">
+</picture>
+
+*Reviewing a repository's `pulse.toml` before trusting it: what each agent would run, argument by
+argument, and when each rule would run it. Nothing is loaded until **Trust this content**, and
+then only this content.*
+
 - Trust is bound to the file's **content hash**. When the file changes (a `git pull`, a branch
   switch, your own edit) the project becomes **changed** and is inactive until you trust it
   again. A deleted file shows as **missing**. `pulse project list` and the Projects view show the
