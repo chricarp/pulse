@@ -1,8 +1,8 @@
-import { memo, useSyncExternalStore } from "react";
+import { memo, useId, useRef, useSyncExternalStore } from "react";
 
 import { useApp } from "../../app/context";
 import type { Event, EventOutcome } from "../../contracts";
-import { CAUSATION, currentOutcomes, type CurrentOutcome } from "../../lib/explain";
+import { CAUSATION, currentOutcomes, pickMarkers, type CurrentOutcome } from "../../lib/explain";
 import { clockTime, count, sourceName } from "../../lib/format";
 import { Icon } from "../../ui/icons";
 import { Trunc, cx } from "../../ui/primitives";
@@ -21,24 +21,60 @@ export function useOutcomes(event: Event): readonly EventOutcome[] | undefined {
   );
 }
 
+const SLOTS = 2;
+
 function Markers({ event }: { event: Event }) {
   const list = useOutcomes(event);
+  const id = useId().replace(/:/g, "");
+  const pop = useRef<HTMLDivElement>(null);
   if (!list || list.length === 0) return null;
-  // The most important outcome first: loop protection, then approvals, fires, the rest.
-  const rank = (d: CurrentOutcome) => (d.tone === "loop" ? 0 : d.tone === "attention" ? 1 : d.tone === "ok" ? 2 : d.tone === "waiting" ? 3 : 4);
-  const sorted = currentOutcomes(list).sort((a, b) => rank(a) - rank(b));
-  const shown = sorted.slice(0, 2);
-  const rest = sorted.length - shown.length;
+  const { shown, rest } = pickMarkers(currentOutcomes(list), SLOTS);
   return (
     <span className="markers">
-      {shown.map((d) => (
-        <span key={d.rule} className={cx("marker", `tone-${d.tone}`)} title={`${d.rule}: ${d.label}`}>
-          {d.tone === "loop" && <Icon name="loop" size={11} />}
-          <span className="marker-rule">{d.rule}</span>
-          <span className="marker-outcome">{d.label}</span>
-        </span>
-      ))}
-      {rest > 0 && <span className="marker tone-neutral">+{rest}</span>}
+      <span className="markers-shown">
+        {shown.map((d) => (
+          <Marker key={d.rule} d={d} />
+        ))}
+      </span>
+      {rest.length > 0 && (
+        <>
+          <button
+            type="button"
+            className="marker marker-more tone-neutral"
+            popoverTarget={`markers-${id}`}
+            aria-haspopup="dialog"
+            aria-label={`${rest.length} more: ${rest.map((d) => `${d.rule} ${d.label}`).join(", ")}`}
+            title={rest.map((d) => `${d.rule}: ${d.label}`).join("\n")}
+            onClick={(e) => {
+              // Opens the list; it does not select the row.
+              e.stopPropagation();
+              const r = e.currentTarget.getBoundingClientRect();
+              const m = pop.current;
+              if (m) {
+                m.style.top = `${r.bottom + 4}px`;
+                m.style.left = `${Math.max(8, Math.min(r.right - 280, window.innerWidth - 288))}px`;
+              }
+            }}
+          >
+            +{rest.length}
+          </button>
+          <div ref={pop} id={`markers-${id}`} popover="auto" className="menu marker-list" aria-label="What this event caused" onClick={(e) => e.stopPropagation()}>
+            {[...shown, ...rest].map((d) => (
+              <Marker key={d.rule} d={d} />
+            ))}
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
+
+function Marker({ d }: { d: CurrentOutcome }) {
+  return (
+    <span className={cx("marker", `tone-${d.tone}`)} title={`${d.rule}: ${d.label}`}>
+      {d.tone === "loop" && <Icon name="loop" size={11} />}
+      <span className="marker-rule">{d.rule}</span>
+      <span className="marker-outcome">{d.label}</span>
     </span>
   );
 }

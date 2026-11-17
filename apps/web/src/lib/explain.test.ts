@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { DeliveryOutcome, EventOutcome, RunStatus } from "../contracts";
-import { currentOutcomes } from "./explain";
+import { currentOutcomes, pickMarkers } from "./explain";
 
 let n = 0;
 const o = (rule: string, outcome: DeliveryOutcome, run_status: RunStatus | null = null): EventOutcome => ({
@@ -30,5 +30,35 @@ describe("currentOutcomes", () => {
     expect(currentOutcomes(list).map((c) => [c.rule, c.label])).toEqual(want);
     // Whatever order they arrived in.
     expect(currentOutcomes([...list].reverse()).map((c) => [c.rule, c.label])).toEqual(want);
+  });
+});
+
+describe("pickMarkers", () => {
+  const loop = { reason: "loop_self_trigger", run: "R0" } as const;
+  it.each<[string, EventOutcome[], string[]]>([
+    [
+      "a delivery waiting for room is not hidden behind a fire",
+      [o("a", { kind: "fired" }, "succeeded"), o("b", { kind: "blocked", reason: loop }), o("c", { kind: "waiting", reason: busy })],
+      ["b", "c"],
+    ],
+    [
+      "an approval and a failure come before what went well",
+      [o("a", { kind: "fired" }, "succeeded"), o("b", { kind: "fired" }, "failed"), o("c", { kind: "awaiting_approval" }, "pending_approval")],
+      ["c", "b"],
+    ],
+    [
+      "loop protection before waiting, waiting before a failure",
+      [o("a", { kind: "fired" }, "failed"), o("b", { kind: "waiting", reason: busy }), o("c", { kind: "blocked", reason: loop })],
+      ["c", "b"],
+    ],
+    [
+      "an approved run no longer needs anyone",
+      [o("a", { kind: "awaiting_approval" }, "succeeded"), o("b", { kind: "fired" }, "running"), o("c", { kind: "blocked", reason: { reason: "cooldown", until: "2026-11-17T10:00:00Z" } })],
+      ["b", "a"],
+    ],
+  ])("%s", (_, list, want) => {
+    const { shown, rest } = pickMarkers(currentOutcomes(list), 2);
+    expect(shown.map((c) => c.rule)).toEqual(want);
+    expect(rest).toHaveLength(list.length - 2);
   });
 });

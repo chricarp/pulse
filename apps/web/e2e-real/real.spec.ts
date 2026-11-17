@@ -135,6 +135,54 @@ test("the feed's marker follows a supervised run through its life, live and from
   await expect(marker("reject-me")).toContainText("rejected");
 });
 
+test("a row shows what needs a person first, and +N opens the rest, also beside the detail pane", async ({ page }) => {
+  const daemon = await startDaemon(
+    (home) => `${BASE_CONFIG(home)}
+[[rule]]
+name = "multi-fire"
+on = "ext.multi.*"
+run = { agent = "echo" }
+
+[[rule]]
+name = "multi-off"
+on = "ext.multi.*"
+enabled = false
+run = { agent = "echo" }
+
+[[rule]]
+name = "multi-approve"
+on = "ext.multi.*"
+supervised = true
+run = { agent = "echo" }
+`,
+  );
+  try {
+    await login(page, daemon);
+    daemon.ingest("multi", "thing", "three-rules");
+    const row = page.locator(".event-row", { hasText: "three-rules" });
+    const shown = row.locator(".markers-shown .marker");
+    await expect(shown.first()).toContainText("multi-approve");
+    await expect(shown.first()).toContainText("awaiting approval");
+    await expect(shown.nth(1)).toContainText("multi-fire");
+    // Beside the detail pane the list is narrow; "+1" is still whole and on screen.
+    await row.click();
+    const more = row.locator(".marker-more");
+    await expect(more).toHaveText("+1");
+    const cell = await row.locator(".c-markers").boundingBox();
+    const box = await more.boundingBox();
+    expect(cell && box && box.x >= cell.x && box.x + box.width <= cell.x + cell.width + 0.5).toBe(true);
+    await more.click();
+    const list = page.locator(".marker-list:popover-open");
+    await expect(list).toContainText("multi-off");
+    await expect(list).toContainText("rule disabled");
+    await expect(list.locator(".marker")).toHaveCount(3);
+    // Opening the list did not change the selection.
+    await expect(row).toHaveClass(/is-selected/);
+  } finally {
+    await daemon.dispose();
+  }
+});
+
 test("a rule made in the UI is written to pulse.toml, and hand edits show up live", async ({ page, daemon }) => {
   const before = daemon.readConfig();
   await login(page, daemon);

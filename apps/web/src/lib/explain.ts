@@ -147,6 +147,52 @@ export function currentOutcomes(list: readonly EventOutcome[]): CurrentOutcome[]
   );
 }
 
+/**
+ * How much a marker needs a person, most first: what they must act on or understand (a run
+ * awaiting approval, loop protection, a delivery waiting for room in the agent's queue, a run
+ * that failed), then what is in progress, then what went as expected.
+ */
+export function urgency(c: CurrentOutcome): number {
+  const o = c.outcome;
+  if (o.run && o.run_status) {
+    switch (o.run_status) {
+      case "pending_approval":
+        return 0;
+      case "failed":
+      case "timed_out":
+      case "interrupted":
+        return 3;
+      case "running":
+        return 4;
+      case "queued":
+        return 5;
+      case "succeeded":
+        return 6;
+      case "cancelled":
+      case "rejected":
+        return 8;
+    }
+  }
+  switch (o.outcome.kind) {
+    case "awaiting_approval":
+      return 0;
+    case "blocked":
+      return isLoopProtection(o.outcome.reason) ? 1 : 7;
+    case "waiting":
+      return 2;
+    case "debounced":
+      return 5;
+    case "fired":
+      return 6;
+  }
+}
+
+/** The markers a row shows in its `slots`, most urgent first, and the rest (behind "+N"). */
+export function pickMarkers(list: readonly CurrentOutcome[], slots: number): { shown: CurrentOutcome[]; rest: CurrentOutcome[] } {
+  const sorted = [...list].sort((a, b) => urgency(a) - urgency(b));
+  return { shown: sorted.slice(0, slots), rest: sorted.slice(slots) };
+}
+
 /** How an event's causing run is known: a pill, a feed flag, and the explanation. */
 export const CAUSATION: Record<Causation, { label: string; flag: string; tone: Tone; why: string }> = {
   exact: {

@@ -590,7 +590,14 @@ kbd {
   vertical-align: middle;
 }
 
+/* The shown markers shrink (rule names first); "+N" never does, so the rest are always one
+   click away. */
 .markers {
+  display: inline-flex;
+  gap: 4px;
+  min-width: 0;
+}
+.markers-shown {
   display: inline-flex;
   gap: 4px;
   min-width: 0;
@@ -608,15 +615,48 @@ kbd {
   font-size: var(--text-xs);
   white-space: nowrap;
   max-width: 220px;
+  min-width: 0;
   overflow: hidden;
 }
 .marker-rule {
   font-family: var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 .marker-outcome {
   font-weight: 600;
+  flex: none;
+}
+.marker-more {
+  flex: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+.marker-more:hover,
+.marker-more:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  outline: none;
+}
+.marker-list {
+  display: none;
+  width: 280px;
+}
+.marker-list:popover-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px;
+}
+.marker-list .marker {
+  max-width: 100%;
+}
+.marker-list .marker-rule {
+  display: inline;
 }
 .marker.tone-loop {
   box-shadow: inset 0 0 0 1px var(--loop-line);
