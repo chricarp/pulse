@@ -1606,6 +1606,14 @@ export class MockDaemon {
       rules: file.now.rules,
       agents: file.now.agents,
       sources: file.now.sources,
+      // Like the daemon: a relative `cwd` is the project's directory joined with it.
+      cwds: Object.fromEntries(
+        file.now.agents.flatMap((a) => {
+          if (!a.cwd) return [];
+          const rest = a.cwd.replace(/^\.\/?/, "");
+          return [[a.name, a.cwd.startsWith("~") || a.cwd.startsWith("/") ? this.expand(a.cwd) : rest ? `${p.dir}/${rest}` : p.dir]];
+        }),
+      ),
       errors: [],
       changes: changed && file.trusted ? changes(file.trusted, file.now) : null,
     };

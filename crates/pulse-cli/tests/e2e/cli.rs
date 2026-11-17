@@ -196,7 +196,7 @@ async fn trusting_a_project_binds_to_the_content_shown() {
     let env = Env::new();
     let repo = env.mkdir("code/repo");
     let file = repo.join("pulse.toml");
-    let text = "[[agent]]\nname = \"fmt\"\nadapter = \"command\"\ncommand = [\"prettier\", \"--write\", \"--\", \"{{path}}\"]\nallow = [\"fs.*:~/code/repo/**\"]\n";
+    let text = "[[agent]]\nname = \"fmt\"\nadapter = \"command\"\ncommand = [\"prettier\", \"--write\", \"--\", \"{{path}}\"]\nallow = [\"fs.*:~/code/repo/**\"]\ncwd = \".\"\n";
     std::fs::write(&file, text).unwrap();
     let daemon = env.start().await;
     let dir = repo.to_str().unwrap();
@@ -204,6 +204,8 @@ async fn trusting_a_project_binds_to_the_content_shown() {
     let (code, out, err) = env.run(&["project", "trust", dir]).await;
     assert_eq!(code, 1, "a review trusts nothing");
     assert!(out.contains("prettier") && out.contains("content hash"), "{out}");
+    // Where it would run, resolved: `cwd = "."` alone does not say.
+    assert!(out.contains(&format!("# runs in {dir}\n")), "{out}");
     assert!(err.contains("Nothing was trusted") && err.contains("--hash"), "{err}");
     let (_, out, _) = env.run(&["--json", "project", "trust", dir]).await;
     let hash = json(&out)["error"]["data"]["hash"].as_str().unwrap().to_owned();

@@ -332,7 +332,8 @@ async fn project_trust_is_bound_to_the_reviewed_content() {
     let project = t.user_home.join("repo");
     std::fs::create_dir_all(&project).unwrap();
     let file = project.join("pulse.toml");
-    let text = "[[rule]]\nname = \"build\"\non = \"ext.ci.*\"\nrun = { agent = \"sh\" }\n";
+    let text = "[[rule]]\nname = \"build\"\non = \"ext.ci.*\"\nrun = { agent = \"sh\" }\n\n\
+                [[agent]]\nname = \"docs\"\nadapter = \"command\"\ncommand = [\"true\"]\ncwd = \"./docs\"\n";
     std::fs::write(&file, text).unwrap();
     assert_eq!(rule_names(&client).await, ["ci"], "an untrusted project is inert");
 
@@ -351,6 +352,10 @@ async fn project_trust_is_bound_to_the_reviewed_content() {
     assert_eq!((r.name.as_str(), r.state, r.text.as_str()), ("repo", TrustState::Untrusted, text));
     assert_eq!(r.rules.len(), 1);
     assert_eq!(r.changes, None);
+    // Where its agents would run, resolved against the project's directory: the review is for
+    // seeing what runs and where, and `./docs` alone does not say.
+    assert_eq!(r.agents[0].cwd.as_deref(), Some("./docs"));
+    assert_eq!(r.cwds.get("docs"), Some(&format!("{dir}/docs")));
 
     // The file is replaced while the user reads the review: trusting what they read fails, and
     // nothing from the new content is loaded.

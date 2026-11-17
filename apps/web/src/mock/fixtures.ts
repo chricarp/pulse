@@ -394,7 +394,7 @@ export function projectFiles(): Record<string, { now: FileDefs; trusted?: FileDe
     "vendor-lib": {
       now: {
         rules: [{ name: "regen", on: ["fs.file.modified"], where: { path: "~/code/vendor-lib/schema/**" }, debounce_by: "rule", supervised: false, enabled: true, archived: false, run: { agent: "codegen" } }],
-        agents: [{ name: "codegen", adapter: "command", command: ["make", "generate"], stdin: "none", allow: [`fs.*:${HOME}/code/vendor-lib/**`], cwd: "~/code/vendor-lib", timeout: "10m", max_concurrent: 1, max_queued: 8 }],
+        agents: [{ name: "codegen", adapter: "command", command: ["make", "generate"], stdin: "none", allow: [`fs.*:${HOME}/code/vendor-lib/**`], cwd: ".", timeout: "10m", max_concurrent: 1, max_queued: 8 }],
         sources: [{ name: "schema", kind: "fs", path: "schema", recursive: true, enabled: true }],
       },
     },

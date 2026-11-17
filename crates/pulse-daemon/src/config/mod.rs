@@ -416,6 +416,14 @@ impl Loader {
             Ok(f) => (f, Vec::new()),
             Err(e) => (ConfigFile::default(), e.0),
         };
+        let cwds = file
+            .agents
+            .iter()
+            .filter_map(|a| {
+                let cwd = expand_path(a.cwd.as_deref()?, &self.user_home, Some(&dir)).ok()?;
+                Some((a.name.clone(), cwd))
+            })
+            .collect();
         Ok(ProjectReview {
             name,
             dir: dir.display().to_string(),
@@ -426,6 +434,7 @@ impl Loader {
             rules: file.rules,
             agents: file.agents,
             sources: file.sources,
+            cwds,
             errors,
             changes,
         })

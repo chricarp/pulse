@@ -68,7 +68,7 @@ The config file is edited by hand, from the CLI and from other windows while an 
 
 ## Trusting a project
 
-"Trust" opens a review (`projects.review`): what the file would load, as `name/…` (agents with their adapter and what they run, argument by argument, their tools, scopes, working directory and environment; rules with their triggers, whether they need approval, and their prompt; sources), what changed since it was trusted when the daemon still has the trusted text, any errors, and the file itself. The button trusts that content by its hash. If the file changed before the button was pressed, nothing is trusted and the dialog shows the new content with a note. All of it is repository text, rendered through `visible()`.
+"Trust" opens a review (`projects.review`): what the file would load, as `name/…` (agents with their adapter and what they run, argument by argument, their tools, scopes, the working directory as the daemon resolves it (`ProjectReview.cwds`: a project's `cwd = "."` is its directory; it used to read "Working directory ." ) and environment; rules with their triggers, whether they need approval, and their prompt; sources), what changed since it was trusted when the daemon still has the trusted text, any errors, and the file itself. The button trusts that content by its hash. If the file changed before the button was pressed, nothing is trusted and the dialog shows the new content with a note. All of it is repository text, rendered through `visible()`.
 
 ## Approvals
 

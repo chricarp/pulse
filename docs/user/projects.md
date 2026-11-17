@@ -18,8 +18,9 @@ pulse project untrust ~/code/notes-app
 ```
 
 Without `--hash`, `pulse project trust` prints what the file would add (each agent with the
-program or command it runs, argument by argument, its tools, scopes, working directory and
-environment; each rule with its triggers, whether it needs your approval, and its prompt; each
+program or command it runs, argument by argument, its tools, scopes, the directory it would run
+in (a relative `cwd` such as `.` resolved against the project directory, printed as
+`# runs in <dir>`) and environment; each rule with its triggers, whether it needs your approval, and its prompt; each
 source), what changed since you last trusted it, and its content hash, and then prints the exact
 command that trusts it. It exits with status 1, because nothing was trusted. With `--hash`, Pulse
 trusts the file only if it still has that content; if it changed in between (a `git pull` while

@@ -313,7 +313,7 @@ function ReviewBody({ review }: { review: ProjectReview }) {
           {review.agents.map((a) => (
             <div key={a.name} className="review-def">
               <h4 className="mono">{line(a.name)} <Pill tone="neutral">{a.adapter}</Pill></h4>
-              <Dl items={agentFacts(a, line, text)} />
+              <Dl items={agentFacts(a, line, text, review.cwds[a.name])} />
             </div>
           ))}
         </Section>
@@ -369,7 +369,7 @@ function sourceTarget(s: SourceConfig): string {
 }
 
 /** `text` shows a value that may hold a path under the home as `~/…` (a program, a scope). */
-function agentFacts(a: AgentConfig, line: (t: string) => string, text: (t: string) => string): [string, ReactNode][] {
+function agentFacts(a: AgentConfig, line: (t: string) => string, text: (t: string) => string, cwd: string | undefined): [string, ReactNode][] {
   const mono = (k: string, t: string) => <span key={k} className="mono">{line(t)}</span>;
   const list = (k: string, xs: string[]) => (
     <ol key={k} className="argv">
@@ -400,7 +400,20 @@ function agentFacts(a: AgentConfig, line: (t: string) => string, text: (t: strin
       break;
   }
   out.push(["Sees (scopes)", (a.allow ?? []).length ? list("al", (a.allow ?? []).map(text)) : <span key="n" className="faint">nothing</span>]);
-  if (a.adapter !== "mcp") out.push(["Working directory", mono("cwd", a.cwd ?? "its own run directory")]);
+  // Where it runs, resolved by the daemon (`.` alone does not say where); as written in the title.
+  if (a.adapter !== "mcp") {
+    out.push([
+      "Working directory",
+      cwd ? (
+        <span key="cwd" title={a.cwd ? `written as ${a.cwd}` : undefined}>
+          <Path path={cwd} />
+          {a.cwd && a.cwd !== cwd && !a.cwd.startsWith("~") && <span className="faint"> ({line(a.cwd)} in the file)</span>}
+        </span>
+      ) : (
+        mono("cwd", a.cwd ?? "its own run directory")
+      ),
+    ]);
+  }
   const env = Object.entries(a.env ?? {});
   if (env.length) out.push(["Environment", list("e", env.map(([k, x]) => `${k}=${x}`))]);
   return out;

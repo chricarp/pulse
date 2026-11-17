@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use pulse_contracts::config::{AgentConfig, ConfigOrigin, SourceConfig};
+use pulse_contracts::config::{AgentConfig, AgentKind, ConfigOrigin, SourceConfig};
 use pulse_contracts::rpc::*;
 use pulse_contracts::status::{Project, TrustState};
 
@@ -298,9 +298,21 @@ fn print_review(out: &Text, r: &ProjectReview) {
             out.line(&format!("  {kind} {}: {what}", c.name));
         }
     }
+    for a in &r.agents {
+        out.line("");
+        out.line("# agent");
+        out.line(toml::to_string_pretty(a).unwrap_or_default().trim_end());
+        // Where its runs start, resolved: a relative `cwd` is the project's directory.
+        match r.cwds.get(&a.name) {
+            Some(dir) => out.line(&format!("# runs in {dir}")),
+            None if a.cwd.is_none() && a.kind() != AgentKind::Mcp => {
+                out.line("# runs in its own directory under the Pulse home")
+            }
+            None => {}
+        }
+    }
     let defs = [
-        ("agent", r.agents.iter().map(toml::to_string_pretty).collect::<Vec<_>>()),
-        ("rule", r.rules.iter().map(toml::to_string_pretty).collect()),
+        ("rule", r.rules.iter().map(toml::to_string_pretty).collect::<Vec<_>>()),
         ("source", r.sources.iter().map(toml::to_string_pretty).collect()),
     ];
     for (kind, items) in defs {

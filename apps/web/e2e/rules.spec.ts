@@ -93,6 +93,14 @@ test("trusting shows what changed and what would run, and a file swapped meanwhi
   await expect(dotfiles.locator(".project-defs")).toContainText("agent dotfiles/sync");
 });
 
+test("the trust review says where a project's agents would run, not just `.`", async ({ page }) => {
+  await page.goto("/projects?trickle=0");
+  await page.locator(".project", { hasText: "vendor-lib" }).first().getByRole("button", { name: "Trust", exact: true }).click();
+  const facts = page.getByRole("dialog").locator(".review-def", { hasText: "codegen" });
+  const cwd = facts.locator("dt", { hasText: "Working directory" }).locator("xpath=following-sibling::dd[1]");
+  await expect(cwd).toHaveText("~/code/vendor-lib (. in the file)");
+});
+
 test("saving an editor after the rule changed elsewhere asks first and keeps what was typed", async ({ page }) => {
   await page.goto("/rules/new-lecture/edit?trickle=0");
   await page.locator("#rule-desc").fill("typed before the change");

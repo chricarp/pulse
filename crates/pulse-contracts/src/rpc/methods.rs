@@ -629,6 +629,11 @@ pub struct ProjectReview {
     pub rules: Vec<RuleConfig>,
     pub agents: Vec<AgentConfig>,
     pub sources: Vec<SourceConfig>,
+    /// For each agent with a `cwd` (by its bare name), the directory its runs would start in:
+    /// `cwd` resolved against the project's directory (`~` against the home). An agent without
+    /// a `cwd` runs each run in its own directory under the Pulse home; one whose `cwd` cannot
+    /// be resolved is in `errors`.
+    pub cwds: BTreeMap<String, String>,
     /// Why it cannot be trusted as it is (it must parse on its own).
     pub errors: Vec<ConfigError>,
     /// For a file that changed since it was trusted: what differs from the trusted version, by

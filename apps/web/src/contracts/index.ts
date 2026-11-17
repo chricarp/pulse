@@ -482,6 +482,13 @@ text: string,
  */
 rules: Array<RuleConfig>, agents: Array<AgentConfig>, sources: Array<SourceConfig>, 
 /**
+ * For each agent with a `cwd` (by its bare name), the directory its runs would start in:
+ * `cwd` resolved against the project's directory (`~` against the home). An agent without
+ * a `cwd` runs each run in its own directory under the Pulse home; one whose `cwd` cannot
+ * be resolved is in `errors`.
+ */
+cwds: { [key in string]: string }, 
+/**
  * Why it cannot be trusted as it is (it must parse on its own).
  */
 errors: Array<ConfigError>, 
