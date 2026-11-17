@@ -19,7 +19,7 @@ import {
 import { useTildify } from "../app/home";
 import { formatKeys } from "../app/keys";
 import type { Tone } from "../lib/explain";
-import { relative, splitForMiddle, visible } from "../lib/format";
+import { CLOCK_TICK_MS, relative, splitForMiddle, visible } from "../lib/format";
 import { Icon, type IconName } from "./icons";
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
@@ -138,7 +138,7 @@ function clockSubscribe(l: () => void): () => void {
       if (document.visibilityState !== "visible") return;
       clockNow = Date.now();
       for (const x of clockListeners) x();
-    }, 10_000);
+    }, CLOCK_TICK_MS);
   }
   return () => {
     clockListeners.delete(l);

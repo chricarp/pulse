@@ -78,6 +78,22 @@ export function span(ms: number): string {
   return neg ? `-${s}` : s;
 }
 
+/** The coarse clock's period (`useNow`): lists that show times render at most this often. */
+export const CLOCK_TICK_MS = 10_000;
+
+/**
+ * A run's duration for a list: exact once it ended; while it runs, its elapsed time to the
+ * precision of the coarse clock the list renders with, so it moves with each tick and never shows
+ * a figure finer than it can keep up to date ("484ms" for a run that has run for 8 s).
+ */
+export function runDuration(r: { started_at?: string | null; ended_at?: string | null }, now: number): string {
+  if (!r.started_at) return "";
+  const start = Date.parse(r.started_at);
+  if (r.ended_at) return span(Math.max(0, Date.parse(r.ended_at) - start));
+  const ms = Math.max(0, now - start);
+  return ms < CLOCK_TICK_MS ? `<${CLOCK_TICK_MS / 1000}s` : span(Math.floor(ms / CLOCK_TICK_MS) * CLOCK_TICK_MS);
+}
+
 /** "3s ago", "in 4m 10s". Coarse past a minute, so a list does not need to tick every second. */
 export function relative(iso: string, now: number): string {
   const t = Date.parse(iso);

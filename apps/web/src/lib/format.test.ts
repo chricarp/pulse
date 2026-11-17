@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { splitPrompt } from "../views/common/PromptView";
-import { hasHiddenCharacters, relative, span, splitForMiddle, tildify, tildifyText, visible } from "./format";
+import { hasHiddenCharacters, relative, runDuration, span, splitForMiddle, tildify, tildifyText, visible } from "./format";
 
 describe("untrusted text", () => {
   it("shows bidi overrides, zero-width and control characters instead of obeying them", () => {
@@ -32,6 +32,17 @@ describe("times", () => {
     const now = Date.parse("2026-11-16T10:00:00Z");
     expect(relative("2026-11-16T09:59:30Z", now)).toBe("30s ago");
     expect(relative("2026-11-16T10:04:00Z", now)).toBe("in 4m");
+  });
+
+  it("shows a running run's elapsed time at the coarse clock's precision, moving with it", () => {
+    const start = Date.parse("2026-11-16T10:00:00Z");
+    const run = { started_at: "2026-11-16T10:00:00Z", ended_at: null } as const;
+    // The list renders when the clock ticks (every 10 s), not every second: no figure finer
+    // than that, which would read as exact and then sit still.
+    const ticks = [484, 8_400, 10_200, 25_000, 95_000, 3_725_000].map((ms) => runDuration(run, start + ms));
+    expect(ticks).toEqual(["<10s", "<10s", "10s", "20s", "1m 30s", "1h 02m"]);
+    expect(runDuration({ started_at: "2026-11-16T10:00:00Z", ended_at: "2026-11-16T10:00:08.4Z" }, start + 60_000)).toBe("8.4s");
+    expect(runDuration({ started_at: null, ended_at: null }, start)).toBe("");
   });
 });
 

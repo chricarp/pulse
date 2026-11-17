@@ -7,7 +7,7 @@ import { navigate, setSearch, useLocation } from "../../app/router";
 import type { RunFilter, RunStatus, RunSummary } from "../../contracts";
 import { applyRunChanges } from "../../app/daemon";
 import { RUN_STATUS_LABEL, runTone } from "../../lib/explain";
-import { count, dayAndTime, shortId, span } from "../../lib/format";
+import { count, dayAndTime, runDuration, shortId } from "../../lib/format";
 import { Empty, Notice, Pill, Select, cx, useNow } from "../../ui/primitives";
 import { RunDetail } from "./RunDetail";
 
@@ -215,7 +215,7 @@ export function RunList({
                     {dayAndTime(r.created_at, now)}
                   </span>
                   <span className="c-dur num" role="cell">
-                    {r.started_at ? span(Math.max(0, (r.ended_at ? Date.parse(r.ended_at) : Math.max(now, Date.now())) - Date.parse(r.started_at))) : ""}
+                    {runDuration(r, Math.max(now, Date.now()))}
                   </span>
                   <span className="c-id mono faint" role="cell">
                     {shortId(r.id)}
