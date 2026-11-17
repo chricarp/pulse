@@ -250,6 +250,7 @@ pub(crate) mod test_support {
                 causation_run: None,
                 causation: None,
                 chain_depth: 0,
+                inference: None,
                 replay_of: None,
             },
             prompt: Some(RenderedPrompt {

@@ -3,7 +3,7 @@
 
 use pulse_contracts::rpc::{NameParams, method};
 use pulse_contracts::status::SourceState;
-use pulse_contracts::{BlockReason, Causation, DeliveryOutcome, Event, RunStatus};
+use pulse_contracts::{BlockReason, Causation, DeliveryOutcome, Event, Inference, RunStatus};
 use serde_json::json;
 
 use crate::support::*;
@@ -127,6 +127,8 @@ async fn a_run_writing_into_its_own_watched_folder_is_blocked_as_a_self_trigger(
             full.ended_at
         );
         assert_eq!(out.causation, Some(Causation::Inferred), "{case}");
+        // A command agent never reports its writes: that, not an opaque tool, is the guess.
+        assert_eq!(out.inference, Some(Inference::Unreported), "{case}");
         assert_eq!(out.chain_depth, 1, "{case}");
         let detail = watch.detail(out.id).await;
         assert_eq!(
@@ -143,6 +145,7 @@ async fn a_run_writing_into_its_own_watched_folder_is_blocked_as_a_self_trigger(
             assert_eq!(code, 0);
             assert!(text.contains("loop protection"), "{text}");
             assert!(text.contains(&format!("own run {} (inferred: ", run.id)), "{text}");
+            assert!(text.contains("never reports what it writes"), "{text}");
             // --fresh drops the rule's history, not the event's cause, and says so.
             let id = out.id.to_string();
             let args = ["test-rule", "on-new-file", "--event", &id, "--fresh"];
@@ -261,10 +264,19 @@ run = {{ agent = "writer", prompt = "Handle {{{{path}}}}" }}
                 assert_eq!(code, 0);
                 let how = if kind == Causation::Reported { ", reported)" } else { ", inferred)" };
                 assert!(text.contains(&format!("(from run {}{how}", run.id)), "{case}: {text}");
+                assert!(
+                    text.contains(&format!("caused by run {} ({}", run.id, &how[2..how.len() - 1])),
+                    "{case}: {text}"
+                );
                 // The rule's history says how the cause was known, as `events show` does.
                 let (_, text, _) = env.run(&["rules", "history", "on-new-file"]).await;
                 let how = if kind == Causation::Reported { "(reported: " } else { "(inferred: " };
                 assert!(text.contains(&format!("own run {} {how}", run.id)), "{case}: {text}");
+                if kind == Causation::Inferred {
+                    // Claude Code reports writes; this run ran a shell command first.
+                    assert_eq!(event.inference, Some(Inference::Unseen), "{case}");
+                    assert!(text.contains("(a shell command, say)"), "{case}: {text}");
+                }
             }
             Want::Fires => {
                 assert_eq!(event.causation_run, None, "{case}");

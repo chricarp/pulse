@@ -120,13 +120,18 @@ pub async fn events(ctx: &Ctx, args: EventsArgs) -> Res {
             .await?;
         let Some(out) = ctx.answer(&detail) else { return Ok(ExitCode::SUCCESS) };
         out.line(&format::event_line(&detail.event));
+        if let (Some(run), Some(cause)) =
+            (detail.event.causation_run, EventCause::of(&detail.event))
+        {
+            out.line(&format!("caused by run {run} ({})", format::causation(cause)));
+        }
         out.line(&serde_json::to_string_pretty(&detail.event.data).unwrap_or_default());
         if detail.deliveries.is_empty() {
             out.line("No rule matched this event.");
         }
         for d in &detail.deliveries {
             let status = detail.runs.iter().find(|r| Some(r.id) == d.run).map(|r| r.status);
-            out.line(&format::delivery_line(d, detail.event.causation, status));
+            out.line(&format::delivery_line(d, EventCause::of(&detail.event), status));
         }
         for r in &detail.runs {
             out.line(&format!("run {}", format::run_line(r)));
@@ -167,7 +172,7 @@ pub async fn replay(ctx: &Ctx, args: ReplayArgs) -> Res {
         out.line("No rule matched.");
     }
     for d in &res.deliveries {
-        out.line(&format::delivery_line(d, res.event.causation, None));
+        out.line(&format::delivery_line(d, EventCause::of(&res.event), None));
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -28,7 +28,9 @@ pub mod template;
 pub mod time;
 pub mod typescript;
 
-pub use event::{Attribution, Causation, Event, EventType, NewEvent, SourceKind, SourceRef};
+pub use event::{
+    Attribution, Causation, Event, EventType, Inference, NewEvent, SourceKind, SourceRef,
+};
 pub use ids::{DeliveryId, EventId, RunId, SubscriptionId, Ulid};
 pub use run::{
     BlockReason, Decision, Delivery, DeliveryOutcome, Outcome, OutputKind, RenderedPrompt, Run,

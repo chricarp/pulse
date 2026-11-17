@@ -42,7 +42,8 @@ only when it is blind. There are three strengths of knowledge, and the log says 
   active when the daemon restarted, and to a Claude Code run from the moment it calls anything
   whose writes are invisible: `Bash`, a subagent, an MCP tool, any tool Pulse does not know.
   A call that Claude Code refuses still counts. The run's output carries a marker saying when
-  and why this happened.
+  and why this happened. The event records which of the three it was (`pulseinference`:
+  `unreported`, `unseen` or `reloaded`), and the UI and the CLI explain the guess accordingly.
 
 Where each can be wrong:
 
@@ -90,19 +91,22 @@ writes a copy of each new file there:
 
 ```console
 $ pulse rules history copy-files
-2026-11-16T10:20:50.715Z  copy-files           blocked: loop protection: the event was attributed to this rule's own run 01M7HXZAP64BNK835NXSXTP6MK (inferred: it appeared in the run's working directory while the run's writes were not visible)  [event 01M7HXZCMVAMZHABKDGR2Z6QDP]
+2026-11-16T10:20:50.715Z  copy-files           blocked: loop protection: the event was attributed to this rule's own run 01M7HXZAP64BNK835NXSXTP6MK (inferred: it appeared in the run's working directory, and the run's agent (a command or Codex) never reports what it writes)  [event 01M7HXZCMVAMZHABKDGR2Z6QDP]
     if you made this change yourself: pulse replay 01M7HXZCMVAMZHABKDGR2Z6QDP
 2026-11-16T10:20:48.710Z  copy-files           fired  run 01M7HXZAP64BNK835NXSXTP6MK  [event 01M7HXZAP64BNK835NXSXTP6MJ]
 
 $ pulse events show 01M7HXZCMVAMZHABKDGR2Z6QDP
 2026-11-16T10:20:48.715Z  fs.file.created /home/me/loop/one.txt.copy  (from run 01M7HXZAP64BNK835NXSXTP6MK, inferred)  [01M7HXZCMVAMZHABKDGR2Z6QDP]
+caused by run 01M7HXZAP64BNK835NXSXTP6MK (inferred: it appeared in the run's working directory, and the run's agent (a command or Codex) never reports what it writes)
 …
 ```
 
 `pulse rules history` says how the cause was known (`exact`, `reported` or `inferred`) on each
 loop-protection block; `pulse events show` says `reported` or `inferred` after the run id, and
-nothing after it means exact. `--json` output has `pulsecausation: "exact"`, `"reported"` or
-`"inferred"` on the event, and `rules history --json` has the same in `causes`, by event id.
+nothing after it means exact, and its `caused by run` line explains it. `--json` output has
+`pulsecausation: "exact"`, `"reported"` or `"inferred"` on the event, with `pulseinference`
+saying why an inferred one is a guess, and `rules history --json` has both in `causes`, by
+event id (`{"kind": "inferred", "inference": "unreported"}`).
 
 `pulse test-rule` reports loop protection for such an event even with `--fresh`, because the
 cause is recorded on the event, not in the rule's history; it says so and prints the `pulse

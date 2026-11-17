@@ -10,7 +10,7 @@ use ts_rs::TS;
 use super::{RpcError, RpcMethod, decode_params, encode_result};
 use crate::catalog::{EventTypeInfo, ProcessExitedData};
 use crate::config::{AgentConfig, ConfigError, ConfigOrigin, RuleConfig, SourceConfig, TypeGlob};
-use crate::event::{Causation, Event};
+use crate::event::{Causation, Event, Inference};
 use crate::ids::{DeliveryId, EventId, RunId, SubscriptionId};
 use crate::run::{Decision, Delivery, OutputStats, Run, RunOutputChunk, RunStatus, RunSummary};
 use crate::status::{Project, SourceHealth, SystemStatus};
@@ -436,9 +436,25 @@ pub struct DeliveryPage {
     pub deliveries: Vec<Delivery>,
     pub next_cursor: Option<DeliveryId>,
     /// For the loop-protection blocks in this page: how their event was attributed to the run
-    /// (`exact`, `reported`, `inferred`). The kind is recorded on the event, not the delivery.
+    /// (`exact`, `reported`, `inferred`, and for an inferred cause why). It is recorded on the
+    /// event, not the delivery.
     #[serde(default)]
-    pub causes: BTreeMap<EventId, Causation>,
+    pub causes: BTreeMap<EventId, EventCause>,
+}
+
+/// How an event was attributed to the run that caused it, as recorded on the event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(optional_fields = nullable)]
+pub struct EventCause {
+    pub kind: Causation,
+    /// For an inferred cause: what Pulse could not see of the run's writes.
+    pub inference: Option<Inference>,
+}
+
+impl EventCause {
+    pub fn of(event: &Event) -> Option<EventCause> {
+        event.causation.map(|kind| EventCause { kind, inference: event.inference })
+    }
 }
 
 // ---- agents ----

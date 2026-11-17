@@ -6,7 +6,7 @@ import { href, navigate } from "../../app/router";
 import { attempt } from "../../app/toasts";
 import type { Delivery, EventDetail as Detail, RunSummary } from "../../contracts";
 import { RpcCallError } from "../../rpc/client";
-import { CAUSATION, deliveryLabel, deliveryTone, outcomeSentence, RUN_STATUS_LABEL, runTone } from "../../lib/explain";
+import { CAUSATION, causationWhy, deliveryLabel, deliveryTone, outcomeSentence, RUN_STATUS_LABEL, runTone } from "../../lib/explain";
 import { EMPTY_FILTER, type FeedFilter } from "../../lib/filter";
 import { count, dayAndTime, hasHiddenCharacters, shortId, sourceName, visible } from "../../lib/format";
 import { typeGlobMatches } from "../../lib/syntax";
@@ -221,7 +221,7 @@ function Causation({ event }: { event: Detail["event"] }) {
         </>
       }
     >
-      {how.why}{" "}
+      {causationWhy(event.pulsecausation ?? "inferred", event.pulseinference)}{" "}
       Chain depth <span className="num">{event.pulsechaindepth}</span>.
     </Notice>
   );

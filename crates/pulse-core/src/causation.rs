@@ -19,7 +19,9 @@
 
 use std::collections::BTreeSet;
 
-use pulse_contracts::{Attribution, Causation, Duration, EventType, NewEvent, RunId, Timestamp};
+use pulse_contracts::{
+    Attribution, Causation, Duration, EventType, Inference, NewEvent, RunId, Timestamp,
+};
 
 use crate::path::{is_clean_absolute, is_within};
 
@@ -44,13 +46,14 @@ pub struct RecentRun {
 /// A run is **observed** while every tool call it made was either known to be read-only or a
 /// write that named its path; it is **opaque** from the first call whose writes cannot be seen,
 /// when more than [`RunWrites::MAX_PATHS`] paths were reported, or from the start if its
-/// adapter cannot report writes at all. Opaque is for good. Written paths are kept either way
+/// adapter cannot report writes at all. Opaque is for good, and remembers why (the first
+/// reason), so an inferred cause can say which guess it is. Written paths are kept either way
 /// (up to the bound), so a reported write is attributed exactly even in an opaque run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunWrites {
     /// Clean absolute paths, in every spelling the caller knows for them.
     paths: BTreeSet<String>,
-    opaque: bool,
+    opaque: Option<Inference>,
 }
 
 impl RunWrites {
@@ -62,12 +65,17 @@ impl RunWrites {
         RunWrites::default()
     }
 
-    /// Writes cannot be told apart: attribution in the working directory is inferred.
-    pub fn opaque() -> RunWrites {
-        RunWrites { paths: BTreeSet::new(), opaque: true }
+    /// Writes cannot be told apart, for `why`: attribution in the working directory is inferred.
+    pub fn opaque(why: Inference) -> RunWrites {
+        RunWrites { paths: BTreeSet::new(), opaque: Some(why) }
     }
 
     pub fn is_opaque(&self) -> bool {
+        self.opaque.is_some()
+    }
+
+    /// Why the run's writes cannot be seen, if they cannot.
+    pub fn opacity(&self) -> Option<Inference> {
         self.opaque
     }
 
@@ -96,7 +104,9 @@ impl RunWrites {
 
     /// Something happened whose writes cannot be seen. Returns whether the run was observed.
     pub fn make_opaque(&mut self) -> bool {
-        !std::mem::replace(&mut self.opaque, true)
+        let was = self.opaque.is_none();
+        self.opaque.get_or_insert(Inference::Unseen);
+        was
     }
 }
 
@@ -111,11 +121,18 @@ pub fn attribute(
         return Some(Attribution {
             run: run.id,
             kind: Causation::Exact,
+            inference: None,
             chain_depth: run.chain_depth,
         });
     }
-    cause_of_change(&new.type_, &new.paths(), new.time, runs, grace)
-        .map(|(run, kind)| Attribution { run: run.id, kind, chain_depth: run.chain_depth })
+    cause_of_change(&new.type_, &new.paths(), new.time, runs, grace).map(|(run, kind)| {
+        Attribution {
+            run: run.id,
+            kind,
+            inference: (kind == Causation::Inferred).then(|| run.writes.opacity()).flatten(),
+            chain_depth: run.chain_depth,
+        }
+    })
 }
 
 /// The cause of a filesystem or git event that did not name its run: `Reported` or `Inferred`.
@@ -188,7 +205,7 @@ mod tests {
     fn attribution_table() {
         use Causation::{Inferred as I, Reported as R};
         let grace = Duration::from_secs(30);
-        let opaque = RunWrites::opaque;
+        let opaque = || RunWrites::opaque(Inference::Unreported);
         let runs = vec![
             run(1, Some("/home/me/University"), 1_000, None, opaque()),
             run(2, Some("/home/me/University/Arch"), 2_000, Some(10_000), opaque()),
@@ -297,8 +314,12 @@ mod tests {
     #[test]
     fn exact_beats_inferred_and_unknown_ids_are_ignored() {
         let grace = Duration::from_secs(30);
-        let runs = vec![run(1, Some("/w"), 0, None, RunWrites::opaque())];
-        let other = run(7, None, 0, None, RunWrites::opaque());
+        let runs = vec![
+            run(1, Some("/w"), 0, None, RunWrites::opaque(Inference::Unreported)),
+            run(2, Some("/claude"), 0, None, wrote(&["/claude/a.md"], true)),
+            run(3, Some("/orphan"), 0, None, RunWrites::opaque(Inference::Reloaded)),
+        ];
+        let other = run(7, None, 0, None, RunWrites::opaque(Inference::Reloaded));
         let mut new = NewEvent {
             type_: EventType::new("fs.file.created").unwrap(),
             source: pulse_contracts::SourceRef::new(pulse_contracts::SourceKind::Fs, "w"),
@@ -310,10 +331,31 @@ mod tests {
             causation_run: Some(other.id),
         };
         let a = attribute(&new, Some(&other), &runs, grace).unwrap();
-        assert_eq!((a.run, a.kind, a.chain_depth), (other.id, Causation::Exact, 7));
-        // The caller did not find the named run: fall back to inference.
+        assert_eq!(
+            (a.run, a.kind, a.chain_depth, a.inference),
+            (other.id, Causation::Exact, 7, None)
+        );
+        // The caller did not find the named run: fall back to inference, which says what the
+        // guess rests on.
         let a = attribute(&new, None, &runs, grace).unwrap();
-        assert_eq!((a.run, a.kind), (runs[0].id, Causation::Inferred));
+        assert_eq!(
+            (a.run, a.kind, a.inference),
+            (runs[0].id, Causation::Inferred, Some(Inference::Unreported))
+        );
+        for (path, run, want) in [
+            ("/claude/b.md", 1, Some(Inference::Unseen)),
+            ("/claude/a.md", 1, None),
+            ("/orphan/c", 2, Some(Inference::Reloaded)),
+        ] {
+            let e = NewEvent {
+                subject: Some(path.into()),
+                data: serde_json::json!({"path": path}),
+                causation_run: None,
+                ..new.clone()
+            };
+            let a = attribute(&e, None, &runs, grace).unwrap();
+            assert_eq!((a.run, a.inference), (runs[run].id, want), "{path}");
+        }
         // A found run that is not the one named is not used as exact.
         new.causation_run = None;
         assert_eq!(attribute(&new, Some(&other), &runs, grace).unwrap().kind, Causation::Inferred);

@@ -8,6 +8,7 @@
 import type {
   AgentConfig,
   Causation,
+  EventCause,
   AgentInfo,
   ConfigError,
   ConfigOrigin,
@@ -462,6 +463,8 @@ export class MockDaemon {
     if (run) {
       event.pulsecausationrun = run.id;
       event.pulsecausation = spec.causation ?? "inferred";
+      // Like the daemon: an inferred cause says why the run's writes were not visible.
+      if (event.pulsecausation === "inferred") event.pulseinference = run.snapshot.agent.adapter === "claude-code" ? "unseen" : "unreported";
     }
     if (spec.replayOf) event.pulsereplayof = spec.replayOf;
     this.events.push(event);
@@ -1294,11 +1297,11 @@ export class MockDaemon {
         out.push(d);
       }
       // The daemon's: how each loop-protection block's event was attributed.
-      const causes: Record<string, Causation> = {};
+      const causes: Record<string, EventCause> = {};
       for (const d of out) {
         if (d.outcome.kind !== "blocked" || (d.outcome.reason.reason !== "loop_self_trigger" && d.outcome.reason.reason !== "loop_chain_depth")) continue;
-        const c = this.eventById.get(d.event)?.pulsecausation;
-        if (c) causes[d.event] = c;
+        const e = this.eventById.get(d.event);
+        if (e?.pulsecausation) causes[d.event] = { kind: e.pulsecausation, inference: e.pulseinference ?? null };
       }
       return { deliveries: out, next_cursor: more ? (out.at(-1)?.id ?? null) : null, causes };
     },

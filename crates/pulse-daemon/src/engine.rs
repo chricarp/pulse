@@ -20,8 +20,8 @@ use pulse_contracts::config::Config;
 use pulse_contracts::rpc::StateTopic;
 use pulse_contracts::run::RunSnapshot;
 use pulse_contracts::{
-    BlockReason, Delivery, Event, EventId, NewEvent, Outcome, RunId, RunStatus, RunSummary,
-    Timestamp,
+    BlockReason, Delivery, Event, EventId, Inference, NewEvent, Outcome, RunId, RunStatus,
+    RunSummary, Timestamp,
 };
 use pulse_core::dedupe::Dedupe;
 use pulse_core::limits::{FireHistory, history_capacity};
@@ -239,7 +239,7 @@ impl Engine {
                 ended_at,
                 chain_depth: run.chain_depth,
                 // Nobody reads its output any more.
-                writes: RunWrites::opaque(),
+                writes: RunWrites::opaque(Inference::Reloaded),
             });
         }
         Ok(())
@@ -423,8 +423,8 @@ impl Engine {
             started_at: run.started_at.unwrap_or(run.created_at),
             ended_at: run.ended_at,
             chain_depth: run.chain_depth,
-            // Only used as an exact cause.
-            writes: RunWrites::opaque(),
+            // Only used as an exact cause (no working directory, so never inferred).
+            writes: RunWrites::opaque(Inference::Reloaded),
         })
     }
 

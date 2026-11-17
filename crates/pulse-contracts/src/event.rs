@@ -44,6 +44,10 @@ pub struct Event {
     pub causation_run: Option<RunId>,
     #[serde(rename = "pulsecausation", default, skip_serializing_if = "Option::is_none")]
     pub causation: Option<Causation>,
+    /// For an `inferred` cause, what Pulse could not see of the run's writes, which is why it
+    /// had to guess. Absent on events recorded before it was kept.
+    #[serde(rename = "pulseinference", default, skip_serializing_if = "Option::is_none")]
+    pub inference: Option<Inference>,
     /// 0 for events with no causing run; otherwise the causing run's chain depth.
     #[serde(rename = "pulsechaindepth", default)]
     pub chain_depth: u32,
@@ -80,11 +84,27 @@ pub enum Causation {
     Inferred,
 }
 
+/// Why the writes of a run are opaque, so that a change in its working directory can only be
+/// attributed to it by inference. Each needs a different explanation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Inference {
+    /// Its agent's adapter does not report writes at all (`command`, `codex`): Pulse sees none.
+    Unreported,
+    /// It did something whose writes Pulse cannot see (Claude Code ran a shell command, a
+    /// subagent or an MCP tool, or wrote a path Pulse could not resolve).
+    Unseen,
+    /// It was running when the daemon restarted; its output is no longer read.
+    Reloaded,
+}
+
 /// The causation attached to an event when the engine accepts it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attribution {
     pub run: RunId,
     pub kind: Causation,
+    /// Set when `kind` is `Inferred`.
+    pub inference: Option<Inference>,
     /// The causing run's chain depth; becomes the event's `pulsechaindepth`.
     pub chain_depth: u32,
 }
@@ -127,6 +147,7 @@ impl NewEvent {
             coalesced: self.coalesced,
             causation_run: attribution.map(|a| a.run),
             causation: attribution.map(|a| a.kind),
+            inference: attribution.and_then(|a| a.inference),
             chain_depth: attribution.map_or(0, |a| a.chain_depth),
             replay_of,
         }
@@ -338,7 +359,12 @@ mod tests {
             causation_run: None,
         };
         let run = RunId::from_ulid(Ulid::from_parts(5, 5));
-        let attribution = Attribution { run, kind: Causation::Inferred, chain_depth: 2 };
+        let attribution = Attribution {
+            run,
+            kind: Causation::Inferred,
+            inference: Some(Inference::Unreported),
+            chain_depth: 2,
+        };
         let ev =
             new.into_event(EventId::from_ulid(Ulid::from_parts(9, 9)), Some(attribution), None);
         let json = serde_json::to_value(&ev).unwrap();
@@ -347,6 +373,7 @@ mod tests {
         assert_eq!(json["source"], "pulse://fs/university");
         assert_eq!(json["pulsecoalesced"], 3);
         assert_eq!(json["pulsecausation"], "inferred");
+        assert_eq!(json["pulseinference"], "unreported");
         assert_eq!(json["pulsechaindepth"], 2);
         assert!(json.get("pulsereplayof").is_none());
         let back: Event = serde_json::from_value(json).unwrap();

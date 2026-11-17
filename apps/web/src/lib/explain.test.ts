@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { DeliveryOutcome, EventOutcome, RunStatus } from "../contracts";
-import { currentOutcomes, pickMarkers } from "./explain";
+import { causationWhy, currentOutcomes, pickMarkers } from "./explain";
 
 let n = 0;
 const o = (rule: string, outcome: DeliveryOutcome, run_status: RunStatus | null = null): EventOutcome => ({
@@ -60,5 +60,20 @@ describe("pickMarkers", () => {
     const { shown, rest } = pickMarkers(currentOutcomes(list), 2);
     expect(shown.map((c) => c.rule)).toEqual(want);
     expect(rest).toHaveLength(list.length - 2);
+  });
+});
+
+describe("causationWhy", () => {
+  it("says which guess an inferred cause is", () => {
+    // A command or Codex agent: Pulse never sees its writes; no shell command is involved.
+    expect(causationWhy("inferred", "unreported")).toMatch(/never reports what it writes/);
+    expect(causationWhy("inferred", "unreported")).not.toMatch(/shell command/);
+    // Claude Code ran something opaque.
+    expect(causationWhy("inferred", "unseen")).toMatch(/a shell command, say/);
+    // Reloaded after a restart: its output is no longer read.
+    expect(causationWhy("inferred", "reloaded")).toMatch(/daemon restarted.*no longer reads its output/);
+    // Recorded before the reason was kept: no claim about which.
+    expect(causationWhy("inferred", null)).not.toMatch(/shell command|never reports|restarted/);
+    expect(causationWhy("reported", null)).toMatch(/tool call named this file/);
   });
 });

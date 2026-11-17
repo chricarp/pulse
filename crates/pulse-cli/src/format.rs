@@ -1,9 +1,10 @@
 //! Text output.
 
+use pulse_contracts::rpc::EventCause;
 use pulse_contracts::run::RunOutputChunk;
 use pulse_contracts::{
-    BlockReason, Causation, Decision, Delivery, DeliveryOutcome, Event, Outcome, OutputKind,
-    RunStatus, RunSummary,
+    BlockReason, Causation, Decision, Delivery, DeliveryOutcome, Event, Inference, Outcome,
+    OutputKind, RunStatus, RunSummary,
 };
 
 /// Event content shown on a terminal: escape sequences could recolour or retitle the terminal,
@@ -123,12 +124,22 @@ pub fn delivery_outcome(o: &DeliveryOutcome) -> String {
     }
 }
 
-/// How an event's causing run is known, for people.
-pub fn causation(c: Causation) -> &'static str {
-    match c {
-        Causation::Exact => "exact: the run sent it itself",
-        Causation::Reported => "reported: its agent's tool call named the path",
-        Causation::Inferred => {
+/// How an event's causing run is known, for people. An inferred cause says which guess it is:
+/// the same three cases as the web UI's `INFERENCE` table, in the CLI's words.
+pub fn causation(c: EventCause) -> &'static str {
+    match (c.kind, c.inference) {
+        (Causation::Exact, _) => "exact: the run sent it itself",
+        (Causation::Reported, _) => "reported: its agent's tool call named the path",
+        (Causation::Inferred, Some(Inference::Unreported)) => {
+            "inferred: it appeared in the run's working directory, and the run's agent (a command or Codex) never reports what it writes"
+        }
+        (Causation::Inferred, Some(Inference::Unseen)) => {
+            "inferred: it appeared in the run's working directory after the run did something whose writes Pulse cannot see (a shell command, say)"
+        }
+        (Causation::Inferred, Some(Inference::Reloaded)) => {
+            "inferred: it appeared in the run's working directory while the run outlived a daemon restart, after which its output is no longer read"
+        }
+        (Causation::Inferred, None) => {
             "inferred: it appeared in the run's working directory while the run's writes were not visible"
         }
     }
@@ -140,7 +151,7 @@ pub fn causation(c: Causation) -> &'static str {
 /// approval" for good, and its run says whether it was approved.
 pub fn delivery_line(
     d: &Delivery,
-    cause: Option<Causation>,
+    cause: Option<EventCause>,
     run_status: Option<RunStatus>,
 ) -> String {
     let run = d

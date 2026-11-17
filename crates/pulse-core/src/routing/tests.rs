@@ -60,6 +60,7 @@ fn ev(n: u64, type_: &str, subject: &str, data: Value) -> Event {
         causation_run: None,
         causation: None,
         chain_depth: 0,
+        inference: None,
         replay_of: None,
     }
 }

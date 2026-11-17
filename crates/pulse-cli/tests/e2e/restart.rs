@@ -3,7 +3,7 @@
 
 use pulse_contracts::rpc::EventFilter;
 use pulse_contracts::status::SourceState;
-use pulse_contracts::{BlockReason, DeliveryOutcome, Event, RunStatus};
+use pulse_contracts::{BlockReason, DeliveryOutcome, Event, Inference, RunStatus};
 
 use crate::support::*;
 
@@ -249,6 +249,8 @@ async fn an_agent_orphaned_by_a_crash_cannot_retrigger_its_rule_after_the_restar
     release(&env, run.id).await;
     let out = created(&mut watch, &format!("out-{}.txt", run.id)).await;
     assert_eq!(out.causation_run, Some(run.id), "{out:#?}");
+    // Its output is no longer read after the restart: that is why the cause is a guess.
+    assert_eq!(out.inference, Some(Inference::Reloaded), "{out:#?}");
     let detail = watch.detail(out.id).await;
     assert_eq!(
         outcome(&detail, "on-new-file"),

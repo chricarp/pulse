@@ -109,6 +109,7 @@ mod tests {
             causation_run: None,
             causation: None,
             chain_depth: 0,
+            inference: None,
             replay_of: None,
         }
     }

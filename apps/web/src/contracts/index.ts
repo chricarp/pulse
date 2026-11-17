@@ -189,9 +189,10 @@ export type DeliveryPage = {
 deliveries: Array<Delivery>, next_cursor?: DeliveryId | null, 
 /**
  * For the loop-protection blocks in this page: how their event was attributed to the run
- * (`exact`, `reported`, `inferred`). The kind is recorded on the event, not the delivery.
+ * (`exact`, `reported`, `inferred`, and for an inferred cause why). It is recorded on the
+ * event, not the delivery.
  */
-causes: { [key in EventId]: Causation }, };
+causes: { [key in EventId]: EventCause }, };
 
 export type Duration = string;
 
@@ -215,9 +216,20 @@ pulsecoalesced?: number | null,
  */
 pulsecausationrun?: RunId | null, pulsecausation?: Causation | null, 
 /**
+ * For an `inferred` cause, what Pulse could not see of the run's writes, which is why it
+ * had to guess. Absent on events recorded before it was kept.
+ */
+pulseinference?: Inference | null, 
+/**
  * 0 for events with no causing run; otherwise the causing run's chain depth.
  */
 pulsechaindepth: number, pulsereplayof?: EventId | null, };
+
+export type EventCause = { kind: Causation, 
+/**
+ * For an inferred cause: what Pulse could not see of the run's writes.
+ */
+inference?: Inference | null, };
 
 export type EventDetail = { event: Event, deliveries: Array<Delivery>, runs: Array<RunSummary>, };
 
@@ -379,6 +391,8 @@ export type GitSourceSettings = {
  * The repository's working tree.
  */
 path: string, };
+
+export type Inference = "unreported" | "unseen" | "reloaded";
 
 export type IngestEvent = { 
 /**

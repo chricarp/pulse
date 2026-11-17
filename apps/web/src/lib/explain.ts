@@ -1,6 +1,6 @@
 // Words for routing outcomes and run states: what happened, and why, in one line.
 
-import type { BlockReason, Causation, DeliveryOutcome, EventOutcome, Outcome, RunStatus, SourceState, TrustState } from "../contracts";
+import type { BlockReason, Causation, DeliveryOutcome, EventOutcome, Inference, Outcome, RunStatus, SourceState, TrustState } from "../contracts";
 
 export type Tone = "ok" | "attention" | "waiting" | "loop" | "blocked" | "error" | "neutral" | "running";
 
@@ -211,9 +211,25 @@ export const CAUSATION: Record<Causation, { label: string; flag: string; tone: T
     label: "inferred",
     flag: "by agent?",
     tone: "waiting",
-    why: "The change happened inside that run's working directory while it ran (or just after), and the run had done something whose writes Pulse cannot see (a shell command, say), so Pulse attributes the change to the run. Filesystems do not say which process wrote a file, so this is a guess.",
+    // Which guess it is depends on why the run's writes are not visible: see INFERENCE.
+    why: "The change happened inside that run's working directory while it ran (or just after), at a time Pulse could not see the run's writes, so Pulse attributes the change to the run. Filesystems do not say which process wrote a file, so this is a guess.",
   },
 };
+
+/** For an inferred cause, why Pulse could not see the run's writes (`pulseinference`). */
+export const INFERENCE: Record<Inference, string> = {
+  unreported:
+    "The change happened inside that run's working directory while it ran (or just after). Its agent (a command or Codex) never reports what it writes, so Pulse cannot tell its writes from anyone else's there and attributes the change to the run. Filesystems do not say which process wrote a file, so this is a guess.",
+  unseen:
+    "The change happened inside that run's working directory while it ran (or just after), and the run had done something whose writes Pulse cannot see (a shell command, say), so Pulse attributes the change to the run. Filesystems do not say which process wrote a file, so this is a guess.",
+  reloaded:
+    "The change happened inside that run's working directory, and the run was still going when the daemon restarted. Pulse no longer reads its output, so it cannot tell the run's writes from yours and attributes the change to the run. Filesystems do not say which process wrote a file, so this is a guess.",
+};
+
+/** The explanation of how an event's cause is known, for the event detail. */
+export function causationWhy(kind: Causation, inference: Inference | null | undefined): string {
+  return kind === "inferred" && inference ? INFERENCE[inference] : CAUSATION[kind].why;
+}
 
 export const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   pending_approval: "awaiting approval",

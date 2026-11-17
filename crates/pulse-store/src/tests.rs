@@ -37,6 +37,7 @@ fn event(n: u64, type_: &str, source: &str, subject: Option<&str>, data: Value) 
         causation_run: None,
         causation: None,
         chain_depth: 0,
+        inference: None,
         replay_of: None,
     }
 }

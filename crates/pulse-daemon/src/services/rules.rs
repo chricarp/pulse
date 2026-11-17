@@ -3,7 +3,7 @@
 
 use pulse_contracts::config::{RuleConfig, Sourced, validate_name};
 use pulse_contracts::rpc::{
-    DeliveryPage, RuleHistoryParams, RuleInfo, RuleList, RuleRef, RuleRuntimeStatus,
+    DeliveryPage, EventCause, RuleHistoryParams, RuleInfo, RuleList, RuleRef, RuleRuntimeStatus,
     RuleTestParams, RuleTestResult, RuleUpsertParams,
 };
 use pulse_contracts::{BlockReason, DeliveryOutcome, Outcome, Timestamp};
@@ -243,8 +243,8 @@ impl Services {
                         }
                     );
                     if loop_block && !page.causes.contains_key(&d.event) {
-                        if let Some(kind) = q.event(d.event)?.and_then(|e| e.causation) {
-                            page.causes.insert(d.event, kind);
+                        if let Some(cause) = q.event(d.event)?.as_ref().and_then(EventCause::of) {
+                            page.causes.insert(d.event, cause);
                         }
                     }
                 }

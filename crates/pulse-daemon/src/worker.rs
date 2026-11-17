@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pulse_agents::{RunEnd, SuperviseError, SuperviseOptions, SupervisorEvent, WriteFact};
 use pulse_contracts::run::InvocationSummary;
-use pulse_contracts::{OutputKind, Run, RunId, RunOutput, RunStatus, Timestamp};
+use pulse_contracts::{Inference, OutputKind, Run, RunId, RunOutput, RunStatus, Timestamp};
 use pulse_core::path::{is_clean_absolute, rebase, resolve_reported};
 use pulse_core::{RecentRun, RunWrites};
 use pulse_store::{Effect, OutboxItem, RunTransition, StoreError};
@@ -438,7 +438,7 @@ impl RunTask {
                     state: if adapter.reports_writes() {
                         RunWrites::observed()
                     } else {
-                        RunWrites::opaque()
+                        RunWrites::opaque(Inference::Unreported)
                     },
                     cwd: invocation.cwd.display().to_string(),
                     cwd_real: tokio::fs::canonicalize(&invocation.cwd)
