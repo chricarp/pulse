@@ -255,11 +255,15 @@ What is **not** a safety boundary:
 
 ## Status and honest limits
 
-- **Platforms.** Developed and run only on **Linux arm64** (Ubuntu 24.04). macOS is in the build
-  and CI configuration but **has never been run** by a developer: the FSEvents watcher, the
-  pseudo-terminal of `pulse run`, the timer behaviour and the desktop app on macOS are untested.
-  Linux x64 has not been run either. Windows is not supported.
-- **CI** workflows exist (`.github/workflows/`) but **have never executed**.
+- **Platforms.** Developed and used only on **Linux arm64** (Ubuntu 24.04). On **macOS** and
+  **Linux x64** nobody has used Pulse yet. What has run there is CI: the Rust tests pass (their
+  end-to-end part drives the real daemon and its file watcher, FSEvents on macOS) and the
+  desktop package builds. The desktop app, the browser UI and the timer behaviour on macOS are
+  **untested**. Windows is not supported.
+- **CI** (`.github/workflows/`) runs the Rust tests on Linux x64 and macOS, the web and desktop
+  unit checks, and the desktop packaging on four targets. It first ran on 19 November 2026.
+  The browser suites and the desktop end-to-end scenarios are not in CI; they have run only on
+  the development machine.
 - **Desktop app.** Unsigned, with no auto-update. On macOS, Gatekeeper blocks the first open
   (workaround in [the desktop guide](docs/user/desktop.md#platform-notes)). The tray icon on real
   desktops, native notifications, the `.dmg`, and x64 builds are **unverified**; what was tested

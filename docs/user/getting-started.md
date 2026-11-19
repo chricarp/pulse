@@ -3,7 +3,7 @@
 This page takes you from a clone to a rule that runs, first with a harmless command (free, no
 model), then with the two shipped templates (which run a real agent and cost money).
 
-Lictory Pulse is developed and run on Linux. macOS should work but has not been run by anyone yet; see
+Lictory Pulse is developed and run on Linux. macOS passes the tests in CI but nobody has used Pulse there yet; see
 [Status](../../README.md#status-and-honest-limits).
 
 ## Build
