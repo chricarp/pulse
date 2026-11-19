@@ -239,8 +239,11 @@ impl TestDaemon {
 
     pub async fn start_with(config: &str, setup: Setup) -> TestDaemon {
         let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("pulse-home");
-        let user_home = dir.path().join("user");
+        // Canonical, so paths the daemon resolved compare equal to paths a test builds: on
+        // macOS the temp directory is reached through a symlink (`/var` is `/private/var`).
+        let root = dir.path().canonicalize().unwrap();
+        let home = root.join("pulse-home");
+        let user_home = root.join("user");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&user_home).unwrap();
         std::fs::write(home.join("pulse.toml"), config).unwrap();
