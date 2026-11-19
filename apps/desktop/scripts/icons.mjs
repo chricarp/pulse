@@ -1,29 +1,22 @@
 // Renders every icon the app needs from the one source, assets/icon.svg:
 //   icon.png             1024 px, the app icon (electron-builder makes .icns and the Linux set from it)
 //   tray.png, tray-dim.png        32 px tray icons for Linux (dim: paused, or no daemon)
-//   trayTemplate.png, @2x         macOS menu bar template images: the badge with its letter cut out,
+//   trayTemplate.png, @2x         macOS menu bar template images: the badge with its mark cut out,
 //                                 black on transparent, which macOS tints for the menu bar
-// The SVG uses a system font for its letter, so the result depends slightly on the fonts installed
-// where it is built.
+// The SVG is paths only (no text), so the result does not depend on the fonts installed where it
+// is built.
 
 import { Resvg } from "@resvg/resvg-js";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-// resvg does not know `system-ui`; the SVG's generic `sans-serif` gets a font present on build
-// machines of each platform (it falls back to any font if that one is missing).
-const SANS = process.platform === "darwin" ? "Helvetica" : "Liberation Sans";
-
 function render(svg, size) {
-  return new Resvg(svg, {
-    fitTo: { mode: "width", value: size },
-    font: { loadSystemFonts: true, sansSerifFamily: SANS, defaultFontFamily: SANS },
-  })
+  return new Resvg(svg, { fitTo: { mode: "width", value: size }, font: { loadSystemFonts: false } })
     .render()
     .asPng();
 }
 
-/** The badge as a mask: the rounded square, with the letter (and anything else drawn on it) cut out. */
+/** The badge as a mask: the rounded square, with the mark (everything else drawn on it) cut out. */
 function templateSvg(source) {
   const shape = /<rect\b[^>]*\/>/.exec(source)?.[0];
   if (!shape) throw new Error("assets/icon.svg: expected a <rect> as the badge");
@@ -32,7 +25,8 @@ function templateSvg(source) {
     .replace(/^[\s\S]*?<svg\b[^>]*>/, "")
     .replace(/<\/svg>\s*$/, "")
     .replace(shape, "")
-    .replace(/fill="[^"]*"/g, 'fill="#000"');
+    // Painted fills and strokes become black (cut out); `none` stays none.
+    .replace(/\b(fill|stroke)="(?!none")[^"]*"/g, '$1="#000"');
   const white = shape.replace(/fill="[^"]*"/, 'fill="#fff"');
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}"><defs><mask id="m">${white}${rest}</mask></defs>${shape.replace(/fill="[^"]*"/, 'fill="#000"').replace("/>", ' mask="url(#m)"/>')}</svg>`;
 }
