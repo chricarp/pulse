@@ -24,8 +24,9 @@ use pulse_contracts::{
     NewEvent, OutputKind, RunId, RunOutput, RunStatus, RunSummary, SourceKind, SourceRef, Timestamp,
 };
 use pulse_daemon::client::Client;
+use pulse_daemon::home::InstanceLock;
 use pulse_daemon::wiring::{RealSupervisor, SourceBuilder, Supervisor, Wiring};
-use pulse_daemon::{Clock, Daemon, DaemonOptions};
+use pulse_daemon::{Clock, Daemon, DaemonOptions, PulseHome, StartError};
 use pulse_sources::{BoxFuture, Source, SourceContext, SourceError};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -253,11 +254,6 @@ impl TestDaemon {
         if std::env::var_os("PULSE_TEST_LOG").is_some() {
             let _ = tracing_subscriber::fmt().with_test_writer().try_init();
         }
-        let wiring = Wiring {
-            sources: self.sources.builder(),
-            supervisor: setup.supervisor,
-            ..Wiring::real()
-        };
         let opts = DaemonOptions {
             port: Some(0),
             clock: setup.clock,
@@ -265,7 +261,26 @@ impl TestDaemon {
             retention_every: None,
             ..DaemonOptions::new(&self.home, &self.user_home)
         };
-        self.daemon = Some(Daemon::start(opts, wiring).await.expect("daemon starts"));
+        self.daemon = Some(loop {
+            let wiring = Wiring {
+                sources: self.sources.builder(),
+                supervisor: setup.supervisor.clone(),
+                ..Wiring::real()
+            };
+            match Daemon::start(opts.clone(), wiring).await {
+                // A restart can find the home still locked after the previous daemon is gone:
+                // a child a sibling test forked meanwhile holds a copy of the lock's descriptor
+                // until it execs. Wait for the lock itself, as `pulse stop` does, and start again.
+                Err(StartError::AlreadyRunning { .. }) => {
+                    let home = PulseHome::new(&self.home);
+                    tokio::task::spawn_blocking(move || InstanceLock::wait_released(&home))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                }
+                started => break started.expect("daemon starts"),
+            }
+        });
     }
 
     pub fn port(&self) -> u16 {
