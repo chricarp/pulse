@@ -95,6 +95,8 @@ fn git(dir: &Path, args: &[&str]) {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
+        .args(["-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid"])
+        .args(["-c", "init.defaultBranch=main"])
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("HOME", dir)
@@ -189,17 +191,35 @@ async fn a_clone_and_a_checkout_in_a_watched_folder_stay_bounded() {
         "\n[[source]]\nname = \"repo\"\nkind = \"git\"\npath = \"~/watched/repo\"\n",
         "\n[[rule]]\nname = \"switched\"\non = \"git.branch.switched\"\nrun = { agent = \"quick\" }\n",
     ));
+    // The repository to clone: a first commit of two files, then one that adds 300 in nested
+    // directories, so checking out the first rewrites most of the tree. Made here rather than
+    // cloned from this checkout, which may be shallow (CI), detached, or not a repository.
+    let origin = env.mkdir("origin");
+    git(&origin, &["init", "--quiet"]);
+    std::fs::write(origin.join("README.md"), "first\n").unwrap();
+    std::fs::write(origin.join("LICENSE"), "text\n").unwrap();
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "--quiet", "-m", "first"]);
+    for d in 0..15 {
+        let dir = origin.join(format!("src/module-{d:02}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in 0..20 {
+            std::fs::write(dir.join(format!("file-{f:02}.rs")), format!("// {d} {f}\n")).unwrap();
+        }
+    }
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "--quiet", "-m", "second"]);
+
     let daemon = env.start().await;
     let mut watch = daemon.watch().await;
     watch.source_state(Some("watched"), SourceState::Healthy).await;
     let window = Arc::new(Window::default());
     let probe = probe(daemon.client().await, window.clone());
     window.open.store(true, Ordering::SeqCst);
-    let this_repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let repo = watched.join("repo");
     let out = std::process::Command::new("git")
         .args(["clone", "--quiet", "--no-hardlinks"])
-        .arg(&this_repo)
+        .arg(&origin)
         .arg(&repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()

@@ -105,7 +105,11 @@ run = {{ agent = "claude", prompt = "Review the commit: {{{{message}}}}" }}
     }
     let long = format!("{}.pdf", "x".repeat(251));
     std::fs::write(w.join(&long), "x").unwrap();
-    std::fs::write(w.join(std::ffi::OsStr::from_bytes(b"bad\xff.txt")), "x").unwrap();
+    // APFS refuses a name that is not valid UTF-8, so on macOS this case cannot come up.
+    let non_utf8_names = !cfg!(target_os = "macos");
+    if non_utf8_names {
+        std::fs::write(w.join(std::ffi::OsStr::from_bytes(b"bad\xff.txt")), "x").unwrap();
+    }
     std::fs::write(outside.join("secret.txt"), "secret").unwrap();
     std::os::unix::fs::symlink(outside.join("secret.txt"), w.join("link.txt")).unwrap();
     let message =
@@ -176,18 +180,22 @@ run = {{ agent = "claude", prompt = "Review the commit: {{{{message}}}}" }}
     assert_eq!(get("claude", "link.txt").status, RunStatus::Succeeded);
 
     // The name that is not UTF-8 is not silently lost: the source's health says so.
-    let sources = watch.client.call::<method::SourcesList>(Default::default()).await.unwrap();
-    let health = &sources.sources.iter().find(|s| s.config.name == "w").unwrap().health;
-    let last = health.last_error.as_ref().map(|e| e.message.as_str()).unwrap_or("");
-    assert!(last.contains("not valid UTF-8") && last.contains("bad"), "{health:?}");
+    if non_utf8_names {
+        let sources = watch.client.call::<method::SourcesList>(Default::default()).await.unwrap();
+        let health = &sources.sources.iter().find(|s| s.config.name == "w").unwrap().health;
+        let last = health.last_error.as_ref().map(|e| e.message.as_str()).unwrap_or("");
+        assert!(last.contains("not valid UTF-8") && last.contains("bad"), "{health:?}");
+    }
 
     // Text output cannot drive the terminal, and a newline cannot forge a line.
     let (code, out, _) = env.run(&["events", "-n", "50"]).await;
     assert_eq!(code, 0);
     assert!(!out.contains(['\x1b', '\u{202e}']), "{out:?}");
     assert!(out.contains("/new\\nline.txt"), "{out}");
-    let (_, out, _) = env.run(&["sources"]).await;
-    assert!(out.contains("not valid UTF-8"), "{out}");
+    if non_utf8_names {
+        let (_, out, _) = env.run(&["sources"]).await;
+        assert!(out.contains("not valid UTF-8"), "{out}");
+    }
 
     // External events cannot claim a built-in type, through the CLI as through HTTP.
     let (code, _, err) = env

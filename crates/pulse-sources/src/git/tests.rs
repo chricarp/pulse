@@ -275,7 +275,10 @@ fn pushes_to_a_local_bare_remote() {
     // prefixes it: `team/fork/main` is branch `main` of `team/fork`, not `fork/main` of `team`.
     g.ok("", &["init", "-q", "--bare", "fork.git"]);
     g.ok("r", &["remote", "add", "team", "../remote.git"]);
-    g.ok("r", &["remote", "add", "team/fork", "../fork.git"]);
+    // Written as config: newer git refuses `remote add` for a name that nests under another
+    // remote, but a repository configured by an older git, or by hand, still has such remotes.
+    g.ok("r", &["config", "remote.team/fork.url", "../fork.git"]);
+    g.ok("r", &["config", "remote.team/fork.fetch", "+refs/heads/*:refs/remotes/team/fork/*"]);
     g.ok("r", &["switch", "-q", "main"]);
     g.ok("r", &["push", "-q", "team/fork", "main"]);
     g.ok("r", &["push", "-q", "team", "feature/x"]);

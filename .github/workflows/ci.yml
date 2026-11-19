@@ -54,7 +54,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         # Includes the check that apps/web/src/contracts/index.ts is current.
-        run: cargo test --workspace --locked
+        # --no-fail-fast: a run reports every failing crate, not only the first.
+        run: cargo test --workspace --locked --no-fail-fast
 
   web:
     name: Web UI typecheck, lint and unit tests
