@@ -161,7 +161,7 @@ almost nothing: 167 bytes over the whole measurement above.
 ## Storms and the quiet period
 
 Storm folding needs `burst_threshold` (200) changes **pending at once**. With the default quiet
-period (2 s) a clone of this repository (about 300 files) folds, and a checkout right after it
+period (2 s) a clone of a repository of about 300 files (the test makes one) folds, and a checkout right after it
 folds into their net effect. With `quiet = "200ms"` on a loaded machine the same clone settled
 file by file before 200 were pending: 326 creations and 323 deletions, and the agent's runs were
 capped at 12 by its backlog and the circuit breaker. A slow trickle of many files (a large
