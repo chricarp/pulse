@@ -107,7 +107,7 @@ Limits: on Linux each directory takes one inotify watch, and the system limit
 (`fs.inotify.max_user_watches`) is reported in the source's health with the command to raise it.
 After a kernel queue overflow the tree is rescanned; deletions during the lost window are not
 reported. A directory moved out of the tree produces no per-file deletions. On macOS (FSEvents)
-this source has never been run.
+this source has been run by the tests in CI and by nobody else yet.
 
 ## `git`: a repository
 

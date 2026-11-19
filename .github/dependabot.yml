@@ -1,11 +1,15 @@
 version: 2
 # A week of cooldown lets the ecosystem catch a compromised or broken release
 # before it is proposed here. Security updates are not delayed.
+# The prefix makes Dependabot's titles conventional ("chore(deps): bump …"), which the
+# required "Conventional PR title" check needs.
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: chore(deps)
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
@@ -19,6 +23,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: chore(deps)
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
@@ -31,6 +37,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: chore(deps)
     cooldown:
       default-days: 7
     groups:

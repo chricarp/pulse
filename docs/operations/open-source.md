@@ -14,16 +14,21 @@ report, the date, who checked) with the decision it supports.
 
 ## Where things stand
 
-- The repository [chricarp/pulse](https://github.com/chricarp/pulse) is **private**. Nothing has
-  been published: no release, no package, no container image, no website or documentation site.
-- **The CI workflows have never executed a job.** `ci.yml`, `desktop.yml` and the hygiene
-  workflows below were written and linted locally (YAML validity). Every run since the first
-  push was refused before it started: Actions on a private repository is billed to the account,
-  and GitHub answered "recent account payments have failed or your spending limit needs to be
-  increased". Expect the first runs to need fixes.
-- **macOS has never been run.** The FSEvents watcher, the pseudo-terminal of `pulse run`, timer
-  behaviour and the desktop app on macOS are untested; so are Linux x64 and the `.dmg`. Only
-  Linux arm64 has been developed and run on (README, "Status and honest limits").
+- The repository [chricarp/pulse](https://github.com/chricarp/pulse) is **public** since
+  19 November 2026: the source and its whole history. Nothing else has been published: no
+  release, no package, no container image, no website or documentation site.
+- **CI runs and is green.** No job ran while the repository was private (Actions there is
+  billed to the account, and GitHub refused every job with "recent account payments have failed
+  or your spending limit needs to be increased"). The first runs came on 19 November 2026, right
+  after publication. The desktop packages built on all four targets at once; the Rust tests
+  needed five fixes, all in tests and none in the product
+  ([#10](https://github.com/chricarp/pulse/pull/10)), and have passed on Linux x64 and macOS
+  since. A private fork still needs working billing to run them.
+- **On macOS and Linux x64, only what CI does has been run:** the Rust tests (their end-to-end
+  part drives the real daemon and its file watcher, FSEvents on macOS) and the build of the
+  desktop package. Nobody has used Pulse on a Mac, opened the `.dmg` or the x64 AppImage, or
+  run the browser and desktop end-to-end suites there; CI does not run those suites. Only Linux
+  arm64 has been developed and run on (README, "Status and honest limits").
 - **The desktop package is unsigned**: an ad-hoc signature on macOS (Gatekeeper blocks the first
   open), no signature on Linux, no notarization and no auto-update
   ([0010](../internals/0010-desktop-shell.md#packaging)). On Ubuntu 23.10 and later the AppImage
@@ -55,12 +60,15 @@ report, the date, who checked) with the decision it supports.
   - the recorded agent output in `crates/pulse-agents/tests/fixtures/` (output of Claude Code
     and Codex CLI and of the models they ran), which the owner confirmed may be published as
     test data.
-- [ ] **Make the repository public**, after every item in
-      [Before the repository is made public](#before-the-repository-is-made-public) is done.
-- [ ] **Enable private vulnerability reporting** (Settings → Security), so the link in
-      [SECURITY.md](../../.github/SECURITY.md) works, and check who receives reports.
-- [ ] **Branch rulesets** for `main` (see [GitHub configuration](#github-configuration)),
-      including which checks are required and whether CODEOWNERS approval is required.
+- [x] **Make the repository public.** Done on 19 November 2026 at the owner's request, with one
+      item of [Before the repository is made public](#before-the-repository-is-made-public) open
+      by his decision: CI had not run. It ran green the same day.
+- [x] **Enable private vulnerability reporting.** Enabled on 19 November 2026, so the link in
+      [SECURITY.md](../../.github/SECURITY.md) works. Still for the owner: check who receives
+      the reports (Settings → Security).
+- [x] **Branch rulesets** for `main`. Set on 19 November 2026 as
+      [GitHub configuration](#github-configuration) describes it. CODEOWNERS approval is not
+      required: there is one maintainer.
 - [x] **Discussions**: decided on 19 November 2026: not enabled, issues only. If that changes,
       link them from `.github/ISSUE_TEMPLATE/config.yml`, [SUPPORT.md](../../SUPPORT.md) and
       [CONTRIBUTING.md](../../CONTRIBUTING.md); today those files point only at issues.
@@ -86,9 +94,9 @@ Everything pushed to a public repository is published, including the whole histo
 - [x] A clean checkout builds and passes the full sequence in
       [CONTRIBUTING.md](../../CONTRIBUTING.md#show-that-it-works) without private files, accounts
       or paid services. Record the result and the machine it ran on.
-- [ ] The CI workflows have run green at least once on a pull request (they can run while the
+- [x] The CI workflows have run green at least once on a pull request (they can run while the
       repository is private; the scanning workflows that need a public repository skip
-      themselves until then).
+      themselves until then). Done after publication, not before: see the record below.
 - [x] The license report passes for the commit being published (see below).
 
 ### The record for 19 November 2026
@@ -131,6 +139,19 @@ this file and two workflow triggers.
   the workflows green afterwards, before any check is required on `main`. Until that has
   happened, nothing here has been built or tested on macOS or Linux x64.
 
+What followed the same day, once the repository was public:
+
+- The **Secret scan** workflow, run by hand over the whole history, passed: it reports what the
+  local run did. GitHub's secret scanning and push protection are on and report nothing.
+- Every workflow ran green on [#10](https://github.com/chricarp/pulse/pull/10): the Rust tests
+  on Linux x64 and macOS, the web and desktop checks, the desktop package on four targets,
+  CodeQL, dependency review, gitleaks and the workflow lint. Getting there took five fixes to
+  tests that depended on where they ran: the restart race above, a git newer than the one used
+  in development, a test that cloned its own checkout, and two macOS file-system differences.
+- Dependabot reported one alert, medium severity, in `minimatch` (a denial of service through
+  crafted glob patterns), which packaging tools of the desktop build depend on. It is not in
+  the binary, the UI or the desktop app. Its automatic fix failed and it is open.
+
 ## Before any artifact is published
 
 A binary, an AppImage, a dmg, or anything else built from this repository and offered for
@@ -164,7 +185,17 @@ that protection is enabled.
   conversations, the **CI** and **Desktop** checks once they have run green, and
   **Conventional PR title**. Add CODEOWNERS approval when an independent reviewer is available;
   record any necessary sole-maintainer bypass narrowly and audit its use.
-- Prefer squash merges with the conventional PR title. Delete merged topic branches.
+
+  As set on 19 November 2026 (ruleset `main`, no bypass): no deletion, no force push, pull
+  requests with resolved conversations and no required approval, and five required checks:
+  **Conventional PR title**, **Rust (ubuntu-24.04)**, **Rust (macos-15)**, **Web UI typecheck,
+  lint and unit tests** and **Generated TypeScript compiles**. The Desktop jobs are not
+  required: `desktop.yml` runs only for pull requests that touch code or packaging, and a
+  required check that never runs would block every other pull request. `main` is the only
+  long-lived branch; the development branch `v1` was deleted once `main` had all of it.
+- Prefer squash merges with the conventional PR title. Delete merged topic branches. (Set:
+  squash and merge commits allowed, rebase merges off, the squash commit takes the pull
+  request's title, merged branches are deleted.)
 - Default the Actions token to read-only. Require maintainer approval for workflows from fork
   pull requests for all external contributors. The workflows here use no secrets; keep it that
   way for anything a pull request triggers. Keep third-party actions pinned to full commit SHAs
@@ -172,10 +203,11 @@ that protection is enabled.
 - Keep the title workflow's `pull_request_target` metadata-only: it must never check out or run
   pull-request code, or put the title or body into a shell.
 - Turn on secret scanning, push protection and private vulnerability reporting, and keep
-  dependency and security alerts enabled. Verify who receives reports; the
+  dependency and security alerts enabled (all on since 19 November 2026, with Dependabot
+  security updates). Verify who receives reports; the
   [code of conduct](../../CODE_OF_CONDUCT.md) documents the sole-maintainer reporting limitation.
 - Apply labels by running **Repository labels** by hand: it creates or updates the entries in
-  `.github/labels.json` without deleting other labels.
+  `.github/labels.json` without deleting other labels (run on 19 November 2026).
 
 ## Security scanning
 
@@ -197,7 +229,9 @@ exactly these), and remember that a fingerprint names a commit, so rewriting his
 entries. `main` was fast-forwarded to the development branch `v1`, not squashed, so they hold.
 
 Dependabot proposes weekly updates for Cargo, npm (through `pnpm-lock.yaml`) and GitHub Actions,
-after a week of cooldown. Electron updates are not grouped with other development dependencies:
+after a week of cooldown, titled `chore(deps): …` so they pass the required title check. A pull
+request it opened before that prefix was set keeps its old title: comment `@dependabot recreate`
+on it, or retitle it by hand. Electron updates are not grouped with other development dependencies:
 review them against [0010](../internals/0010-desktop-shell.md).
 
 ## Triage and review
