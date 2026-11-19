@@ -5,19 +5,20 @@ materials retain their own licenses; that license does not relicense them.
 
 ## Origin of the original material
 
-These are facts recorded in the repository, not a rights declaration:
+On 19 November 2026, Christian Carpinelli confirmed that the original Lictory Pulse code and
+artwork were created by him, with AI coding agents at his direction, without
+employer/client/contractor or purchased-material exceptions, and that the recorded agent output
+listed below may be published as test data. This is the owner's declaration, not an audit of
+third-party dependencies or a guarantee of copyright in generated material.
 
-- The code, tests and documentation in this repository were written with AI coding agents at
-  Christian Carpinelli's direction during November 2026, as the commit history and its
-  `Co-Authored-By` trailers show.
-- `assets/icon.svg` (the app icon: a rounded square with the letter "P", rendered in a system
-  font) came with the repository's initial commit, which was created by a project template. Its
-  provenance has not been confirmed.
+Facts recorded in the repository:
 
-The owner has not yet made a declaration about who created the original code and artwork, or
-about employer, client or purchased-material exceptions. That declaration is an item on the
-[owner checklist](docs/operations/open-source.md#owner-checklist); until it is recorded here,
-this file makes no claim about it.
+- The code, tests and documentation were written with AI coding agents at Christian Carpinelli's
+  direction during November 2026, as the commit history and its `Co-Authored-By` trailers show.
+- `assets/icon.svg` (the app icon: a rounded square with a pulse line, drawn as paths) was drawn
+  for this project on 19 November 2026. It replaced a placeholder, a rounded square with the
+  letter "P", that came with the repository's initial commit from a project template. The
+  placeholder is still in the Git history, and its provenance was never confirmed.
 
 ## Materials distributed as source
 
@@ -41,9 +42,7 @@ The web UI and the desktop app ship no third-party fonts, icons or images:
   similar stacks in `apps/web/src/styles.css`); no font file is bundled.
 - The UI's line icons (`apps/web/src/ui/icons.tsx`) were drawn for this app.
 - The app icon is `assets/icon.svg` (see above). The desktop build renders it to PNG
-  (`apps/desktop/scripts/icons.mjs`) with a font installed on the build machine (Liberation Sans
-  on Linux, Helvetica on macOS), so the shipped PNGs contain that font's rendering of one letter;
-  no font file is shipped.
+  (`apps/desktop/scripts/icons.mjs`). It is paths only, so no font takes part in the rendering.
 
 So there is no `LICENSES/` directory: nothing bundled as an asset requires its own license text
 to travel with it.
